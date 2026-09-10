@@ -4,6 +4,10 @@ Multi-clip MiniMax H3 video generation with two-pass PDD acceleration, learned l
 
 Custom build prepared with assistance from Astra 6. This is a community integration, not an official MiniMax or ComfyUI release. Original project authors are credited below.
 
+
+<img width="2047" height="1216" alt="Screenshot 2026-09-11 020707" src="https://github.com/user-attachments/assets/95bce67e-3703-4238-874d-0e763f0d83d7" />
+
+
 ## Features
 
 - Master Extender: draft generation, 3D latent upscale, and a second refinement pass.
