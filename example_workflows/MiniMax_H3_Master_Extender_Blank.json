@@ -1,0 +1,827 @@
+{
+  "revision": 0,
+  "last_node_id": 10,
+  "last_link_id": 16,
+  "nodes": [
+    {
+      "id": 2,
+      "type": "CLIPLoader",
+      "pos": [
+        -244.32287905246096,
+        45.92040261613058
+      ],
+      "size": [
+        315,
+        106
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "clip_name",
+          "name": "clip_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "clip_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "type",
+          "name": "type",
+          "type": "COMBO",
+          "widget": {
+            "name": "type"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "device",
+          "name": "device",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "device"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "CLIP",
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+        "minimax",
+        "default"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "VAELoader",
+      "pos": [
+        -244.32287905246096,
+        295.9204026161307
+      ],
+      "size": [
+        315,
+        58
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "vae_name",
+          "name": "vae_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "vae_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            4,
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "minimax_h3_audio_vae_fp32.safetensors"
+      ]
+    },
+    {
+      "id": 1,
+      "type": "UNETLoader",
+      "pos": [
+        -250.44818482478652,
+        -98.08029629204228
+      ],
+      "size": [
+        315,
+        82
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "unet_name",
+          "name": "unet_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "unet_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "weight_dtype",
+          "name": "weight_dtype",
+          "type": "COMBO",
+          "widget": {
+            "name": "weight_dtype"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "MODEL",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            16
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "MiniMax_H3_Ref2VA_pruned_int8_convrot.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "MiniMaxH3MasterFinalDecode",
+      "pos": [
+        1091.5687354381928,
+        -75.86430125140039
+      ],
+      "size": [
+        360,
+        380
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "cache",
+          "name": "cache",
+          "type": "H3_MOTION_DISK_CACHE",
+          "link": 6
+        },
+        {
+          "localized_name": "vae",
+          "name": "vae",
+          "type": "VAE",
+          "link": 7
+        },
+        {
+          "localized_name": "audio_vae",
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 8
+        },
+        {
+          "localized_name": "fps",
+          "name": "fps",
+          "type": "FLOAT",
+          "widget": {
+            "name": "fps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "filename_prefix",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "output_directory",
+          "name": "output_directory",
+          "type": "STRING",
+          "widget": {
+            "name": "output_directory"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "codec",
+          "name": "codec",
+          "type": "COMBO",
+          "widget": {
+            "name": "codec"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "crf",
+          "name": "crf",
+          "type": "INT",
+          "widget": {
+            "name": "crf"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "preset",
+          "name": "preset",
+          "type": "COMBO",
+          "widget": {
+            "name": "preset"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "audio_bitrate",
+          "name": "audio_bitrate",
+          "type": "COMBO",
+          "widget": {
+            "name": "audio_bitrate"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "autoplay",
+          "name": "autoplay",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "autoplay"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3MasterFinalDecode"
+      },
+      "widgets_values": [
+        24,
+        "MiniMax_H3_Master_Multishot",
+        "",
+        "H.264",
+        17,
+        "fast",
+        "192k",
+        true
+      ]
+    },
+    {
+      "id": 9,
+      "type": "SaveVideo",
+      "pos": [
+        1489.0084461603944,
+        -70.17431221916229
+      ],
+      "size": [
+        320,
+        282
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "link": 10
+        },
+        {
+          "localized_name": "filename_prefix",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "format",
+          "name": "format",
+          "type": "COMFY_DYNAMICCOMBO_V3",
+          "widget": {
+            "name": "format"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "format.codec",
+          "name": "format.codec",
+          "type": "COMFY_DYNAMICCOMBO_V3",
+          "widget": {
+            "name": "format.codec"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "codec",
+          "name": "codec",
+          "shape": 7,
+          "type": "COMFY_DYNAMICCOMBO_V3",
+          "widget": {
+            "name": "codec"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "video/MiniMax_H3_Master_Multishot",
+        "auto",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "VAELoader",
+      "pos": [
+        -244.32287905246096,
+        195.92040261613067
+      ],
+      "size": [
+        315,
+        58
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "vae_name",
+          "name": "vae_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "vae_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            3,
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "minimax_h3_video_vae_int8_convrot.safetensors"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "PreviewImage",
+      "pos": [
+        1077.8701714787717,
+        391.81972946839204
+      ],
+      "size": [
+        360,
+        260
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 6,
+      "type": "MiniMaxH3MasterExtender",
+      "pos": [
+        243.425036834566,
+        -98.35133739709738
+      ],
+      "size": [
+        749.5056855560099,
+        1307.0060091641215
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 16
+        },
+        {
+          "localized_name": "clip",
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        },
+        {
+          "localized_name": "vae",
+          "name": "vae",
+          "type": "VAE",
+          "link": 3
+        },
+        {
+          "localized_name": "audio_vae",
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 4
+        },
+        {
+          "localized_name": "ref_image_1",
+          "name": "ref_image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "ref_image_2",
+          "name": "ref_image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "ref_image_3",
+          "name": "ref_image_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "ref_image_4",
+          "name": "ref_image_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "ref_image_5",
+          "name": "ref_image_5",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "ref_image_6",
+          "name": "ref_image_6",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "ref_image_7",
+          "name": "ref_image_7",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "ref_image_8",
+          "name": "ref_image_8",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "ref_image_9",
+          "name": "ref_image_9",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "pdd_file",
+          "name": "pdd_file",
+          "type": "COMBO",
+          "widget": {
+            "name": "pdd_file"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "upscaler_model",
+          "name": "upscaler_model",
+          "type": "COMBO",
+          "widget": {
+            "name": "upscaler_model"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "run_mode",
+          "name": "run_mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "run_mode"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "pass1_resolution",
+          "name": "pass1_resolution",
+          "type": "COMBO",
+          "widget": {
+            "name": "pass1_resolution"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "pass2_resolution",
+          "name": "pass2_resolution",
+          "type": "COMBO",
+          "widget": {
+            "name": "pass2_resolution"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "pass2_denoise",
+          "name": "pass2_denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "pass2_denoise"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "pdd_nfe",
+          "name": "pdd_nfe",
+          "type": "COMBO",
+          "widget": {
+            "name": "pdd_nfe"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "context_length",
+          "name": "context_length",
+          "type": "COMBO",
+          "widget": {
+            "name": "context_length"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "audio_context_length",
+          "name": "audio_context_length",
+          "type": "INT",
+          "widget": {
+            "name": "audio_context_length"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "identity_continuity",
+          "name": "identity_continuity",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "identity_continuity"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "smart_offload",
+          "name": "smart_offload",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "smart_offload"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "clips_json",
+          "name": "clips_json",
+          "type": "STRING",
+          "widget": {
+            "name": "clips_json"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "refs_json",
+          "name": "refs_json",
+          "type": "STRING",
+          "widget": {
+            "name": "refs_json"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "attention_backend",
+          "name": "attention_backend",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "attention_backend"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "cache",
+          "name": "cache",
+          "type": "H3_MOTION_DISK_CACHE",
+          "links": [
+            6
+          ]
+        },
+        {
+          "localized_name": "clip_count",
+          "name": "clip_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "localized_name": "validated_count",
+          "name": "validated_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "localized_name": "status",
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "localized_name": "last_frame",
+          "name": "last_frame",
+          "type": "IMAGE",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3MasterExtender"
+      },
+      "widgets_values": [
+        "MiniMax-H3-Ref2VA-Acc-8Step.safetensors",
+        "minimax_h3_latent_upscaler_3d_fp16.safetensors",
+        "clip_by_clip",
+        "608x352 (16:9)",
+        "1280x720",
+        0.25,
+        "8",
+        "22",
+        0,
+        true,
+        true,
+        "[{\"id\": 0, \"title\": \"Clip 1\", \"prompt\": \"\", \"duration\": 5.1, \"seed\": 0, \"seed_mode\": \"fixed\", \"validated\": false, \"loras\": []}]",
+        "{\"images\": [null, null, null, null, null, null, null, null, null]}",
+        "pytorch attention"
+      ]
+    }
+  ],
+  "links": [
+    [
+      2,
+      2,
+      0,
+      6,
+      1,
+      "CLIP"
+    ],
+    [
+      3,
+      3,
+      0,
+      6,
+      2,
+      "VAE"
+    ],
+    [
+      4,
+      4,
+      0,
+      6,
+      3,
+      "VAE"
+    ],
+    [
+      6,
+      6,
+      0,
+      7,
+      0,
+      "H3_DISK_CACHE"
+    ],
+    [
+      7,
+      3,
+      0,
+      7,
+      1,
+      "VAE"
+    ],
+    [
+      8,
+      4,
+      0,
+      7,
+      2,
+      "VAE"
+    ],
+    [
+      9,
+      6,
+      4,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      10,
+      7,
+      0,
+      9,
+      0,
+      "VIDEO"
+    ],
+    [
+      16,
+      1,
+      0,
+      6,
+      0,
+      "MODEL"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "MiniMax H3 Master Extender (Pure 2-Stage 2-Pass PDD 8-Step + Multishot Director)",
+      "bounding": [
+        -284.322879052461,
+        -174.0795973838694,
+        2277.7420664893934,
+        1886.9908668613596
+      ],
+      "color": "#3f2b60",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
