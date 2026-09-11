@@ -383,12 +383,20 @@ class PurePDDEngine:
         split_cls = nodes.NODE_CLASS_MAPPINGS["MMH3SplitUpscale"]
         param_cls = nodes.NODE_CLASS_MAPPINGS["MMH3TemporalSplitParamsV10"]
 
+        # identity_anchor_frames must stay 0 here. The split node's identity
+        # anchors are latent frames sampled from the *unrefined upscaled draft*
+        # and injected as keyframe conditioning; H3 preserves keyframes, so the
+        # refinement reproduces the latent upscaler's block pattern as visible
+        # squares (worse with low-res drafts and sparse attention). Within one
+        # clip every window already shares the same draft, so identity is
+        # consistent without them. Motion anchors and the window-to-window
+        # anchor come from refined output and are kept.
         tparam = _safe_get_output(param_cls.execute(
             chunk_frames=int(self.pass2_chunk_frames),
             temporal_overlap_frames=int(self.pass2_chunk_overlap),
             anchor_strength=0.999,
             motion_anchor_frames="22",
-            identity_anchor_frames=24,
+            identity_anchor_frames=0,
         ), 0, "temporal_split_param")
 
         video = latent["samples"].tensors[0]
