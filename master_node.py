@@ -17,6 +17,7 @@ import threading
 import time
 from pathlib import Path
 import torch
+import comfy.samplers
 from server import PromptServer
 
 import folder_paths
@@ -219,7 +220,7 @@ class MiniMaxH3MasterExtender:
                     {"default": "1344x768 (16:9)", "tooltip": "Stage 2 (Pass 2) target resolution. 1920x1088 is 1080p on H3's 32-px grid; it needs ~2x the VRAM of 1344x768, so keep clips shorter (~5-8 s) at 1080p on a 32 GB card."},
                 ),
                 "pass2_denoise": ("FLOAT", {"default": 0.25, "min": 0.05, "max": 1.0, "step": 0.01, "tooltip": "PDD Quality Tail refinement denoise factor (trained at 0.25)"}),
-                "pdd_nfe": (["8", "4", "6"], {"default": "8", "tooltip": "PDD model evaluations (steps). 8 = full trained quality"}),
+                "pdd_nfe": (["8", "4", "6", "5", "10", "12", "16", "20"], {"default": "8", "tooltip": "Sampling steps. PDD mode: model evaluations, only 4 / 6 / 8 are valid (8 = full trained quality). Turbo LoRA mode: the turbo step count (e.g. 4-6 for a 4-step LoRA, 8 for an 8-step one)."}),
                 "context_length": (["22", "5", "39", "56"], {"default": "22", "tooltip": "Number of video motion context frames passed to subsequent clips"}),
                 "audio_context_length": ("INT", {"default": 0, "min": 0, "max": 240, "step": 1, "tooltip": "Audio context frames (0 = auto-match video context)"}),
                 "identity_continuity": ("BOOLEAN", {"default": True, "tooltip": "Use an empty picture slot for the previous clip's last frame. With all nine pictures attached, motion continuity still applies but no extra guide is inserted."}),
@@ -247,6 +248,12 @@ class MiniMaxH3MasterExtender:
                 "async_decode": (["off", "auto", "on"], {"default": "off", "tooltip": "EXPERIMENTAL, full_batch only: decode/cache the finished clip in a background thread while the next clip encodes and drafts; the identity guide frame is taken from the latent tail so the next clip never waits. Not available with dynamic VRAM (comfy-aimdo cannot stream weights from two threads) and unsafe if the decode triggers model eviction, so it defaults to off. auto = on only when the decode is small enough to sit beside the resident UNet."}),
                 "sparse_method": (["sla", "sol-attn", "vsa"], {"default": "sla", "tooltip": "Selection method for core BlockSparseAttention when sla_enabled is on. sla: keep a fixed top-k percent of key blocks (1 - sla_sparsity). sol-attn: training-free adaptive threshold per head/query block (tau), the choice for models without an SLA-distilled LoRA such as PDD. vsa: FastVideo cube attention, only with FastH3-VSA weights."}),
                 "sparse_tau": ("FLOAT", {"default": 1.3, "min": 0.0, "max": 4.0, "step": 0.05, "tooltip": "sol-attn threshold in score sigmas. Higher = sparser: 1.0 keeps ~16% of key blocks, 1.5 ~7%, 2.0 ~2.7%."}),
+                # --- Acceleration: PDD (default) or any turbo / lightning LoRA ---
+                "accel_mode": (["PDD 8-step", "Turbo LoRA"], {"default": "PDD 8-step", "tooltip": "PDD 8-step: the official Parallel Decoding Distillation LoRA + head bank (needs ComfyUI-MiniMax-H3-PDD-Acc). Turbo LoRA: a plain step-distilled LoRA (turbo / lightning / lightx2v) with a regular scheduler; 'steps' above becomes the turbo step count."}),
+                "turbo_lora": (["none"] + folder_paths.get_filename_list("loras"), {"default": "none", "tooltip": "Turbo LoRA file (models/loras). Used only in Turbo LoRA mode."}),
+                "turbo_lora_strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "tooltip": "Turbo LoRA strength."}),
+                "turbo_sampler": (comfy.samplers.KSampler.SAMPLERS, {"default": "res_multistep", "tooltip": "Sampler for Turbo LoRA mode (PDD mode always uses euler)."}),
+                "turbo_scheduler": (comfy.samplers.KSampler.SCHEDULERS, {"default": "simple", "tooltip": "Scheduler for Turbo LoRA mode. Pass 2 runs the last round(steps x pass2_denoise) steps of this schedule."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -288,6 +295,11 @@ class MiniMaxH3MasterExtender:
         prompt=None,
         extra_pnginfo=None,
         attention_backend="comfy kitchen attention",
+        accel_mode="PDD 8-step",
+        turbo_lora="none",
+        turbo_lora_strength=1.0,
+        turbo_sampler="res_multistep",
+        turbo_scheduler="simple",
         sla_enabled=False,
         sla_sparsity=0.9,
         pass2_chunk_frames=124,
@@ -338,7 +350,8 @@ class MiniMaxH3MasterExtender:
                     pdd_file, upscaler_model, context_length, audio_context_length,
                     identity_continuity, refs_json,
                     bool(sla_enabled), float(sla_sparsity), str(sparse_method), float(sparse_tau),
-                    int(pass2_chunk_frames), int(pass2_chunk_overlap)]
+                    int(pass2_chunk_frames), int(pass2_chunk_overlap),
+                    accel_mode, turbo_lora, float(turbo_lora_strength), turbo_sampler, turbo_scheduler]
         signature = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         for dp, mp, state in ((data_path, manifest_path, manifest),
                                (draft_path, draft_manifest_path, draft_manifest)):
@@ -388,6 +401,11 @@ class MiniMaxH3MasterExtender:
             shift_audio=3.0,
             attention_backend=attention_backend,
             smart_offload=smart_offload,
+            accel_mode=accel_mode,
+            turbo_lora=turbo_lora,
+            turbo_lora_strength=turbo_lora_strength,
+            sampler_name=turbo_sampler,
+            scheduler_name=turbo_scheduler,
             sla_enabled=sla_enabled,
             sla_sparsity=sla_sparsity,
             pass2_chunk_frames=pass2_chunk_frames,

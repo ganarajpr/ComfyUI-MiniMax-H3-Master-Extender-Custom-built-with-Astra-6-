@@ -13,6 +13,19 @@ function alignH3Frames(sec) {
     return frames;
 }
 
+// Clip duration slider: whole seconds, 5-15 s by default; the per-clip
+// "go beyond" checkbox unlocks up to 30 s (longer clips need far more VRAM).
+const DUR_MIN = 5;
+const DUR_SOFT_MAX = 15;
+const DUR_HARD_MAX = 30;
+
+function clampDuration(sec, beyond) {
+    const max = beyond ? DUR_HARD_MAX : DUR_SOFT_MAX;
+    const n = Math.round(Number(sec));
+    if (!Number.isFinite(n)) return DUR_MIN;
+    return Math.min(max, Math.max(DUR_MIN, n));
+}
+
 app.registerExtension({
     name: "MiniMaxH3.MasterExtender",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
@@ -144,7 +157,8 @@ app.registerExtension({
                         id: nextId,
                         title: `Clip ${nextId + 1}`,
                         prompt: "",
-                        duration: 5.1,
+                        duration: 5,
+                        beyond: false,
                         seed: Math.floor(Math.random() * 1000000000),
                         seed_mode: "randomize",
                         validated: false,
@@ -184,7 +198,9 @@ app.registerExtension({
                         box-sizing: border-box;
                     `;
 
-                    const frames = alignH3Frames(clip.duration || 5.1);
+                    const durValue = clampDuration(clip.duration || DUR_MIN, clip.beyond);
+                    const durMax = clip.beyond ? DUR_HARD_MAX : DUR_SOFT_MAX;
+                    const frames = alignH3Frames(durValue);
                     const seedMode = clip.seed_mode || "randomize";
 
                     card.innerHTML = `
@@ -210,13 +226,17 @@ app.registerExtension({
                             <textarea class="prompt-box" rows="4" placeholder="Enter clip prompt..." style="width: 100%; box-sizing: border-box; background: #101016; border: 1px solid #2e2e42; border-radius: 4px; color: #ececf4; padding: 6px 8px; font-size: 11px; line-height: 1.4; resize: vertical;"></textarea>
                         </div>
 
-                        <!-- Duration Setting -->
-                        <div style="display: flex; justify-content: space-between; align-items: center; background: #13131c; padding: 4px 6px; border-radius: 4px; border: 1px solid #242434;">
-                            <span style="color: #9c9cb2; font-size: 11px;">Duration:</span>
-                            <div style="display: flex; align-items: center; gap: 4px;">
-                                <input type="number" class="dur-input" value="${clip.duration || 5.1}" step="0.1" min="1.0" max="60.0" style="width: 50px; background: #1b1b26; border: 1px solid #36364e; border-radius: 3px; color: #fff; padding: 2px 4px; font-size: 11px; text-align: right;">
-                                <span style="color: #777;">sec</span>
+                        <!-- Duration Setting: 5-15 s slider, "go beyond" unlocks up to 30 s -->
+                        <div style="display: flex; flex-direction: column; gap: 4px; background: #13131c; padding: 4px 6px; border-radius: 4px; border: 1px solid #242434;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span style="color: #9c9cb2; font-size: 11px;">Duration:</span>
+                                <span class="dur-label" style="color: #fff; font-size: 11px; font-variant-numeric: tabular-nums;">${durValue}s</span>
                             </div>
+                            <input type="range" class="dur-slider" value="${durValue}" step="1" min="${DUR_MIN}" max="${durMax}" style="width: 100%; accent-color: #6355d8; cursor: pointer;">
+                            <label style="display: flex; align-items: center; gap: 5px; color: #8888a4; font-size: 10px; cursor: pointer;">
+                                <input type="checkbox" class="dur-beyond" ${clip.beyond ? "checked" : ""} style="accent-color: #6355d8; margin: 0;">
+                                go beyond ${DUR_SOFT_MAX}s (up to ${DUR_HARD_MAX}s, more VRAM)
+                            </label>
                         </div>
 
                         <!-- Seed & Seed Mode Controls -->
@@ -246,9 +266,20 @@ app.registerExtension({
                         saveState();
                     };
 
-                    const durInput = card.querySelector(".dur-input");
-                    durInput.onchange = () => {
-                        clip.duration = parseFloat(durInput.value) || 5.1;
+                    const durSlider = card.querySelector(".dur-slider");
+                    const durLabel = card.querySelector(".dur-label");
+                    const durBeyond = card.querySelector(".dur-beyond");
+                    durSlider.oninput = () => {
+                        durLabel.textContent = `${durSlider.value}s`;
+                    };
+                    durSlider.onchange = () => {
+                        clip.duration = clampDuration(parseInt(durSlider.value, 10), clip.beyond);
+                        saveState();
+                        renderUI();
+                    };
+                    durBeyond.onchange = () => {
+                        clip.beyond = durBeyond.checked;
+                        clip.duration = clampDuration(clip.duration, clip.beyond);
                         saveState();
                         renderUI();
                     };

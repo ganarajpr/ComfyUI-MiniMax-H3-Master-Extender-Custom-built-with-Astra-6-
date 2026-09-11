@@ -107,6 +107,11 @@ class PurePDDEngine:
         shift_audio=3.0,
         attention_backend="comfy kitchen attention",
         smart_offload=True,
+        accel_mode="PDD 8-step",
+        turbo_lora="none",
+        turbo_lora_strength=1.0,
+        sampler_name="res_multistep",
+        scheduler_name="simple",
         sla_enabled=False,
         sla_sparsity=0.9,
         pass2_chunk_frames=124,
@@ -117,6 +122,12 @@ class PurePDDEngine:
         sparse_tau=1.3,
     ):
         self.raw_model = model
+        self.accel_mode = str(accel_mode)
+        self.turbo_mode = self.accel_mode.lower().startswith("turbo")
+        self.turbo_lora = turbo_lora if turbo_lora and turbo_lora != "none" else None
+        self.turbo_lora_strength = float(turbo_lora_strength)
+        self.sampler_name = sampler_name
+        self.scheduler_name = scheduler_name
         self.sla_enabled = bool(sla_enabled)
         self.sla_sparsity = float(sla_sparsity)
         self.sparse_method = str(sparse_method or "sla")
@@ -166,24 +177,32 @@ class PurePDDEngine:
             _LOG.warning(f"Error applying MiniMaxH3SigmaShift: {e}")
             shifted_model = self.raw_model
 
-        # 2. Apply PDD Acc LoRA
-        pdd_apply_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3PDDAccApply")
-        if pdd_apply_cls:
-            pdd_node = pdd_apply_cls()
-            pdd_model, sigmas_p1, info = pdd_node.apply(
-                shifted_model,
-                pdd_file=self.pdd_file,
-                nfe=self.pdd_nfe,
-                lora_strength=self.pdd_lora_strength,
-                head_strength=self.pdd_head_strength,
-                on_off_grid="error",
-                enabled=True,
-                partition_check="warn",
-            )
+        # 2. Acceleration: PDD head bank, or a plain turbo / lightning LoRA
+        if self.turbo_mode:
+            pdd_model, sigmas_p1 = self._prepare_turbo_model(shifted_model)
         else:
-            pdd_model = shifted_model
-            # Fallback simple 8-step sigmas if node missing
-            sigmas_p1 = torch.linspace(1.0, 0.0, int(self.pdd_nfe) + 1)
+            pdd_apply_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3PDDAccApply")
+            if pdd_apply_cls:
+                nfe = self.pdd_nfe if self.pdd_nfe in ("4", "6", "8") else "8"
+                if nfe != self.pdd_nfe:
+                    _LOG.warning("PDD mode supports 4 / 6 / 8 steps only; using %s instead of %s", nfe, self.pdd_nfe)
+                    self.pdd_nfe = nfe
+                pdd_node = pdd_apply_cls()
+                pdd_model, sigmas_p1, info = pdd_node.apply(
+                    shifted_model,
+                    pdd_file=self.pdd_file,
+                    nfe=self.pdd_nfe,
+                    lora_strength=self.pdd_lora_strength,
+                    head_strength=self.pdd_head_strength,
+                    on_off_grid="error",
+                    enabled=True,
+                    partition_check="warn",
+                )
+            else:
+                pdd_model = shifted_model
+                # Fallback simple 8-step sigmas if node missing
+                sigmas_p1 = torch.linspace(1.0, 0.0, int(self.pdd_nfe) + 1)
+
 
         attention_name = {
             "comfy kitchen attention": "comfy_kitchen_int8",
@@ -217,6 +236,37 @@ class PurePDDEngine:
     SPARSE_START_PERCENT = 0.2
     SPARSE_MIN_TOKENS = 12288
     SPARSE_EXTRA_TOKENS = 256
+
+    # ------------------------------------------------------------------
+    # Turbo LoRA mode + SLA
+    # ------------------------------------------------------------------
+    def _basic_sigmas(self, model, steps, denoise):
+        """Sigmas from core's BasicScheduler for the engine's scheduler_name.
+        `steps` is the number of steps that will actually run; with denoise < 1
+        they are the tail of a longer schedule (core's hires-fix semantics)."""
+        from comfy_extras.nodes_custom_sampler import BasicScheduler
+        steps = max(1, int(steps))
+        res = BasicScheduler.execute(model, self.scheduler_name, steps, float(denoise))
+        sigmas = _safe_get_output(res, 0, "sigmas")
+        if sigmas is None:
+            raise RuntimeError("BasicScheduler returned no sigmas")
+        return sigmas
+
+    def _prepare_turbo_model(self, model):
+        """Load the turbo LoRA (any step-distilled LoRA) and build the pass-1 schedule."""
+        steps = int(self.pdd_nfe)
+        if self.turbo_lora is None:
+            _LOG.warning("Turbo LoRA mode selected but no LoRA chosen; sampling the base model "
+                         "with %d steps of %s/%s", steps, self.sampler_name, self.scheduler_name)
+            return model, self._basic_sigmas(model, steps, 1.0)
+
+        lora_cls = nodes.NODE_CLASS_MAPPINGS.get("LoraLoaderModelOnly")
+        res = lora_cls().load_lora_model_only(model, self.turbo_lora, self.turbo_lora_strength)
+        model = _safe_get_output(res, 0, "model")
+        _LOG.info("Turbo LoRA: %s @ %.2f, %d steps, %s / %s", self.turbo_lora,
+                  self.turbo_lora_strength, steps, self.sampler_name, self.scheduler_name)
+
+        return model, self._basic_sigmas(model, steps, 1.0)
 
     def _apply_sla(self, model):
         """Block-sparse attention for both passes. On long sequences it roughly
@@ -260,6 +310,18 @@ class PurePDDEngine:
         except Exception as exc:
             _LOG.warning("Core BlockSparseAttention could not be applied (%s); continuing dense", exc)
         return model
+
+    def _pass2_sigmas(self, model, pass2_denoise):
+        """Quality-tail schedule for pass 2: PDD's own tail, or the last
+        round(steps x denoise) steps of the turbo schedule."""
+        if self.turbo_mode:
+            steps = int(self.pdd_nfe)
+            tail = max(1, int(round(steps * float(pass2_denoise))))
+            return self._basic_sigmas(model, tail, float(pass2_denoise))
+        scheduler_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3PDDAccScheduler")
+        if scheduler_cls:
+            return scheduler_cls().get_sigmas(nfe=self.pdd_nfe, denoise=float(pass2_denoise))[0]
+        return self.pass1_sigmas[-int(len(self.pass1_sigmas) * pass2_denoise):]
 
     # Make room for activations before each sampling pass.
     # With dynamic VRAM enabled, core's free_memory() does not evict one dynamic
@@ -473,8 +535,9 @@ class PurePDDEngine:
         guider.set_conds(positive, positive)
         guider.set_cfg(1.0)
 
-        # Build sampler object
-        euler_sampler = comfy.samplers.sampler_object("euler")
+        # Build sampler object: PDD was distilled for plain Euler; turbo mode
+        # uses the user's sampler (res_multistep by default).
+        euler_sampler = comfy.samplers.sampler_object(self.sampler_name if self.turbo_mode else "euler")
 
         # Fix empty latent channels if needed
         latent = dict(latent_image)
@@ -727,13 +790,8 @@ class PurePDDEngine:
             f"Clip {clip_index + 1}: Pass 2 refining at {w2}x{h2} (conditioning pre-encoded), quality tail denoise={pass2_denoise}"
         )
 
-        # Get PDD Quality Tail sigmas
-        scheduler_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3PDDAccScheduler")
-        if scheduler_cls:
-            scheduler_node = scheduler_cls()
-            sigmas_p2 = scheduler_node.get_sigmas(nfe=self.pdd_nfe, denoise=float(pass2_denoise))[0]
-        else:
-            sigmas_p2 = self.pass1_sigmas[-int(len(self.pass1_sigmas) * pass2_denoise):]
+        # Quality-tail sigmas (PDD tail, or the turbo schedule's tail)
+        sigmas_p2 = self._pass2_sigmas(model, pass2_denoise)
 
         # Sample Pass 2 (High-Res Refine): whole clip, or overlapping temporal
         # windows when the clip is longer than pass2_chunk_frames.
