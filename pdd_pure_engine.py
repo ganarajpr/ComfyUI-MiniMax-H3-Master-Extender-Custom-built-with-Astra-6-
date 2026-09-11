@@ -184,24 +184,6 @@ class PurePDDEngine:
         pdd_model.set_model_optimized_attention(attention_function)
         _LOG.info("PDD sampling attention: %s", self.attention_backend)
 
-        # Chunk the H3 feed-forward when KJNodes >= 1.5.1 provides the patch.
-        # On long/HD clips the pass-2 OOM happens inside block.mlp: the fc1
-        # output alone is tokens x 2*ffn_dim (~6.4 GB at 1344x768 / 362 frames).
-        # Splitting the token axis into chunks divides that peak by the chunk
-        # count at negligible cost, and the object patches survive clone().
-        # H3_MASTER_FF_CHUNKS overrides the count (1 disables).
-        ff_chunks = int(os.environ.get("H3_MASTER_FF_CHUNKS", "4"))
-        chunk_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxChunkFeedForward")
-        if chunk_cls is not None and ff_chunks > 1:
-            try:
-                res = chunk_cls.execute(pdd_model, chunks=ff_chunks, seq_threshold=16384)
-                chunked = _safe_get_output(res, 0, "model")
-                if chunked is not None:
-                    pdd_model = chunked
-                    _LOG.info("PDD engine: feed-forward chunking enabled (%d chunks, >16k tokens)", ff_chunks)
-            except Exception as exc:
-                _LOG.warning("PDD engine: could not enable feed-forward chunking (%s)", exc)
-
         self.prepared_model = pdd_model
         self.pass1_sigmas = sigmas_p1
         return self.prepared_model, self.pass1_sigmas
@@ -217,25 +199,61 @@ class PurePDDEngine:
     # the driver so the allocator can serve one large contiguous request.
     ACTIVATION_BYTES_PER_TOKEN = 64 * 1024      # fc1 output measured ~62 KB/token
     ACTIVATION_LIVE_TENSORS = 3
+    # Feed-forward chunking: one chunk per this many packed tokens, so the fc1
+    # peak stays roughly constant (~1.6 GB) whatever the clip length/resolution.
+    FF_TOKENS_PER_CHUNK = 27000
+    FF_CHUNK_THRESHOLD = 16384
+
+    @staticmethod
+    def _packed_tokens(samples):
+        video = samples
+        try:
+            video, _ = _streams_from_latent({"samples": samples}, "samples")
+        except Exception:
+            pass
+        shape = tuple(int(s) for s in getattr(video, "shape", ()))
+        if len(shape) == 5:
+            _, _, t, h, w = shape
+        elif len(shape) == 4:
+            _, t, h, w = shape
+        else:
+            t, h, w = 1, 64, 64
+        return t * ((h + 1) // 2) * ((w + 1) // 2)
+
+    def _with_ff_chunking(self, model, tokens):
+        """Return `model` with KJNodes' MiniMaxChunkFeedForward applied, sized to
+        the packed token count of this pass (KJNodes >= 1.5.1). On long/HD clips
+        the OOM happens inside block.mlp: the fc1 output alone is
+        tokens x 2*ffn_dim (~6.4 GB at 1344x768 / 362 frames, ~13 GB at 1080p).
+        Splitting the token axis divides that peak by the chunk count at
+        negligible cost; the object patches live on a clone so the prepared
+        model is untouched. H3_MASTER_FF_CHUNKS forces a count (1 disables)."""
+        chunk_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxChunkFeedForward")
+        if chunk_cls is None or tokens <= self.FF_CHUNK_THRESHOLD:
+            return model
+        forced = os.environ.get("H3_MASTER_FF_CHUNKS")
+        if forced:
+            chunks = int(forced)
+        else:
+            chunks = max(2, min(64, math.ceil(tokens / self.FF_TOKENS_PER_CHUNK)))
+        if chunks <= 1:
+            return model
+        try:
+            res = chunk_cls.execute(model, chunks=chunks, seq_threshold=self.FF_CHUNK_THRESHOLD)
+            chunked = _safe_get_output(res, 0, "model")
+            if chunked is not None:
+                _LOG.info("PDD engine: feed-forward chunking -- %d tokens -> %d chunks", tokens, chunks)
+                return chunked
+        except Exception as exc:
+            _LOG.warning("PDD engine: could not enable feed-forward chunking (%s)", exc)
+        return model
 
     def _reclaim_vram(self, model_patcher, samples):
         import gc
         mm = comfy.model_management
         try:
             device = mm.get_torch_device()
-            video = samples
-            try:
-                video, _ = _streams_from_latent({"samples": samples}, "samples")
-            except Exception:
-                pass
-            shape = tuple(int(s) for s in getattr(video, "shape", ()))
-            if len(shape) == 5:
-                _, _, t, h, w = shape
-            elif len(shape) == 4:
-                _, t, h, w = shape
-            else:
-                t, h, w = 1, 64, 64
-            tokens = t * ((h + 1) // 2) * ((w + 1) // 2)
+            tokens = self._packed_tokens(samples)
             required = int(tokens * self.ACTIVATION_BYTES_PER_TOKEN * self.ACTIVATION_LIVE_TENSORS)
             required = max(required, 6 * 1024 ** 3)
             gc.collect()
@@ -269,6 +287,9 @@ class PurePDDEngine:
 
         # Noise_RandomNoise is a plain class: Noise_RandomNoise(seed)
         noise_obj = Noise_RandomNoise(seed)
+
+        # Size the feed-forward chunking to this pass's packed token count.
+        model = self._with_ff_chunking(model, self._packed_tokens(latent_image["samples"]))
 
         # Build guider directly — bypass ComfyUI v3 node wrapper (NodeOutput issue)
         # MiniMax H3 is a pure flow model: no negative conditioning needed.
