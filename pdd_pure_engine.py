@@ -109,10 +109,24 @@ class PurePDDEngine:
         smart_offload=True,
         sla_enabled=False,
         sla_sparsity=0.9,
+        pass2_chunk_frames=124,
+        pass2_chunk_overlap=22,
+        background_busy=None,
+        wait_background=None,
+        sparse_method="sla",
+        sparse_tau=1.3,
     ):
         self.raw_model = model
         self.sla_enabled = bool(sla_enabled)
         self.sla_sparsity = float(sla_sparsity)
+        self.sparse_method = str(sparse_method or "sla")
+        self.sparse_tau = float(sparse_tau)
+        self.pass2_chunk_frames = int(pass2_chunk_frames or 0)
+        self.pass2_chunk_overlap = int(pass2_chunk_overlap or 0)
+        # Hooks from the Master node: is a background decode running, and how
+        # to wait for it. The reclaim must not evict models under a live decode.
+        self.background_busy = background_busy or (lambda: False)
+        self.wait_background = wait_background or (lambda: None)
         self.clip = clip
         self.vae = vae
         self.audio_vae = audio_vae
@@ -199,12 +213,52 @@ class PurePDDEngine:
         self.pass1_sigmas = sigmas_p1
         return self.prepared_model, self.pass1_sigmas
 
+    # Sparse attention: dense for the first part of the schedule (structure is
+    # decided there), sparse after. 0.2 is core's default and matches PDD's
+    # 8-step draft (first ~2 steps dense); pass 2's tail sits past it anyway.
+    SPARSE_START_PERCENT = 0.2
+    SPARSE_MIN_TOKENS = 12288
+    SPARSE_EXTRA_TOKENS = 256
+
     def _apply_sla(self, model):
-        """Block-sparse attention (PlagueKind H3SLAAttention) for both passes.
-        On long sequences SLA at 0.9 roughly halves the per-step time
-        (measured 39 -> 22 s/step at 1344x768 / 362 frames)."""
+        """Block-sparse attention for both passes. On long sequences it roughly
+        halves the per-step time (measured 39 -> 22 s/step at 1344x768 / 362
+        frames at 90% sparsity).
+
+        Prefers core's BlockSparseAttention (ComfyUI >= 0.35): it chains the
+        dense backend selected above as its fall-through and re-installs itself
+        every step, keeps the H3 text/audio/reference rows exact, and offers
+        three selection methods (sla / sol-attn / vsa). PlagueKind's
+        H3SLAAttention is used only when the core node is unavailable."""
         if not self.sla_enabled:
             return model
+        native = nodes.NODE_CLASS_MAPPINGS.get("BlockSparseAttention")
+        if native is not None:
+            method = str(getattr(self, "sparse_method", "sla") or "sla")
+            keep_percent = max(0.5, min(95.0, (1.0 - self.sla_sparsity) * 100.0))
+            selection = {"selection": method}
+            if method == "sol-attn":
+                selection["tau"] = float(getattr(self, "sparse_tau", 1.3))
+            else:
+                selection["keep_percent"] = keep_percent
+            try:
+                res = native.execute(
+                    model, selection=selection,
+                    start_percent=self.SPARSE_START_PERCENT, end_percent=1.0,
+                    dense_blocks="", min_tokens=self.SPARSE_MIN_TOKENS,
+                    extra_tokens=0 if method == "vsa" else self.SPARSE_EXTRA_TOKENS,
+                    sink_conditioning="exact_kv_and_rows", verbose=False,
+                )
+                out = _safe_get_output(res, 0, "model")
+                if out is not None:
+                    detail = (f"tau={selection['tau']}" if method == "sol-attn"
+                              else f"keep={keep_percent:.1f}% (sparsity {self.sla_sparsity:.2f})")
+                    _LOG.info("Sparse attention (core BlockSparseAttention, %s): %s, dense before %.0f%%, "
+                              "min_tokens %d, dense fall-through = %s", method, detail,
+                              self.SPARSE_START_PERCENT * 100, self.SPARSE_MIN_TOKENS, self.attention_backend)
+                    return out
+            except Exception as exc:
+                _LOG.warning("Core BlockSparseAttention could not be applied (%s); trying PlagueKind SLA", exc)
         sla_cls = nodes.NODE_CLASS_MAPPINGS.get("H3SLAAttention")
         if sla_cls is None:
             _LOG.warning("SLA requested but H3SLAAttention (ComfyUI-PlagueKind-Nodes) is not installed; skipping")
@@ -280,17 +334,32 @@ class PurePDDEngine:
             _LOG.warning("PDD engine: could not enable feed-forward chunking (%s)", exc)
         return model
 
-    def _reclaim_vram(self, model_patcher, samples):
+    # Passes at or below this many packed tokens (draft passes) may run beside
+    # a background decode instead of evicting it.
+    BACKGROUND_TOLERANT_TOKENS = 30000
+
+    def _reclaim_vram(self, model_patcher, samples=None, tokens=None):
         import gc
         mm = comfy.model_management
         try:
             device = mm.get_torch_device()
-            tokens = self._packed_tokens(samples)
+            if tokens is None:
+                tokens = self._packed_tokens(samples)
             required = int(tokens * self.ACTIVATION_BYTES_PER_TOKEN * self.ACTIVATION_LIVE_TENSORS)
             required = max(required, 6 * 1024 ** 3)
             gc.collect()
+            if self.background_busy():
+                if tokens <= self.BACKGROUND_TOLERANT_TOKENS:
+                    mm.soft_empty_cache(force=True)
+                    _LOG.info("PDD engine: background decode in flight -- small pass (%d tokens), "
+                              "sampling alongside it without evicting", tokens)
+                    return
+                _LOG.info("PDD engine: waiting for the background decode before a %d-token pass", tokens)
+                self.wait_background()
             before = mm.get_free_memory(device)
-            keep = [model_patcher] if model_patcher is not None else []
+            keep = []
+            if model_patcher is not None:
+                keep = [lm for lm in mm.current_loaded_models if getattr(lm, "model", None) is model_patcher]
             mm.free_memory(required, device, keep_loaded=keep)
             mm.soft_empty_cache(force=True)
             after = mm.get_free_memory(device)
@@ -298,6 +367,76 @@ class PurePDDEngine:
                       tokens, required / 1024 ** 3, before / 1024 ** 3, after / 1024 ** 3)
         except Exception as exc:
             _LOG.warning("PDD engine: VRAM reclaim skipped (%s)", exc)
+
+    # ------------------------------------------------------------------
+    # Chunked pass 2 (temporal windows via MMH3SplitUpscale)
+    # ------------------------------------------------------------------
+    def _pass2_chunking_active(self, frame_count):
+        if self.pass2_chunk_frames <= 0:
+            return False
+        if nodes.NODE_CLASS_MAPPINGS.get("MMH3SplitUpscale") is None or \
+                nodes.NODE_CLASS_MAPPINGS.get("MMH3TemporalSplitParamsV10") is None:
+            return False
+        return int(frame_count) > int(self.pass2_chunk_frames)
+
+    def _sample_pass2_chunked(self, model, positive, latent, sigmas, seed):
+        """Refine pass 2 in overlapping temporal windows instead of one shot.
+
+        A 15 s clip at 1344x768 is ~108k packed tokens, at 1920x1088 ~218k;
+        attention cost grows with the square of that and the activations no
+        longer fit beside the UNet, so the step degenerates into weight
+        paging (measured 239-367 s/step at 1080p vs ~21-36 s/step for 5 s
+        windows). MMH3SplitUpscale (Comfyui_Minimax_h3_latent_Upscaler) does
+        the H3-grid-aware windowing: it re-anchors the conditioning per
+        window, carries motion/identity anchors across windows, matches
+        colour, and blends the overlaps. At denoise 0.25 the windows only
+        polish an already coherent draft, so seams stay invisible.
+        """
+        from comfy_extras.nodes_custom_sampler import Noise_RandomNoise
+        split_cls = nodes.NODE_CLASS_MAPPINGS["MMH3SplitUpscale"]
+        param_cls = nodes.NODE_CLASS_MAPPINGS["MMH3TemporalSplitParamsV10"]
+
+        tparam = _safe_get_output(param_cls.execute(
+            chunk_frames=int(self.pass2_chunk_frames),
+            temporal_overlap_frames=int(self.pass2_chunk_overlap),
+            anchor_strength=0.999,
+            motion_anchor_frames="22",
+            identity_anchor_frames=24,
+        ), 0, "temporal_split_param")
+
+        video = latent["samples"].tensors[0]
+        _, _, t_lat, h_lat, w_lat = (int(x) for x in video.shape)
+        window_lat = min(t_lat, max(1, (int(self.pass2_chunk_frames) - 5) // 17 * 5 + 2))
+        window_tokens = window_lat * ((h_lat + 1) // 2) * ((w_lat + 1) // 2)
+        _LOG.info("PDD engine: pass 2 in temporal windows of %d frames (overlap %d) -- %d latent frames "
+                  "-> windows of %d (~%d tokens each)", self.pass2_chunk_frames, self.pass2_chunk_overlap,
+                  t_lat, window_lat, window_tokens)
+
+        model = self._with_ff_chunking(model, window_tokens)
+        self._reclaim_vram(model, tokens=window_tokens)
+
+        sampler_name = self.sampler_name if getattr(self, "turbo_mode", False) else "euler"
+        res = split_cls.execute(
+            latent=latent,
+            conditioning=positive,
+            model=model,
+            noise=Noise_RandomNoise(seed),
+            sampler=comfy.samplers.sampler_object(sampler_name),
+            sigmas=sigmas,
+            negative=None,
+            cfg=1.0,
+            temporal_split_param=tparam,
+            spatial_split_param=None,
+            seam_polish="off",
+            color_match=True,
+        )
+        out = _safe_get_output(res, 0, "latent")
+        if not isinstance(out, dict) or "samples" not in out:
+            raise RuntimeError("MMH3SplitUpscale returned no latent")
+        result = dict(latent)
+        result.pop("noise_mask", None)
+        result["samples"] = out["samples"].to(comfy.model_management.intermediate_device())
+        return result
 
     def _sample_euler(self, model, positive, latent_image, sigmas, seed):
         """Standard Euler sampling using ComfyUI core sampler internals directly.
@@ -593,14 +732,24 @@ class PurePDDEngine:
         else:
             sigmas_p2 = self.pass1_sigmas[-int(len(self.pass1_sigmas) * pass2_denoise):]
 
-        # Sample Pass 2 (High-Res Refine)
-        final_sampled = self._sample_euler(
-            model=model,
-            positive=pos_p2,
-            latent_image=rejoined_latent,
-            sigmas=sigmas_p2,
-            seed=seed,
-        )
+        # Sample Pass 2 (High-Res Refine): whole clip, or overlapping temporal
+        # windows when the clip is longer than pass2_chunk_frames.
+        if self._pass2_chunking_active(frame_count):
+            final_sampled = self._sample_pass2_chunked(
+                model=model,
+                positive=pos_p2,
+                latent=rejoined_latent,
+                sigmas=sigmas_p2,
+                seed=seed,
+            )
+        else:
+            final_sampled = self._sample_euler(
+                model=model,
+                positive=pos_p2,
+                latent_image=rejoined_latent,
+                sigmas=sigmas_p2,
+                seed=seed,
+            )
 
         # The disk renderer extracts the guide from the corrected preview decode.
         return final_sampled, None

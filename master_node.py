@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import secrets
+import threading
 import time
 from pathlib import Path
 import torch
@@ -22,6 +23,7 @@ import folder_paths
 import nodes
 from .master_projects import load_reference_images
 
+from . import motion_context_disk
 from .motion_context_disk import (
     CACHE_TYPE,
     FPS,
@@ -34,7 +36,9 @@ from .motion_context_disk import (
     _cache_guide_frame,
     _render_one_final_video_segment,
     cache_full_batch_ref2va_segment,
+    decode_guide_frame,
 )
+from .motion_context_ram import _streams_from_latent
 from .pdd_pure_engine import (
     PurePDDEngine,
     parse_resolution,
@@ -64,6 +68,87 @@ def _default_refs():
     return {
         "images": [None] * 9,
     }
+
+
+class _DecodeWorker:
+    """Runs one clip's decode/cache on a worker thread and its own CUDA stream.
+
+    Inference mode is thread-local, so it is re-entered here. The worker never
+    evicts other models (DECODE_ALLOW_RECLAIM is cleared for its duration);
+    the Master node joins it before anything that writes the shared manifest
+    and before any large sampling pass.
+    """
+
+    def __init__(self, fn, label=""):
+        self.error = None
+        self.result = None
+        self.label = label
+        self.thread = threading.Thread(target=self._run, args=(fn,), daemon=True,
+                                       name=f"h3-master-decode-{label}")
+        self.thread.start()
+
+    def _run(self, fn):
+        try:
+            motion_context_disk.DECODE_ALLOW_RECLAIM = False
+            with torch.inference_mode():
+                if torch.cuda.is_available():
+                    stream = torch.cuda.Stream()
+                    with torch.cuda.stream(stream):
+                        self.result = fn()
+                    stream.synchronize()
+                else:
+                    self.result = fn()
+        except BaseException as exc:  # noqa: BLE001 -- re-raised on the main thread
+            self.error = exc
+        finally:
+            motion_context_disk.DECODE_ALLOW_RECLAIM = True
+
+    def busy(self):
+        return self.thread.is_alive()
+
+    def wait(self):
+        started = time.time()
+        self.thread.join()
+        waited = time.time() - started
+        if waited > 1.0:
+            _LOG.info("Background decode (%s): waited %.1f s for it to finish", self.label, waited)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _async_decode_allowed(mode, vae, sampled_latent):
+    """auto: only when the decode's own memory estimate is small enough to sit
+    beside the resident UNet; a decode that would page just slows both jobs."""
+    mode = str(mode or "auto").lower()
+    if mode == "off":
+        return False
+    # comfy-aimdo's dynamic VRAM streamer is not safe across threads/streams:
+    # loading the next clip's text encoder while a worker thread decodes died
+    # with "hostbuf_file_reader_read: device copy failed". Never overlap there.
+    try:
+        import comfy.memory_management as cmm
+        if getattr(cmm, "aimdo_enabled", False):
+            _LOG.info("Background decode: disabled -- dynamic VRAM (comfy-aimdo) cannot stream weights "
+                      "from two threads; decoding sequentially (start ComfyUI with --disable-dynamic-vram "
+                      "to allow it)")
+            return False
+    except Exception:
+        pass
+    if mode == "on":
+        return True
+    try:
+        import comfy.model_management as mm
+        video = _streams_from_latent(sampled_latent, "samples")[0]
+        needed = int(vae.memory_used_decode(tuple(video.shape), vae.vae_dtype))
+        total = int(mm.get_total_memory(mm.get_torch_device()))
+        ok = needed <= 0.2 * total
+        _LOG.info("Background decode auto: decode needs ~%.1f GB of %.0f GB -> %s",
+                  needed / 1024 ** 3, total / 1024 ** 3, "background" if ok else "sequential")
+        return ok
+    except Exception as exc:
+        _LOG.warning("Background decode auto check failed (%s); decoding sequentially", exc)
+        return False
 
 
 def _send_progress(owner, clip_index, total_clips, stage, message, pct=0.0):
@@ -154,8 +239,14 @@ class MiniMaxH3MasterExtender:
                 "ref_image_9": ("IMAGE",),
                 "attention_backend": (["comfy kitchen attention", "sage attention 2.2", "pytorch attention"], {"default": "comfy kitchen attention", "tooltip": "Attention backend for both sampling passes. Sage uses the installed SageAttention package. Validated clips remain cached."}),
                 # --- Sparse attention (H3SLAAttention from ComfyUI-PlagueKind-Nodes) ---
-                "sla_enabled": ("BOOLEAN", {"default": False, "tooltip": "Apply H3 Sparse Linear Attention (PlagueKind H3SLAAttention) to both passes. Needs ComfyUI-PlagueKind-Nodes; silently skipped if absent."}),
-                "sla_sparsity": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 0.95, "step": 0.05, "tooltip": "SLA sparsity ratio (fraction of key blocks skipped). 0.9 is the validated fast setting; below ~0.6 SLA is slower than dense attention."}),
+                "sla_enabled": ("BOOLEAN", {"default": False, "tooltip": "Block-sparse attention on both passes via core's BlockSparseAttention node (ComfyUI >= 0.35; falls back to PlagueKind H3SLAAttention on older cores). The dense backend above stays the fall-through. Roughly halves pass-2 step time on long clips."}),
+                "sla_sparsity": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 0.95, "step": 0.05, "tooltip": "Fraction of key blocks skipped for the sla / vsa methods (0.9 = keep 10%). 0.9 is the validated fast setting; below ~0.6 sparse attention is slower than dense. Ignored by sol-attn (uses tau)."}),
+                # --- Pass-2 temporal windows + background decode ---
+                "pass2_chunk_frames": ("INT", {"default": 124, "min": 0, "max": 3600, "step": 1, "tooltip": "Refine pass 2 in overlapping temporal windows of this many frames (snapped to H3's 17k+5 grid) via MMH3SplitUpscale, so long/HD clips never outgrow VRAM. 124 = 5 s windows. 0 = refine the whole clip in one pass (original behaviour). Clips at or below the window size are unaffected."}),
+                "pass2_chunk_overlap": ("INT", {"default": 22, "min": 0, "max": 240, "step": 1, "tooltip": "Overlap between pass-2 windows, in frames."}),
+                "async_decode": (["off", "auto", "on"], {"default": "off", "tooltip": "EXPERIMENTAL, full_batch only: decode/cache the finished clip in a background thread while the next clip encodes and drafts; the identity guide frame is taken from the latent tail so the next clip never waits. Not available with dynamic VRAM (comfy-aimdo cannot stream weights from two threads) and unsafe if the decode triggers model eviction, so it defaults to off. auto = on only when the decode is small enough to sit beside the resident UNet."}),
+                "sparse_method": (["sla", "sol-attn", "vsa"], {"default": "sla", "tooltip": "Selection method for core BlockSparseAttention when sla_enabled is on. sla: keep a fixed top-k percent of key blocks (1 - sla_sparsity). sol-attn: training-free adaptive threshold per head/query block (tau), the choice for models without an SLA-distilled LoRA such as PDD. vsa: FastVideo cube attention, only with FastH3-VSA weights."}),
+                "sparse_tau": ("FLOAT", {"default": 1.3, "min": 0.0, "max": 4.0, "step": 0.05, "tooltip": "sol-attn threshold in score sigmas. Higher = sparser: 1.0 keeps ~16% of key blocks, 1.5 ~7%, 2.0 ~2.7%."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -199,6 +290,11 @@ class MiniMaxH3MasterExtender:
         attention_backend="comfy kitchen attention",
         sla_enabled=False,
         sla_sparsity=0.9,
+        pass2_chunk_frames=124,
+        pass2_chunk_overlap=22,
+        async_decode="off",
+        sparse_method="sla",
+        sparse_tau=1.3,
         **kwargs,
     ):
         owner = str(unique_id if unique_id is not None else "master_extender")
@@ -241,7 +337,8 @@ class MiniMaxH3MasterExtender:
         settings = [pass1_resolution, pass2_resolution, pass2_denoise, pdd_nfe,
                     pdd_file, upscaler_model, context_length, audio_context_length,
                     identity_continuity, refs_json,
-                    bool(sla_enabled), float(sla_sparsity)]
+                    bool(sla_enabled), float(sla_sparsity), str(sparse_method), float(sparse_tau),
+                    int(pass2_chunk_frames), int(pass2_chunk_overlap)]
         signature = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         for dp, mp, state in ((data_path, manifest_path, manifest),
                                (draft_path, draft_manifest_path, draft_manifest)):
@@ -265,6 +362,19 @@ class MiniMaxH3MasterExtender:
 
         disk_join = MiniMaxH3MotionContextDiskJoin()
 
+        # Background decode of the previous clip (full_batch only). The manifest
+        # is shared, so anything that writes it -- the next clip's disk join,
+        # a validated-clip reuse -- must wait for the worker first, and the
+        # engine waits before any large sampling pass.
+        background = {"worker": None}
+
+        def _finish_background():
+            worker = background["worker"]
+            if worker is None:
+                return None
+            background["worker"] = None
+            return worker.wait()
+
         # Instantiate Pure PDD Engine
         engine = PurePDDEngine(
             model=model,
@@ -280,6 +390,12 @@ class MiniMaxH3MasterExtender:
             smart_offload=smart_offload,
             sla_enabled=sla_enabled,
             sla_sparsity=sla_sparsity,
+            pass2_chunk_frames=pass2_chunk_frames,
+            pass2_chunk_overlap=pass2_chunk_overlap,
+            sparse_method=sparse_method,
+            sparse_tau=sparse_tau,
+            background_busy=lambda: background["worker"] is not None and background["worker"].busy(),
+            wait_background=lambda: _finish_background(),
         )
 
         previous_handle = None
@@ -302,6 +418,7 @@ class MiniMaxH3MasterExtender:
 
             # 1. Reuse existing validated clip from disk cache
             if is_validated:
+                _finish_background()
                 if not is_on_disk:
                     _LOG.warning(f"Clip {i + 1} marked validated but not on disk; will re-render.")
                     clip_cfg["validated"] = False
@@ -380,7 +497,9 @@ class MiniMaxH3MasterExtender:
                 progress_cb=progress_hook,
             )
 
-            # Save clip to disk cache
+            # Save clip to disk cache (the manifest is shared with a running
+            # background decode, so that must be finished first).
+            _finish_background()
             trim_frames = engine.last_trim_frames
             draft_result = disk_join.join(
                 samples=engine.last_draft, trim_frames=trim_frames, validated=False,
@@ -402,12 +521,36 @@ class MiniMaxH3MasterExtender:
             previous_handle = join_result[0]
             previous_proxy = join_result[1]
             progress_hook("decode", f"Clip {i + 1} - Decoding and caching preview...", 0.9)
-            state, _ = cache_full_batch_ref2va_segment(
-                data_path, manifest_path, i, vae, audio_vae, FPS,
-                export_profile=export_profile,
+            more_clips_pending = any(
+                not bool(c.get("validated", False)) for c in clips[i + 1:]
             )
-            last_frame_tensor = _load_guide_frame(data_path, state["segments"][i])
-            progress_hook("done", f"Clip {i + 1} completed!", 1.0)
+            go_async = (
+                str(run_mode) == "full_batch" and more_clips_pending
+                and _async_decode_allowed(async_decode, vae, sampled_latent)
+            )
+            if go_async:
+                # The next clip only needs the last frame as its identity guide;
+                # take it from the latent tail now and decode the rest while
+                # the next clip encodes and drafts.
+                video_latent = _streams_from_latent(sampled_latent, "samples")[0]
+                last_frame_tensor = decode_guide_frame(vae, video_latent)
+                del video_latent
+                background["worker"] = _DecodeWorker(
+                    lambda idx=i: cache_full_batch_ref2va_segment(
+                        data_path, manifest_path, idx, vae, audio_vae, FPS,
+                        export_profile=export_profile,
+                    ),
+                    label=f"clip {i + 1}",
+                )
+                progress_hook("done", f"Clip {i + 1} sampled; decoding in background", 1.0)
+            else:
+                motion_context_disk.DECODE_ALLOW_RECLAIM = True
+                state, _ = cache_full_batch_ref2va_segment(
+                    data_path, manifest_path, i, vae, audio_vae, FPS,
+                    export_profile=export_profile,
+                )
+                last_frame_tensor = _load_guide_frame(data_path, state["segments"][i])
+                progress_hook("done", f"Clip {i + 1} completed!", 1.0)
             rendered_count += 1
 
             # In clip_by_clip mode: stop after rendering the first pending clip so user can validate!
@@ -415,6 +558,7 @@ class MiniMaxH3MasterExtender:
                 _LOG.info(f"Clip-by-clip mode: paused after rendering Clip {i + 1} for user validation.")
                 break
 
+        _finish_background()
         status_msg = f"Completed {rendered_count} clip(s). Validated: {validated_count}/{len(clips)}"
         return (
             previous_handle,

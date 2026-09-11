@@ -1061,8 +1061,71 @@ def _build_pair_video(data_path, prev_desc, curr_desc):
     return chain, meta
 
 
+# Set to False by the Master node while a decode runs in a background thread
+# alongside sampling: evicting the UNet from that thread would stall the pass.
+DECODE_ALLOW_RECLAIM = True
+_DECODE_RECLAIM_MARGIN = 2 * 1024 ** 3
+
+
+def _loaded_entries_for(patcher):
+    import comfy.model_management as mm
+    return [lm for lm in mm.current_loaded_models if getattr(lm, "model", None) is patcher]
+
+
+def decode_video_latent(vae, latent):
+    """VAE-decode an H3 video latent with the memory it actually needs.
+
+    Core's ``VAE.decode`` asks ``load_models_gpu`` for its estimate, but under
+    dynamic VRAM that never evicts the resident UNet, so a long HD decode pages
+    weights for its whole duration instead of tiling (a 15 s 1080p clip took
+    >15 min this way). Evict everything but the VAE first when allowed, then
+    decode; if the estimate still exceeds what is free, decode in temporal
+    tiles instead of letting the allocator thrash.
+    """
+    import comfy.model_management as mm
+
+    device = mm.get_torch_device()
+    try:
+        needed = int(vae.memory_used_decode(tuple(latent.shape), vae.vae_dtype))
+    except Exception:
+        needed = 0
+
+    if DECODE_ALLOW_RECLAIM and needed:
+        try:
+            mm.free_memory(needed + _DECODE_RECLAIM_MARGIN, device,
+                           keep_loaded=_loaded_entries_for(getattr(vae, "patcher", None)))
+            mm.soft_empty_cache(force=True)
+        except Exception as exc:
+            log.warning("H3 decode: VRAM reclaim skipped (%s)", exc)
+
+    free = mm.get_free_memory(device)
+    if (needed and latent.ndim == 5 and latent.shape[2] > 2
+            and needed > free * 0.9 and hasattr(vae, "decode_tiled_3d")):
+        b, c, t, h, w = (int(x) for x in latent.shape)
+        tile_t = t
+        while tile_t > 2 and vae.memory_used_decode((b, c, tile_t, h, w), vae.vae_dtype) > free * 0.8:
+            tile_t = -(-tile_t // 2)
+        log.info("H3 decode: %.1f GB needed vs %.1f GB free -> temporal tiles of %d latent frames",
+                 needed / 1024 ** 3, free / 1024 ** 3, tile_t)
+        out = vae.decode_tiled_3d(latent, tile_t=tile_t, tile_x=w, tile_y=h, overlap=(1, 0, 0))
+        return out.to(vae.output_device).movedim(1, -1)
+
+    return vae.decode(latent)
+
+
+def decode_guide_frame(vae, video_latent, context_latent_frames=3):
+    """Decode only the tail of a clip's video latent and return its last frame
+    as a (1, H, W, 3) CPU tensor -- the identity guide the next clip needs,
+    available long before the full decode has run."""
+    tail = video_latent[:, :, -int(context_latent_frames):].contiguous()
+    frames = vae.decode(tail)
+    if frames.ndim == 5:
+        frames = frames.reshape(-1, frames.shape[-3], frames.shape[-2], frames.shape[-1])
+    return frames[-1:].to(device="cpu").clone()
+
+
 def _decode_pair_video(vae, chain, meta):
-    decoded = vae.decode(chain)
+    decoded = decode_video_latent(vae, chain)
     if decoded.ndim == 5:
         decoded = decoded.reshape(
             -1, decoded.shape[-3], decoded.shape[-2], decoded.shape[-1]
@@ -2837,7 +2900,7 @@ def _render_one_final_video_segment(
 
     if i == 0:
         v = _load_segment_video(data_path, curr)
-        video = vae.decode(v)
+        video = decode_video_latent(vae, v)
         if progress is not None:
             progress.advance()
         if video.ndim == 5:
