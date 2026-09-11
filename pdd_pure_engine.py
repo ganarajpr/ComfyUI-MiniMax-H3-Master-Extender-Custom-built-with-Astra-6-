@@ -9,8 +9,11 @@ Stage 2: 3D Latent Upscaling (MinimaxH3LatentUpscaler3D) + Concat AV
 Stage 3: Pass 2 High-Res Refinement via PDD Quality Tail (denoise 0.25)
 """
 
+import inspect
 import math
 import logging
+import os
+import sys
 import torch
 import comfy.model_management
 import comfy.sample
@@ -181,9 +184,70 @@ class PurePDDEngine:
         pdd_model.set_model_optimized_attention(attention_function)
         _LOG.info("PDD sampling attention: %s", self.attention_backend)
 
+        # Chunk the H3 feed-forward when KJNodes >= 1.5.1 provides the patch.
+        # On long/HD clips the pass-2 OOM happens inside block.mlp: the fc1
+        # output alone is tokens x 2*ffn_dim (~6.4 GB at 1344x768 / 362 frames).
+        # Splitting the token axis into chunks divides that peak by the chunk
+        # count at negligible cost, and the object patches survive clone().
+        # H3_MASTER_FF_CHUNKS overrides the count (1 disables).
+        ff_chunks = int(os.environ.get("H3_MASTER_FF_CHUNKS", "4"))
+        chunk_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxChunkFeedForward")
+        if chunk_cls is not None and ff_chunks > 1:
+            try:
+                res = chunk_cls.execute(pdd_model, chunks=ff_chunks, seq_threshold=16384)
+                chunked = _safe_get_output(res, 0, "model")
+                if chunked is not None:
+                    pdd_model = chunked
+                    _LOG.info("PDD engine: feed-forward chunking enabled (%d chunks, >16k tokens)", ff_chunks)
+            except Exception as exc:
+                _LOG.warning("PDD engine: could not enable feed-forward chunking (%s)", exc)
+
         self.prepared_model = pdd_model
         self.pass1_sigmas = sigmas_p1
         return self.prepared_model, self.pass1_sigmas
+
+    # Make room for activations before each sampling pass.
+    # With dynamic VRAM enabled, core's free_memory() does not evict one dynamic
+    # model for another ("0 models unloaded"), so the 32B text encoder that just
+    # encoded the prompt stays resident while the UNet needs tens of GB of
+    # activations for a long HD clip -> torch.OutOfMemoryError mid-pass
+    # (reproduced on clip 3 of a 3 x 15 s @ 1344x768 project on a 32 GB card).
+    # Estimate the activation demand from the packed token count, ask core to
+    # evict everything except the sampling model, then return cached blocks to
+    # the driver so the allocator can serve one large contiguous request.
+    ACTIVATION_BYTES_PER_TOKEN = 64 * 1024      # fc1 output measured ~62 KB/token
+    ACTIVATION_LIVE_TENSORS = 3
+
+    def _reclaim_vram(self, model_patcher, samples):
+        import gc
+        mm = comfy.model_management
+        try:
+            device = mm.get_torch_device()
+            video = samples
+            try:
+                video, _ = _streams_from_latent({"samples": samples}, "samples")
+            except Exception:
+                pass
+            shape = tuple(int(s) for s in getattr(video, "shape", ()))
+            if len(shape) == 5:
+                _, _, t, h, w = shape
+            elif len(shape) == 4:
+                _, t, h, w = shape
+            else:
+                t, h, w = 1, 64, 64
+            tokens = t * ((h + 1) // 2) * ((w + 1) // 2)
+            required = int(tokens * self.ACTIVATION_BYTES_PER_TOKEN * self.ACTIVATION_LIVE_TENSORS)
+            required = max(required, 6 * 1024 ** 3)
+            gc.collect()
+            before = mm.get_free_memory(device)
+            keep = [model_patcher] if model_patcher is not None else []
+            mm.free_memory(required, device, keep_loaded=keep)
+            mm.soft_empty_cache(force=True)
+            after = mm.get_free_memory(device)
+            _LOG.info("PDD engine: VRAM reclaim before sampling -- %d tokens, want %.1f GB, free %.1f -> %.1f GB",
+                      tokens, required / 1024 ** 3, before / 1024 ** 3, after / 1024 ** 3)
+        except Exception as exc:
+            _LOG.warning("PDD engine: VRAM reclaim skipped (%s)", exc)
 
     def _sample_euler(self, model, positive, latent_image, sigmas, seed):
         """Standard Euler sampling using ComfyUI core sampler internals directly.
@@ -236,6 +300,8 @@ class PurePDDEngine:
 
         disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
 
+        self._reclaim_vram(guider.model_patcher, latent["samples"])
+
         samples = guider.sample(
             noise_obj.generate_noise(latent),
             latent["samples"],
@@ -266,25 +332,44 @@ class PurePDDEngine:
         else:
             v_tensor = video_latent_4d_or_5d
 
+        # Current Comfyui_Minimax_h3_latent_Upscaler builds expose execute() as
+        # (latent, model_name, mode, align, enable_temporal_chunking, force_unload,
+        # device, precision); the (keep_proportion, offload_after_upscale) kwargs
+        # this engine was written against no longer exist and raise TypeError.
+        # Resolve the mode key from the node's own enum when present and pass only
+        # the kwargs the installed signature accepts, so either version works.
+        mode_key = "target dimensions"
+        try:
+            _enum = getattr(sys.modules[upscaler_cls.__module__], "UpscaleMode", None)
+            if _enum is not None:
+                mode_key = getattr(_enum, "TARGET_DIMENSIONS", mode_key)
+        except Exception:
+            pass
         mode_config = {
-            "mode": "target dimensions",
+            "mode": mode_key,
             "width": int(target_w),
             "height": int(target_h),
         }
 
-        # MinimaxH3LatentUpscaler3D.execute signature:
-        # (latent, model_name, mode, align, keep_proportion, device, precision, offload_after_upscale)
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        res = upscaler_cls.execute(
-            latent={"samples": v_tensor},
-            model_name=self.upscaler_model,
-            mode=mode_config,
-            align=32,
-            keep_proportion=False,
-            device=device,
-            precision="fp16",
-            offload_after_upscale=self.smart_offload,
-        )
+        candidate_kwargs = {
+            "latent": {"samples": v_tensor},
+            "model_name": self.upscaler_model,
+            "mode": mode_config,
+            "align": 32,
+            "keep_proportion": False,
+            "device": device,
+            "precision": "fp16",
+            "offload_after_upscale": self.smart_offload,
+            "enable_temporal_chunking": True,
+            "force_unload": bool(self.smart_offload),
+        }
+        try:
+            accepted = set(inspect.signature(upscaler_cls.execute).parameters)
+            call_kwargs = {k: v for k, v in candidate_kwargs.items() if k in accepted}
+        except (TypeError, ValueError):
+            call_kwargs = candidate_kwargs
+        res = upscaler_cls.execute(**call_kwargs)
 
         # Result is io.NodeOutput or tuple/dict containing {"samples": out}
         raw_out = _safe_get_output(res, 0, "latent")
