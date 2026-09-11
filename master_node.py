@@ -153,6 +153,9 @@ class MiniMaxH3MasterExtender:
                 "ref_image_8": ("IMAGE",),
                 "ref_image_9": ("IMAGE",),
                 "attention_backend": (["comfy kitchen attention", "sage attention 2.2", "pytorch attention"], {"default": "comfy kitchen attention", "tooltip": "Attention backend for both sampling passes. Sage uses the installed SageAttention package. Validated clips remain cached."}),
+                # --- Sparse attention (H3SLAAttention from ComfyUI-PlagueKind-Nodes) ---
+                "sla_enabled": ("BOOLEAN", {"default": False, "tooltip": "Apply H3 Sparse Linear Attention (PlagueKind H3SLAAttention) to both passes. Needs ComfyUI-PlagueKind-Nodes; silently skipped if absent."}),
+                "sla_sparsity": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 0.95, "step": 0.05, "tooltip": "SLA sparsity ratio (fraction of key blocks skipped). 0.9 is the validated fast setting; below ~0.6 SLA is slower than dense attention."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -194,6 +197,8 @@ class MiniMaxH3MasterExtender:
         prompt=None,
         extra_pnginfo=None,
         attention_backend="comfy kitchen attention",
+        sla_enabled=False,
+        sla_sparsity=0.9,
         **kwargs,
     ):
         owner = str(unique_id if unique_id is not None else "master_extender")
@@ -235,7 +240,8 @@ class MiniMaxH3MasterExtender:
         draft_path, draft_manifest_path, draft_manifest = _manifest_for_first(draft_owner, FPS)
         settings = [pass1_resolution, pass2_resolution, pass2_denoise, pdd_nfe,
                     pdd_file, upscaler_model, context_length, audio_context_length,
-                    identity_continuity, refs_json]
+                    identity_continuity, refs_json,
+                    bool(sla_enabled), float(sla_sparsity)]
         signature = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         for dp, mp, state in ((data_path, manifest_path, manifest),
                                (draft_path, draft_manifest_path, draft_manifest)):
@@ -272,6 +278,8 @@ class MiniMaxH3MasterExtender:
             shift_audio=3.0,
             attention_backend=attention_backend,
             smart_offload=smart_offload,
+            sla_enabled=sla_enabled,
+            sla_sparsity=sla_sparsity,
         )
 
         previous_handle = None

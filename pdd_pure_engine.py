@@ -107,8 +107,12 @@ class PurePDDEngine:
         shift_audio=3.0,
         attention_backend="comfy kitchen attention",
         smart_offload=True,
+        sla_enabled=False,
+        sla_sparsity=0.9,
     ):
         self.raw_model = model
+        self.sla_enabled = bool(sla_enabled)
+        self.sla_sparsity = float(sla_sparsity)
         self.clip = clip
         self.vae = vae
         self.audio_vae = audio_vae
@@ -184,9 +188,37 @@ class PurePDDEngine:
         pdd_model.set_model_optimized_attention(attention_function)
         _LOG.info("PDD sampling attention: %s", self.attention_backend)
 
+        # 3. Optional sparse attention (PlagueKind H3SLAAttention). It installs
+        # the same transformer_options["optimized_attention_override"] hook as
+        # the dense backend above, so it must come LAST or it is never invoked.
+        # Its dense fall-through (short sequences, dense_last_steps) uses
+        # ComfyUI's default attention, not the backend selected above.
+        pdd_model = self._apply_sla(pdd_model)
+
         self.prepared_model = pdd_model
         self.pass1_sigmas = sigmas_p1
         return self.prepared_model, self.pass1_sigmas
+
+    def _apply_sla(self, model):
+        """Block-sparse attention (PlagueKind H3SLAAttention) for both passes.
+        On long sequences SLA at 0.9 roughly halves the per-step time
+        (measured 39 -> 22 s/step at 1344x768 / 362 frames)."""
+        if not self.sla_enabled:
+            return model
+        sla_cls = nodes.NODE_CLASS_MAPPINGS.get("H3SLAAttention")
+        if sla_cls is None:
+            _LOG.warning("SLA requested but H3SLAAttention (ComfyUI-PlagueKind-Nodes) is not installed; skipping")
+            return model
+        try:
+            res = sla_cls.execute(model, sparsity_ratio=self.sla_sparsity, block_size="64",
+                                  min_seq_len=8192, dense_last_steps=0, protect_audio=True, enabled=True)
+            out = _safe_get_output(res, 0, "model")
+            if out is not None:
+                _LOG.info("SLA sparse attention enabled: sparsity=%.2f block=64 min_seq_len=8192", self.sla_sparsity)
+                return out
+        except Exception as exc:
+            _LOG.warning("SLA could not be applied (%s); continuing dense", exc)
+        return model
 
     # Make room for activations before each sampling pass.
     # With dynamic VRAM enabled, core's free_memory() does not evict one dynamic
@@ -477,6 +509,36 @@ class PurePDDEngine:
                 int(audio_context_length),
             )
 
+        # Pass 2 conditioning is encoded NOW, while the text encoder is still
+        # resident, instead of between the passes. It only depends on the
+        # prompt, the reference images (sized to the target resolution) and the
+        # previous clip's final latent, all of which are known here -- so the
+        # UNet can stay resident straight through pass 1 -> upscale -> pass 2
+        # and the text-encoder/UNet round trip per clip is halved.
+        out_p2 = MiniMaxH3ReferenceToVideo.execute(
+            clip=self.clip,
+            vae=self.vae,
+            audio_vae=self.audio_vae,
+            prompt=prompt,
+            width=w2,
+            height=h2,
+            length=frame_count,
+            ref_image_size="match",
+            ref_images=ref_images,
+        )
+        pos_p2 = _safe_get_output(out_p2, 0, "positive")
+        latent_p2 = _safe_get_output(out_p2, 1, "latent")
+        if clip_index > 0 and previous_latent is not None:
+            pos_p2, trim_p2, _, _, _ = self.motion_ram.apply(
+                pos_p2,
+                latent_p2,
+                previous_latent,
+                str(context_length),
+                int(audio_context_length),
+            )
+            self.last_trim_frames = int(trim_p2)
+        del out_p1, out_p2
+
         # Sample Pass 1 with Euler + PDD 8-step sigmas
         sampled_p1 = self._sample_euler(
             model=model,
@@ -520,34 +582,8 @@ class PurePDDEngine:
             progress_cb("pass2", f"Clip {clip_index + 1} - Pass 2 (Refine {w2}x{h2} with PDD tail)...", 0.7)
 
         _LOG.info(
-            f"Clip {clip_index + 1}: Pass 2 Rebuilding Conditioning at {w2}x{h2}, quality tail denoise={pass2_denoise}"
+            f"Clip {clip_index + 1}: Pass 2 refining at {w2}x{h2} (conditioning pre-encoded), quality tail denoise={pass2_denoise}"
         )
-
-        out_p2 = MiniMaxH3ReferenceToVideo.execute(
-            clip=self.clip,
-            vae=self.vae,
-            audio_vae=self.audio_vae,
-            prompt=prompt,
-            width=w2,
-            height=h2,
-            length=frame_count,
-            ref_image_size="match",
-            ref_images=ref_images,
-        )
-        pos_p2 = _safe_get_output(out_p2, 0, "positive")
-        latent_p2 = _safe_get_output(out_p2, 1, "latent")
-
-        # Attach motion context at target resolution for clip > 0
-        if clip_index > 0 and previous_latent is not None:
-            pos_p2, trim_p2, _, _, _ = self.motion_ram.apply(
-                pos_p2,
-                latent_p2,
-                previous_latent,
-                str(context_length),
-                int(audio_context_length),
-            )
-
-            self.last_trim_frames = int(trim_p2)
 
         # Get PDD Quality Tail sigmas
         scheduler_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3PDDAccScheduler")
