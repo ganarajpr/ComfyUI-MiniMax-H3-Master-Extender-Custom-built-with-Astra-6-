@@ -238,8 +238,8 @@ class MiniMaxH3MasterExtender:
                 "ref_image_8": ("IMAGE",),
                 "ref_image_9": ("IMAGE",),
                 "attention_backend": (["comfy kitchen attention", "sage attention 2.2", "pytorch attention"], {"default": "comfy kitchen attention", "tooltip": "Attention backend for both sampling passes. Sage uses the installed SageAttention package. Validated clips remain cached."}),
-                # --- Sparse attention (H3SLAAttention from ComfyUI-PlagueKind-Nodes) ---
-                "sla_enabled": ("BOOLEAN", {"default": False, "tooltip": "Block-sparse attention on both passes via core's BlockSparseAttention node (ComfyUI >= 0.35; falls back to PlagueKind H3SLAAttention on older cores). The dense backend above stays the fall-through. Roughly halves pass-2 step time on long clips."}),
+                # --- Block-sparse attention (core BlockSparseAttention, ComfyUI >= 0.35) ---
+                "sla_enabled": ("BOOLEAN", {"default": False, "tooltip": "Block-sparse attention on both passes via core's BlockSparseAttention node (ComfyUI >= 0.35). The dense backend above stays the fall-through. Roughly halves pass-2 step time on long clips."}),
                 "sla_sparsity": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 0.95, "step": 0.05, "tooltip": "Fraction of key blocks skipped for the sla / vsa methods (0.9 = keep 10%). 0.9 is the validated fast setting; below ~0.6 sparse attention is slower than dense. Ignored by sol-attn (uses tau)."}),
                 # --- Pass-2 temporal windows + background decode ---
                 "pass2_chunk_frames": ("INT", {"default": 124, "min": 0, "max": 3600, "step": 1, "tooltip": "Refine pass 2 in overlapping temporal windows of this many frames (snapped to H3's 17k+5 grid) via MMH3SplitUpscale, so long/HD clips never outgrow VRAM. 124 = 5 s windows. 0 = refine the whole clip in one pass (original behaviour). Clips at or below the window size are unaffected."}),

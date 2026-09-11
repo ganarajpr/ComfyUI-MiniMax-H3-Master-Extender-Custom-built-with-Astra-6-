@@ -202,11 +202,9 @@ class PurePDDEngine:
         pdd_model.set_model_optimized_attention(attention_function)
         _LOG.info("PDD sampling attention: %s", self.attention_backend)
 
-        # 3. Optional sparse attention (PlagueKind H3SLAAttention). It installs
-        # the same transformer_options["optimized_attention_override"] hook as
-        # the dense backend above, so it must come LAST or it is never invoked.
-        # Its dense fall-through (short sequences, dense_last_steps) uses
-        # ComfyUI's default attention, not the backend selected above.
+        # 3. Optional block-sparse attention (core BlockSparseAttention). It
+        # wraps the dense backend installed above as its fall-through, so it
+        # must be applied after it.
         pdd_model = self._apply_sla(pdd_model)
 
         self.prepared_model = pdd_model
@@ -225,53 +223,42 @@ class PurePDDEngine:
         halves the per-step time (measured 39 -> 22 s/step at 1344x768 / 362
         frames at 90% sparsity).
 
-        Prefers core's BlockSparseAttention (ComfyUI >= 0.35): it chains the
+        Uses core's BlockSparseAttention (ComfyUI >= 0.35): it chains the
         dense backend selected above as its fall-through and re-installs itself
         every step, keeps the H3 text/audio/reference rows exact, and offers
-        three selection methods (sla / sol-attn / vsa). PlagueKind's
-        H3SLAAttention is used only when the core node is unavailable."""
+        three selection methods (sla / sol-attn / vsa)."""
         if not self.sla_enabled:
             return model
         native = nodes.NODE_CLASS_MAPPINGS.get("BlockSparseAttention")
-        if native is not None:
-            method = str(getattr(self, "sparse_method", "sla") or "sla")
-            keep_percent = max(0.5, min(95.0, (1.0 - self.sla_sparsity) * 100.0))
-            selection = {"selection": method}
-            if method == "sol-attn":
-                selection["tau"] = float(getattr(self, "sparse_tau", 1.3))
-            else:
-                selection["keep_percent"] = keep_percent
-            try:
-                res = native.execute(
-                    model, selection=selection,
-                    start_percent=self.SPARSE_START_PERCENT, end_percent=1.0,
-                    dense_blocks="", min_tokens=self.SPARSE_MIN_TOKENS,
-                    extra_tokens=0 if method == "vsa" else self.SPARSE_EXTRA_TOKENS,
-                    sink_conditioning="exact_kv_and_rows", verbose=False,
-                )
-                out = _safe_get_output(res, 0, "model")
-                if out is not None:
-                    detail = (f"tau={selection['tau']}" if method == "sol-attn"
-                              else f"keep={keep_percent:.1f}% (sparsity {self.sla_sparsity:.2f})")
-                    _LOG.info("Sparse attention (core BlockSparseAttention, %s): %s, dense before %.0f%%, "
-                              "min_tokens %d, dense fall-through = %s", method, detail,
-                              self.SPARSE_START_PERCENT * 100, self.SPARSE_MIN_TOKENS, self.attention_backend)
-                    return out
-            except Exception as exc:
-                _LOG.warning("Core BlockSparseAttention could not be applied (%s); trying PlagueKind SLA", exc)
-        sla_cls = nodes.NODE_CLASS_MAPPINGS.get("H3SLAAttention")
-        if sla_cls is None:
-            _LOG.warning("SLA requested but H3SLAAttention (ComfyUI-PlagueKind-Nodes) is not installed; skipping")
+        if native is None:
+            _LOG.warning("Sparse attention requested but core BlockSparseAttention is unavailable "
+                         "(needs ComfyUI >= 0.35); continuing dense")
             return model
+        method = str(getattr(self, "sparse_method", "sla") or "sla")
+        keep_percent = max(0.5, min(95.0, (1.0 - self.sla_sparsity) * 100.0))
+        selection = {"selection": method}
+        if method == "sol-attn":
+            selection["tau"] = float(getattr(self, "sparse_tau", 1.3))
+        else:
+            selection["keep_percent"] = keep_percent
         try:
-            res = sla_cls.execute(model, sparsity_ratio=self.sla_sparsity, block_size="64",
-                                  min_seq_len=8192, dense_last_steps=0, protect_audio=True, enabled=True)
+            res = native.execute(
+                model, selection=selection,
+                start_percent=self.SPARSE_START_PERCENT, end_percent=1.0,
+                dense_blocks="", min_tokens=self.SPARSE_MIN_TOKENS,
+                extra_tokens=0 if method == "vsa" else self.SPARSE_EXTRA_TOKENS,
+                sink_conditioning="exact_kv_and_rows", verbose=False,
+            )
             out = _safe_get_output(res, 0, "model")
             if out is not None:
-                _LOG.info("SLA sparse attention enabled: sparsity=%.2f block=64 min_seq_len=8192", self.sla_sparsity)
+                detail = (f"tau={selection['tau']}" if method == "sol-attn"
+                          else f"keep={keep_percent:.1f}% (sparsity {self.sla_sparsity:.2f})")
+                _LOG.info("Sparse attention (core BlockSparseAttention, %s): %s, dense before %.0f%%, "
+                          "min_tokens %d, dense fall-through = %s", method, detail,
+                          self.SPARSE_START_PERCENT * 100, self.SPARSE_MIN_TOKENS, self.attention_backend)
                 return out
         except Exception as exc:
-            _LOG.warning("SLA could not be applied (%s); continuing dense", exc)
+            _LOG.warning("Core BlockSparseAttention could not be applied (%s); continuing dense", exc)
         return model
 
     # Make room for activations before each sampling pass.
