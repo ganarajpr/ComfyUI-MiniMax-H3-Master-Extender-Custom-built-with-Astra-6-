@@ -26,6 +26,59 @@ function clampDuration(sec, beyond) {
     return Math.min(max, Math.max(DUR_MIN, n));
 }
 
+// Conditional widget visibility on the Master node. A hidden widget keeps its
+// value and its slot in widgets_values; it just draws with zero height.
+const TURBO_ONLY_WIDGETS = ["turbo_lora", "turbo_lora_strength", "turbo_sampler", "turbo_scheduler"];
+const PDD_ONLY_WIDGETS = ["pdd_file"];
+const SLA_ONLY_WIDGETS = ["sla_sparsity"];
+
+function setWidgetVisible(widget, visible) {
+    if (!widget) return;
+    if (widget._origType === undefined) {
+        widget._origType = widget.type;
+        widget._origComputeSize = widget.computeSize;
+    }
+    if (visible) {
+        widget.type = widget._origType;
+        widget.computeSize = widget._origComputeSize;
+    } else {
+        widget.type = "hidden";
+        widget.computeSize = () => [0, -4];
+    }
+}
+
+function setupModeWidgets(node) {
+    const byName = (name) => node.widgets?.find(w => w.name === name);
+    const accel = byName("accel_mode");
+    const sla = byName("sla_enabled");
+    if (!accel && !sla) return;
+
+    const apply = () => {
+        const turbo = String(accel?.value ?? "").toLowerCase().startsWith("turbo");
+        const slaOn = sla ? !!sla.value : false;
+        TURBO_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), turbo));
+        PDD_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), !turbo));
+        SLA_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), slaOn));
+        // Let LiteGraph recompute the node height without shrinking the DOM
+        // editor that sits at the bottom of the node.
+        const size = node.computeSize();
+        node.setSize([Math.max(node.size[0], size[0]), Math.max(node.size[1], size[1])]);
+        node.setDirtyCanvas(true, true);
+    };
+    node.applyModeWidgets = apply;
+
+    for (const w of [accel, sla]) {
+        if (!w) continue;
+        const original = w.callback;
+        w.callback = function () {
+            const r = original?.apply(this, arguments);
+            apply();
+            return r;
+        };
+    }
+    apply();
+}
+
 app.registerExtension({
     name: "MiniMaxH3.MasterExtender",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
@@ -110,6 +163,7 @@ app.registerExtension({
                     console.warn("MiniMax Master: invalid saved clips JSON", error);
                 }
                 renderUI();
+                node.applyModeWidgets?.();
                 return result;
             };
 
@@ -361,6 +415,11 @@ app.registerExtension({
 
             renderUI();
             node.addDOMWidget("master_ui", "Master Director UI", container);
+
+            // Show the turbo-only inputs only in Turbo LoRA mode, the PDD file
+            // only in PDD mode, and the SLA sparsity only when SLA is on.
+            // Hidden widgets keep their values, so switching back loses nothing.
+            setupModeWidgets(node);
 
             // Real-time WebSocket Progress Listener
             const progressHandler = (event) => {
