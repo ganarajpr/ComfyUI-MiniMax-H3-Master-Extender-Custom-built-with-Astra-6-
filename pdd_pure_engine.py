@@ -347,10 +347,18 @@ class PurePDDEngine:
             keep = []
             if model_patcher is not None:
                 keep = [lm for lm in mm.current_loaded_models if getattr(lm, "model", None) is model_patcher]
-            mm.free_memory(required, device, keep_loaded=keep)
+            # Evict EVERYTHING but the sampling model, not just enough for the
+            # activation estimate. free_memory() stops as soon as the request is
+            # met, and when the text encoder / VAEs were left resident the UNet
+            # itself ended up partly paged out: identical drafts then ran at
+            # 6-18 s/step instead of 2.5 s/step because every step re-streamed
+            # weights. The VAEs reload in a second or two when the decode needs
+            # them, which is far cheaper than a paging pass.
+            mm.free_memory(1e30, device, keep_loaded=keep)
             mm.soft_empty_cache(force=True)
             after = mm.get_free_memory(device)
-            _LOG.info("PDD engine: VRAM reclaim before sampling -- %d tokens, want %.1f GB, free %.1f -> %.1f GB",
+            _LOG.info("PDD engine: VRAM reclaim before sampling -- %d tokens, need ~%.1f GB, evicted all but the "
+                      "sampling model: free %.1f -> %.1f GB",
                       tokens, required / 1024 ** 3, before / 1024 ** 3, after / 1024 ** 3)
         except Exception as exc:
             _LOG.warning("PDD engine: VRAM reclaim skipped (%s)", exc)
