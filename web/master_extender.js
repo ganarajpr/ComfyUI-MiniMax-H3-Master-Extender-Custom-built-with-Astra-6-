@@ -105,6 +105,22 @@ function ensureHighlightStyles() {
     document.head.appendChild(style);
 }
 
+// Card preview: the "## summary" section when the prompt has one, else the
+// prompt from the top. Blank lines are dropped so the four visible lines count.
+function previewText(prompt) {
+    const lines = (prompt || "").split(/\r?\n/);
+    const start = lines.findIndex((l) => /^\s*#{1,6}\s+summary\s*$/i.test(l));
+    if (start >= 0) {
+        const body = [];
+        for (let i = start + 1; i < lines.length; i++) {
+            if (/^\s*#{1,6}\s+\S/.test(lines[i])) break;
+            if (lines[i].trim()) body.push(lines[i]);
+        }
+        if (body.length) return { text: body.join("\n"), fromSummary: true };
+    }
+    return { text: lines.filter((l) => l.trim()).join("\n"), fromSummary: false };
+}
+
 function describePrompt(text) {
     const trimmed = (text || "").trim();
     if (!trimmed) return "empty";
@@ -598,10 +614,14 @@ app.registerExtension({
                     const promptMeta = card.querySelector(".prompt-meta");
                     const paintPreview = () => {
                         const text = clip.prompt || "";
+                        const { text: shown, fromSummary } = previewText(text);
                         preview.innerHTML = text.trim()
-                            ? highlightH3(text)
+                            ? highlightH3(shown)
                             : `<span style="color: #55556e;">Enter clip prompt…</span>`;
-                        promptMeta.textContent = text.trim() ? describePrompt(text) : "";
+                        preview.title = fromSummary ? "Showing the ## summary section. Click to edit the full prompt." : "Click to edit in the prompt panel";
+                        promptMeta.textContent = text.trim()
+                            ? `${fromSummary ? "summary · " : ""}${describePrompt(text)}`
+                            : "";
                     };
                     paintPreview();
                     card._paintPreview = paintPreview;
