@@ -219,6 +219,160 @@ function setupModeWidgets(node) {
     apply();
 }
 
+// ---------------------------------------------------------------------------
+// Simplified panel: every native widget is hidden and drawn by the DOM panel
+// instead, grouped into Engine / Quality / Clips / Continuity / Performance.
+// Values still live in the native widgets, so the API and saved workflows are
+// unchanged; this is presentation only.
+// ---------------------------------------------------------------------------
+const ORIENTATIONS = ["16:9", "9:16", "1:1"];
+const QUALITY_PRESETS = {
+    draft:    { label: "Draft · 608p",    pass1: { "16:9": "608x352 (16:9)", "9:16": "352x608 (9:16)", "1:1": "512x512 (1:1)" },
+                pass2: { "16:9": "1056x608 (16:9)", "9:16": "608x1056 (9:16)", "1:1": "1024x1024 (1:1)" }, denoise: 0.25 },
+    standard: { label: "Standard · 720p", pass1: { "16:9": "608x352 (16:9)", "9:16": "352x608 (9:16)", "1:1": "512x512 (1:1)" },
+                pass2: { "16:9": "1280x720", "9:16": "720x1280 (9:16)", "1:1": "1024x1024 (1:1)" }, denoise: 0.25 },
+    high:     { label: "High · 768p",     pass1: { "16:9": "608x352 (16:9)", "9:16": "352x608 (9:16)", "1:1": "512x512 (1:1)" },
+                pass2: { "16:9": "1344x768 (16:9)", "9:16": "768x1344 (9:16)", "1:1": "1024x1024 (1:1)" }, denoise: 0.25 },
+    cinema:   { label: "Cinema · 1080p",  pass1: { "16:9": "608x352 (16:9)", "9:16": "352x608 (9:16)", "1:1": "512x512 (1:1)" },
+                pass2: { "16:9": "1920x1088 (16:9)", "9:16": "1088x1920 (9:16)", "1:1": "1024x1024 (1:1)" }, denoise: 0.25 },
+};
+
+function orientationOf(resolution) {
+    const r = String(resolution || "");
+    if (r.includes("9:16")) return "9:16";
+    if (r.includes("1:1")) return "1:1";
+    const m = /^(\d+)x(\d+)/.exec(r);
+    if (m) { const w = +m[1], h = +m[2]; if (w === h) return "1:1"; if (h > w) return "9:16"; }
+    return "16:9";
+}
+
+function detectPreset(pass1, pass2, denoise) {
+    for (const [key, preset] of Object.entries(QUALITY_PRESETS)) {
+        for (const o of ORIENTATIONS) {
+            if (preset.pass1[o] === pass1 && preset.pass2[o] === pass2 && Math.abs(Number(denoise) - preset.denoise) < 1e-6) {
+                return { preset: key, orientation: o };
+            }
+        }
+    }
+    return { preset: "custom", orientation: orientationOf(pass2) };
+}
+
+function comboValues(widget) {
+    const v = widget?.options?.values;
+    return Array.isArray(v) ? v : (typeof v === "function" ? (v() || []) : []);
+}
+
+function shortModelName(name) {
+    return String(name || "none").replace(/\.(safetensors|pt|pth|ckpt)$/i, "").replace(/^minimax[_-]?h3[_-]?/i, "");
+}
+
+function hideNativeWidgets(node) {
+    for (const w of node.widgets || []) {
+        if (w.name === "master_ui") continue;
+        setWidgetVisible(w, false);
+    }
+    node.setDirtyCanvas(true, true);
+}
+
+const UI_ROW_CSS = "display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 24px; padding: 2px 10px; background: #1c1c28; border: 1px solid #2a2a3c; border-radius: 12px; font-size: 11.5px; color: #b9b9cf;";
+const UI_CONTROL_CSS = "background: #101016; border: 1px solid #2e2e42; border-radius: 4px; color: #ececf4; font-size: 11.5px; padding: 2px 6px; max-width: 62%;";
+
+function uiRow(label, control, { hint, indent } = {}) {
+    const row = document.createElement("div");
+    row.style.cssText = UI_ROW_CSS + (indent ? " margin-left: 14px; border-left: 2px solid #3c3c56; border-radius: 0 12px 12px 0;" : "");
+    const left = document.createElement("span");
+    left.textContent = label;
+    if (hint) left.title = hint;
+    row.appendChild(left);
+    row.appendChild(control);
+    return row;
+}
+
+function uiSelect(values, current, onChange, { render } = {}) {
+    const sel = document.createElement("select");
+    sel.style.cssText = UI_CONTROL_CSS;
+    for (const v of values) {
+        const opt = document.createElement("option");
+        opt.value = String(v);
+        opt.textContent = render ? render(v) : String(v);
+        if (String(v) === String(current)) opt.selected = true;
+        sel.appendChild(opt);
+    }
+    sel.onchange = () => onChange(sel.value);
+    return sel;
+}
+
+function uiNumber(current, onChange, { min, max, step } = {}) {
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.style.cssText = UI_CONTROL_CSS + " width: 90px; text-align: right;";
+    if (min !== undefined) inp.min = min;
+    if (max !== undefined) inp.max = max;
+    if (step !== undefined) inp.step = step;
+    inp.value = current;
+    inp.onchange = () => onChange(Number(inp.value));
+    return inp;
+}
+
+function uiToggle(current, onChange) {
+    const label = document.createElement("label");
+    label.style.cssText = "display: inline-flex; align-items: center; cursor: pointer;";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = Boolean(current);
+    box.style.cssText = "accent-color: #6355d8; width: 15px; height: 15px; cursor: pointer;";
+    box.onchange = () => onChange(box.checked);
+    label.appendChild(box);
+    return label;
+}
+
+function uiSegmented(values, current, onChange) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display: flex; background: #101016; border: 1px solid #2e2e42; border-radius: 12px; padding: 2px; gap: 2px;";
+    for (const v of values) {
+        const b = document.createElement("button");
+        b.textContent = v;
+        const on = v === current;
+        b.style.cssText = `border: none; cursor: pointer; padding: 2px 10px; border-radius: 9px; font-size: 11px; background: ${on ? "#6355d8" : "transparent"}; color: ${on ? "#fff" : "#9a9ab4"};`;
+        b.onclick = () => onChange(v);
+        wrap.appendChild(b);
+    }
+    return wrap;
+}
+
+function uiSectionHeader(title, { summary, open, collapsible, onToggle } = {}) {
+    const head = document.createElement("div");
+    head.style.cssText = `display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px; border-radius: 6px; background: #1a1a26; border: 1px solid #262636; ${collapsible ? "cursor: pointer;" : ""} user-select: none;`;
+    const left = document.createElement("span");
+    left.style.cssText = "font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #9d8cff;";
+    left.textContent = title;
+    const right = document.createElement("span");
+    right.style.cssText = "display: flex; align-items: center; gap: 8px; font-size: 11px; color: #7f7f9a; min-width: 0;";
+    if (summary) {
+        const sum = document.createElement("span");
+        sum.style.cssText = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+        sum.textContent = summary;
+        right.appendChild(sum);
+    }
+    if (collapsible) {
+        const chev = document.createElement("span");
+        chev.textContent = open ? "▴" : "▾";
+        chev.style.cssText = "color: #9a9ab4; font-size: 12px;";
+        right.appendChild(chev);
+        head.onclick = () => onToggle?.();
+    }
+    head.appendChild(left);
+    head.appendChild(right);
+    return head;
+}
+
+function uiHint(text) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size: 10.5px; color: #6f6f8a; padding: 0 4px; line-height: 1.35;";
+    d.textContent = text;
+    return d;
+}
+
 app.registerExtension({
     name: "MiniMaxH3.MasterExtender",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
@@ -314,7 +468,7 @@ app.registerExtension({
                     console.warn("MiniMax Master: invalid saved clips JSON", error);
                 }
                 renderUI();
-                node.applyModeWidgets?.();
+                hideNativeWidgets(node);
                 return result;
             };
 
@@ -324,6 +478,167 @@ app.registerExtension({
                 save: saveState,
                 render: () => renderUI(),
             });
+
+            // ---- Simplified panel state (persisted in node.properties) ----
+            node.properties = node.properties || {};
+            const ui = node.properties.h3_ui = Object.assign(
+                { mode: "simple", open: { engine: true, quality: true, continuity: false, performance: false } },
+                node.properties.h3_ui || {},
+            );
+            ui.open = Object.assign({ engine: true, quality: true, continuity: false, performance: false }, ui.open || {});
+            const expert = () => ui.mode === "expert";
+
+            const W = (name) => node.widgets?.find((w) => w.name === name);
+            const getW = (name, fallback) => { const w = W(name); return w ? w.value : fallback; };
+            const setW = (name, value, { rerender = true } = {}) => {
+                const w = W(name);
+                if (!w) return;
+                w.value = value;
+                w.callback?.(value, app.canvas, node);
+                node.setDirtyCanvas(true, true);
+                app.graph?.setDirtyCanvas?.(true, true);
+                if (rerender) renderUI();
+            };
+            const isTurbo = () => String(getW("accel_mode", "")).toLowerCase().startsWith("turbo");
+
+            function bindSelect(name, opts = {}) {
+                const w = W(name);
+                const values = comboValues(w);
+                return uiSelect(values.length ? values : [w?.value ?? ""], w?.value, (v) => setW(name, v, opts), { render: opts.render });
+            }
+            function bindNumber(name, opts = {}) {
+                const w = W(name);
+                const o = w?.options || {};
+                // LiteGraph stores FLOAT steps x10 in options.step; step2/round carry the real increment.
+                const step = o.step2 ?? o.round ?? (typeof o.step === "number" ? o.step / 10 : "any");
+                return uiNumber(w?.value ?? 0, (v) => setW(name, v, opts), { min: o.min, max: o.max, step });
+            }
+            function bindToggle(name, opts = {}) {
+                return uiToggle(getW(name, false), (v) => setW(name, v, opts));
+            }
+
+            function applyQualityPreset(key, orientation) {
+                const preset = QUALITY_PRESETS[key];
+                if (!preset) return;
+                const p1 = comboValues(W("pass1_resolution"));
+                const p2 = comboValues(W("pass2_resolution"));
+                const want1 = preset.pass1[orientation], want2 = preset.pass2[orientation];
+                if (!p1.includes(want1) || !p2.includes(want2)) {
+                    console.warn("MiniMax Master: preset resolutions not offered by this node build", want1, want2);
+                    return;
+                }
+                setW("pass1_resolution", want1, { rerender: false });
+                setW("pass2_resolution", want2, { rerender: false });
+                setW("pass2_denoise", preset.denoise, { rerender: false });
+                renderUI();
+            }
+
+            function engineSummary() {
+                const steps = getW("pdd_nfe", "8");
+                if (isTurbo()) return `Turbo LoRA · ${shortModelName(getW("turbo_lora"))} · ${steps} steps · ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}`;
+                return `PDD ${steps}-step · ${shortModelName(getW("pdd_file"))}`;
+            }
+            function qualitySummary() {
+                const { preset, orientation } = detectPreset(getW("pass1_resolution"), getW("pass2_resolution"), getW("pass2_denoise"));
+                const label = preset === "custom" ? "Custom" : QUALITY_PRESETS[preset].label;
+                return `${label} · ${orientation} · draft ${String(getW("pass1_resolution", "")).split(" ")[0]} → refine ${String(getW("pass2_resolution", "")).split(" ")[0]}, denoise ${Number(getW("pass2_denoise", 0)).toFixed(2)}`;
+            }
+            function performanceSummary() {
+                const att = String(getW("attention_backend", "")).replace(" attention", "");
+                const sla = getW("sla_enabled", false) ? `SLA ${Number(getW("sla_sparsity", 0)).toFixed(2)} ${getW("sparse_method", "sla")}` : "SLA off";
+                const cf = Number(getW("pass2_chunk_frames", 0));
+                const chunk = cf > 0 ? `chunk ${cf}/${getW("pass2_chunk_overlap", 0)}` : "no chunking";
+                return `${att} · ${sla} · ${chunk}${getW("smart_offload", true) ? "" : " · offload off"}${getW("async_decode", "off") !== "off" ? ` · async ${getW("async_decode")}` : ""}`;
+            }
+            function continuitySummary() {
+                return `motion ${getW("context_length", "22")} f · audio ${getW("audio_context_length", 0)} f · identity ${getW("identity_continuity", true) ? "on" : "off"}`;
+            }
+
+            function section(key, title, summaryFn, buildBody, { collapsible = true } = {}) {
+                const wrap = document.createElement("div");
+                wrap.style.cssText = "display: flex; flex-direction: column; gap: 5px;";
+                const open = collapsible ? Boolean(ui.open[key]) : true;
+                wrap.appendChild(uiSectionHeader(title, {
+                    summary: open ? "" : summaryFn(),
+                    open, collapsible,
+                    onToggle: () => { ui.open[key] = !ui.open[key]; renderUI(); },
+                }));
+                if (open) buildBody(wrap);
+                return wrap;
+            }
+
+            function buildEngine(wrap) {
+                wrap.appendChild(uiRow("engine", bindSelect("accel_mode"), { hint: "PDD 8-step: official parallel-decoding LoRA (4/6/8 steps). Turbo LoRA: any turbo LoRA with its own step count." }));
+                if (isTurbo()) {
+                    wrap.appendChild(uiRow("turbo lora", bindSelect("turbo_lora", { render: shortModelName })));
+                    wrap.appendChild(uiRow("steps", bindSelect("pdd_nfe")));
+                    if (expert()) {
+                        wrap.appendChild(uiRow("lora strength", bindNumber("turbo_lora_strength"), { indent: true }));
+                        wrap.appendChild(uiRow("sampler", bindSelect("turbo_sampler"), { indent: true }));
+                        wrap.appendChild(uiRow("scheduler", bindSelect("turbo_scheduler"), { indent: true }));
+                    } else {
+                        wrap.appendChild(uiHint(`sampler ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}, strength ${Number(getW("turbo_lora_strength", 1)).toFixed(2)} — switch to Expert to change`));
+                    }
+                } else {
+                    wrap.appendChild(uiRow("pdd file", bindSelect("pdd_file", { render: shortModelName })));
+                    wrap.appendChild(uiRow("steps", bindSelect("pdd_nfe"), { hint: "PDD supports 4, 6 or 8 model evaluations; other values are clamped." }));
+                }
+            }
+
+            function buildQuality(wrap) {
+                const { preset, orientation } = detectPreset(getW("pass1_resolution"), getW("pass2_resolution"), getW("pass2_denoise"));
+                const presetSel = uiSelect(
+                    [...Object.keys(QUALITY_PRESETS), "custom"], preset,
+                    (v) => { if (v !== "custom") applyQualityPreset(v, orientation); },
+                    { render: (v) => v === "custom" ? "Custom" : QUALITY_PRESETS[v].label },
+                );
+                wrap.appendChild(uiRow("preset", presetSel));
+                const orient = uiSegmented(ORIENTATIONS, orientation, (o) => applyQualityPreset(preset === "custom" ? "standard" : preset, o));
+                wrap.appendChild(uiRow("orientation", orient));
+                const custom = preset === "custom" || expert();
+                if (custom) {
+                    wrap.appendChild(uiRow("draft resolution", bindSelect("pass1_resolution"), { indent: true }));
+                    wrap.appendChild(uiRow("refine resolution", bindSelect("pass2_resolution"), { indent: true }));
+                    wrap.appendChild(uiRow("refine denoise", bindNumber("pass2_denoise"), { indent: true }));
+                    wrap.appendChild(uiRow("upscaler", bindSelect("upscaler_model", { render: shortModelName }), { indent: true }));
+                } else {
+                    wrap.appendChild(uiHint(`${qualitySummary().split(" · ").slice(2).join(" · ")} · upscaler ${shortModelName(getW("upscaler_model"))}`));
+                }
+            }
+
+            function buildContinuity(wrap) {
+                wrap.appendChild(uiRow("motion context frames", bindSelect("context_length"), { hint: "Video frames from the previous clip fed into the next one." }));
+                wrap.appendChild(uiRow("audio context frames", bindNumber("audio_context_length")));
+                wrap.appendChild(uiRow("identity continuity", bindToggle("identity_continuity"), { hint: "Use an empty picture slot for the previous clip's last frame." }));
+            }
+
+            function buildPerformance(wrap) {
+                wrap.appendChild(uiRow("attention", bindSelect("attention_backend", { render: (v) => String(v).replace(" attention", "") })));
+                wrap.appendChild(uiRow("sparse attention (SLA)", bindToggle("sla_enabled")));
+                if (getW("sla_enabled", false)) {
+                    wrap.appendChild(uiRow("sparsity", bindNumber("sla_sparsity"), { indent: true }));
+                    wrap.appendChild(uiRow("method", bindSelect("sparse_method"), { indent: true }));
+                    if (getW("sparse_method", "sla") === "sol-attn") wrap.appendChild(uiRow("tau", bindNumber("sparse_tau"), { indent: true }));
+                }
+                const chunkOn = Number(getW("pass2_chunk_frames", 0)) > 0;
+                wrap.appendChild(uiRow("chunked refine pass", uiToggle(chunkOn, (on) => {
+                    if (on) setW("pass2_chunk_frames", Number(node.properties.h3_last_chunk_frames) || 124);
+                    else { node.properties.h3_last_chunk_frames = getW("pass2_chunk_frames", 124); setW("pass2_chunk_frames", 0); }
+                }), { hint: "Refine long clips in temporal windows instead of one attention pass. Big win above 720p." }));
+                if (chunkOn) {
+                    wrap.appendChild(uiRow("chunk frames", bindNumber("pass2_chunk_frames"), { indent: true }));
+                    wrap.appendChild(uiRow("overlap", bindNumber("pass2_chunk_overlap"), { indent: true }));
+                }
+                wrap.appendChild(uiRow("offload upscaler after use", bindToggle("smart_offload")));
+                wrap.appendChild(uiRow("background decode (experimental)", bindSelect("async_decode")));
+            }
+
+            function fitNodeToContent() {
+                requestAnimationFrame(() => {
+                    const need = container.scrollHeight - container.clientHeight;
+                    if (need > 2) node.setSize([node.size[0], node.size[1] + need + 4]);
+                });
+            }
 
             // ---- Prompt side panel: one per node, lives on document.body ----
             const promptPanel = { el: null, clipId: null, raf: 0, textarea: null, layer: null, title: null, meta: null };
@@ -487,7 +802,8 @@ app.registerExtension({
                 header.innerHTML = `
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span style="font-size: 15px; font-weight: 700; color: #9d8cff; letter-spacing: -0.2px;">🎬 MiniMax H3 Master</span>
-                        <span style="background: #252538; color: #a5a5c5; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid #383852;">2-Pass Pure PDD 8-Step</span>
+                        <span style="background: #252538; color: #a5a5c5; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid #383852;">${isTurbo() ? "Turbo" : "PDD"} · ${getW("pdd_nfe", "8")} steps · 2-pass</span>
+                        <button id="mode-toggle" title="Simple shows the eight decisions that matter; Expert shows every field." style="background: ${expert() ? "#4a3c22" : "#2b3a55"}; color: ${expert() ? "#e6c28f" : "#8fb0e6"}; border: 1px solid ${expert() ? "#6b5530" : "#3c5480"}; padding: 2px 9px; border-radius: 10px; font-size: 10.5px; font-weight: 600; cursor: pointer;">${expert() ? "Expert" : "Simple"}</button>
                     </div>
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <span style="color: #9292ab; font-size: 11px; font-weight: 500;">
@@ -497,7 +813,15 @@ app.registerExtension({
                     </div>
                 `;
                 container.appendChild(header);
+                header.querySelector("#mode-toggle").onclick = () => {
+                    ui.mode = expert() ? "simple" : "expert";
+                    renderUI();
+                };
                 container.appendChild(projectControls.toolbar());
+
+                // 2. Engine + Quality
+                container.appendChild(section("engine", "Engine", engineSummary, buildEngine));
+                container.appendChild(section("quality", "Quality", qualitySummary, buildQuality));
 
                 header.querySelector("#add-clip-btn").onclick = () => {
                     const nextId = nextClipId(clipsState);
@@ -516,6 +840,10 @@ app.registerExtension({
                     renderUI();
                 };
 
+                {
+                    const totalSecClips = clipsState.reduce((acc, c) => acc + Number(c.duration || 5), 0);
+                    container.appendChild(uiSectionHeader("Clips", { summary: `${clipsState.length} clip${clipsState.length === 1 ? "" : "s"} · ${totalSecClips.toFixed(0)} s`, collapsible: false }));
+                }
                 container.appendChild(projectControls.references());
 
                 // 3. HORIZONTAL Clip Cards Container (Placed horizontally side-by-side)
@@ -691,16 +1019,29 @@ app.registerExtension({
 
                 container.appendChild(horizontalContainer);
 
+                // 3b. Continuity (expert only) + Performance (collapsed summary by default)
+                if (expert()) container.appendChild(section("continuity", "Continuity", continuitySummary, buildContinuity));
+                container.appendChild(section("performance", "Performance", performanceSummary, buildPerformance));
+
+                // 4. Footer: run mode + Run
+                const footer = document.createElement("div");
+                footer.style.cssText = "display: flex; gap: 10px; align-items: center;";
+                const runRow = uiRow("run", bindSelect("run_mode", { render: (v) => String(v).replace("_", " ") }), { hint: "clip by clip renders one clip and pauses for validation; full batch renders everything." });
+                runRow.style.flex = "1";
+                footer.appendChild(runRow);
                 const continueButton = document.createElement("button");
-                continueButton.textContent = "Run / Continue after validation";
+                continueButton.textContent = getW("run_mode", "clip_by_clip") === "full_batch" ? "Run" : "Run / Continue after validation";
+                continueButton.style.cssText = "flex: 1; background: #6355d8; color: #fff; border: none; border-radius: 6px; padding: 7px 12px; font-weight: 600; font-size: 12px; cursor: pointer;";
                 continueButton.disabled = !clipsState.length || projectControls.isBusy();
+                if (continueButton.disabled) continueButton.style.opacity = "0.5";
                 continueButton.onclick = async () => {
                     saveState();
                     continueButton.disabled = true;
                     try { await app.queuePrompt(0, 1); }
                     finally { continueButton.disabled = false; }
                 };
-                container.appendChild(continueButton);
+                footer.appendChild(continueButton);
+                container.appendChild(footer);
 
                 // 4. Progress Bar Area
                 const progressBox = document.createElement("div");
@@ -729,15 +1070,15 @@ app.registerExtension({
                     const { clip } = findClip(promptPanel.clipId);
                     if (clip) openPromptPanel(clip.id, { focus: false }); else closePromptPanel();
                 }
+                fitNodeToContent();
             }
 
             renderUI();
             node.addDOMWidget("master_ui", "Master Director UI", container);
 
-            // Show the turbo-only inputs only in Turbo LoRA mode, the PDD file
-            // only in PDD mode, and the SLA sparsity only when SLA is on.
-            // Hidden widgets keep their values, so switching back loses nothing.
-            setupModeWidgets(node);
+            // The panel draws every setting itself; the native widgets only hold
+            // the values (and the API / saved-workflow contract).
+            hideNativeWidgets(node);
 
             // Real-time WebSocket Progress Listener
             const progressHandler = (event) => {
