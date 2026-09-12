@@ -16,6 +16,7 @@ function alignH3Frames(sec) {
 // Clip duration slider: whole seconds, 5-15 s by default; the per-clip
 // "go beyond" checkbox unlocks up to 30 s (longer clips need far more VRAM).
 const DUR_MIN = 5;
+const DUR_DEFAULT = 15;   // new clips start at the full 15 s
 const DUR_SOFT_MAX = 15;
 const DUR_HARD_MAX = 30;
 
@@ -419,7 +420,7 @@ app.registerExtension({
                         id: 0,
                         title: "Clip 1",
                         prompt: "",
-                        duration: 5.1,
+                        duration: DUR_DEFAULT,
                         seed: Math.floor(Math.random() * 1000000000),
                         seed_mode: "randomize",
                         validated: false,
@@ -807,8 +808,8 @@ app.registerExtension({
                     padding-bottom: 10px;
                 `;
 
-                const totalSec = clipsState.reduce((acc, c) => acc + Number(c.duration || 5.1), 0);
-                const totalFrames = clipsState.reduce((acc, c) => acc + alignH3Frames(c.duration || 5.1), 0);
+                const totalSec = clipsState.reduce((acc, c) => acc + Number(c.duration || DUR_DEFAULT), 0);
+                const totalFrames = clipsState.reduce((acc, c) => acc + alignH3Frames(c.duration || DUR_DEFAULT), 0);
 
                 header.innerHTML = `
                     <div style="display: flex; align-items: center; gap: 10px;">
@@ -840,7 +841,7 @@ app.registerExtension({
                         id: nextId,
                         title: `Clip ${nextId + 1}`,
                         prompt: "",
-                        duration: 5,
+                        duration: DUR_DEFAULT,
                         beyond: false,
                         seed: Math.floor(Math.random() * 1000000000),
                         seed_mode: "randomize",
@@ -852,7 +853,7 @@ app.registerExtension({
                 };
 
                 {
-                    const totalSecClips = clipsState.reduce((acc, c) => acc + Number(c.duration || 5), 0);
+                    const totalSecClips = clipsState.reduce((acc, c) => acc + Number(c.duration || DUR_DEFAULT), 0);
                     container.appendChild(uiSectionHeader("Clips", { summary: `${clipsState.length} clip${clipsState.length === 1 ? "" : "s"} · ${totalSecClips.toFixed(0)} s`, collapsible: false }));
                 }
                 container.appendChild(projectControls.references());
@@ -886,7 +887,7 @@ app.registerExtension({
                         box-sizing: border-box;
                     `;
 
-                    const durValue = clampDuration(clip.duration || DUR_MIN, clip.beyond);
+                    const durValue = clampDuration(clip.duration || DUR_DEFAULT, clip.beyond);
                     const durMax = clip.beyond ? DUR_HARD_MAX : DUR_SOFT_MAX;
                     const frames = alignH3Frames(durValue);
                     const seedMode = clip.seed_mode || "randomize";

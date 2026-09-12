@@ -56,7 +56,7 @@ def _default_clips():
             "id": 0,
             "title": "Clip 1",
             "prompt": "",
-            "duration": 5.1,
+            "duration": 15,
             "seed": secrets.randbelow(10**14),
             "seed_mode": "randomize",
             "validated": False,
@@ -501,7 +501,7 @@ class MiniMaxH3MasterExtender:
             sampled_latent, _ = engine.render_clip(
                 clip_index=i,
                 prompt=clip_cfg.get("prompt", ""),
-                duration_sec=float(clip_cfg.get("duration", 5.1)),
+                duration_sec=float(clip_cfg.get("duration", 15)),
                 seed=seed_val,
                 pass1_res=(w1, h1),
                 pass2_res=(w2, h2),
