@@ -517,9 +517,17 @@ app.registerExtension({
                 return uiToggle(getW(name, false), (v) => setW(name, v, opts));
             }
 
+            // "Custom" is an explicit choice, remembered in ui.qualityCustom; otherwise the
+            // preset is derived from the widget values so saved workflows land on their tier.
+            function currentPreset() {
+                const detected = detectPreset(getW("pass1_resolution"), getW("pass2_resolution"), getW("pass2_denoise"));
+                return ui.qualityCustom ? { preset: "custom", orientation: detected.orientation } : detected;
+            }
+
             function applyQualityPreset(key, orientation) {
                 const preset = QUALITY_PRESETS[key];
                 if (!preset) return;
+                ui.qualityCustom = false;
                 const p1 = comboValues(W("pass1_resolution"));
                 const p2 = comboValues(W("pass2_resolution"));
                 const want1 = preset.pass1[orientation], want2 = preset.pass2[orientation];
@@ -539,7 +547,7 @@ app.registerExtension({
                 return `PDD ${steps}-step · ${shortModelName(getW("pdd_file"))}`;
             }
             function qualitySummary() {
-                const { preset, orientation } = detectPreset(getW("pass1_resolution"), getW("pass2_resolution"), getW("pass2_denoise"));
+                const { preset, orientation } = currentPreset();
                 const label = preset === "custom" ? "Custom" : QUALITY_PRESETS[preset].label;
                 return `${label} · ${orientation} · draft ${String(getW("pass1_resolution", "")).split(" ")[0]} → refine ${String(getW("pass2_resolution", "")).split(" ")[0]}, denoise ${Number(getW("pass2_denoise", 0)).toFixed(2)}`;
             }
@@ -586,10 +594,13 @@ app.registerExtension({
             }
 
             function buildQuality(wrap) {
-                const { preset, orientation } = detectPreset(getW("pass1_resolution"), getW("pass2_resolution"), getW("pass2_denoise"));
+                const { preset, orientation } = currentPreset();
                 const presetSel = uiSelect(
                     [...Object.keys(QUALITY_PRESETS), "custom"], preset,
-                    (v) => { if (v !== "custom") applyQualityPreset(v, orientation); },
+                    (v) => {
+                        if (v === "custom") { ui.qualityCustom = true; renderUI(); }
+                        else applyQualityPreset(v, orientation);
+                    },
                     { render: (v) => v === "custom" ? "Custom" : QUALITY_PRESETS[v].label },
                 );
                 wrap.appendChild(uiRow("preset", presetSel));
