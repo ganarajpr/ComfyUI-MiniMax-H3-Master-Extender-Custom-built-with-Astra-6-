@@ -91,20 +91,20 @@ function openPromptEditor({ title, value, onSave }) {
 
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey, true); };
     const save = () => { onSave(box.value); close(); };
+    // One capture-phase handler owns the keyboard while the editor is open. It
+    // runs before the textarea's own listeners would, so Tab is handled here too.
     const onKey = (e) => {
         if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
         if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.stopPropagation(); save(); return; }
-        // Everything else stays inside the editor: no graph shortcuts while typing.
-        e.stopPropagation();
-    };
-    box.addEventListener("keydown", (e) => {
-        if (e.key === "Tab") {
+        if (e.key === "Tab" && e.target === box) {
             e.preventDefault();
             const { selectionStart: a, selectionEnd: b } = box;
             box.setRangeText("  ", a, b, "end");
             box.oninput();
         }
-    });
+        // Everything else stays inside the editor: no graph shortcuts while typing.
+        e.stopPropagation();
+    };
     document.addEventListener("keydown", onKey, true);
     backdrop.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
     backdrop.onmousedown = (e) => { if (e.target === backdrop) close(); };
