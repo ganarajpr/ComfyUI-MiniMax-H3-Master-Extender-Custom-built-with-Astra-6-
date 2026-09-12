@@ -795,6 +795,18 @@ app.registerExtension({
                 return originalOnRemoved?.apply(this, arguments);
             };
 
+            // clip_prompt_N inputs let another node supply a clip's prompt.
+            function externalPromptWired(index) {
+                const input = node.inputs?.find((i) => i.name === `clip_prompt_${index + 1}`);
+                return Boolean(input && input.link != null);
+            }
+            const originalOnConnectionsChange = node.onConnectionsChange;
+            node.onConnectionsChange = function (type, slotIndex, connected, linkInfo, ioSlot) {
+                const r = originalOnConnectionsChange?.apply(this, arguments);
+                if (ioSlot && String(ioSlot.name || "").startsWith("clip_prompt_")) renderUI();
+                return r;
+            };
+
             function renderUI() {
                 container.innerHTML = "";
 
@@ -899,6 +911,7 @@ app.registerExtension({
                                 <span style="font-weight: 700; color: ${isValidated ? "#4ade80" : "#ffffff"}; font-size: 13px;">Clip ${index + 1}</span>
                                 <span style="background: #111118; color: #9c9cb8; padding: 1px 5px; border-radius: 3px; font-size: 10px;">${clip.duration}s (${frames}f)</span>
                                 ${index > 0 ? `<span style="background: #2b2866; color: #c7d2fe; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">🔗 Linked</span>` : ''}
+                                ${externalPromptWired(index) ? `<span title="Prompt comes from the clip_prompt_${index + 1} input; the text below is ignored while it is connected." style="background: #1f3a2a; color: #86efac; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">⇐ input</span>` : ''}
                             </div>
                             <div style="display: flex; align-items: center; gap: 6px;">
                                 <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; color: ${isValidated ? "#4ade80" : "#aaa"}; font-size: 11px;">
@@ -959,6 +972,13 @@ app.registerExtension({
                             ? highlightH3(shown)
                             : `<span style="color: #55556e;">Enter clip prompt…</span>`;
                         preview.title = fromSummary ? "Showing the ## summary section. Click to edit the full prompt." : "Click to edit in the prompt panel";
+                        if (externalPromptWired(index)) {
+                            preview.style.opacity = "0.55";
+                            preview.title = `Prompt is fed from the clip_prompt_${index + 1} input while it is connected; this text is ignored.`;
+                            promptMeta.textContent = "from input" + (text.trim() ? ` · ${describePrompt(text)} (ignored)` : "");
+                        } else {
+                            preview.style.opacity = "1";
+                        }
                         promptMeta.textContent = text.trim()
                             ? `${fromSummary ? "summary · " : ""}${describePrompt(text)}`
                             : "";

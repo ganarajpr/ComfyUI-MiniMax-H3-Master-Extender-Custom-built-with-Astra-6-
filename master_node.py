@@ -254,6 +254,11 @@ class MiniMaxH3MasterExtender:
                 "turbo_lora_strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "tooltip": "Turbo LoRA strength."}),
                 "turbo_sampler": (comfy.samplers.KSampler.SAMPLERS, {"default": "res_multistep", "tooltip": "Sampler for Turbo LoRA mode (PDD mode always uses euler)."}),
                 "turbo_scheduler": (comfy.samplers.KSampler.SCHEDULERS, {"default": "simple", "tooltip": "Scheduler for Turbo LoRA mode. Pass 2 runs the last round(steps x pass2_denoise) steps of this schedule."}),
+                # --- External prompt inputs: wire a STRING into a clip instead of typing it ---
+                "clip_prompt_1": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 1's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
+                "clip_prompt_2": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 2's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
+                "clip_prompt_3": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 3's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
+                "clip_prompt_4": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 4's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -327,6 +332,20 @@ class MiniMaxH3MasterExtender:
         clips = json.loads(clips_json) if isinstance(clips_json, str) else clips_json
         if not isinstance(clips, list) or not clips:
             raise ValueError("Add a clip and enter its prompt before running this project.")
+
+        # External prompt inputs override the panel text for that clip. A changed
+        # prompt invalidates the clip so a validated clip is not reused with stale text.
+        for index in range(1, 4 + 1):
+            external = kwargs.get(f"clip_prompt_{index}")
+            if not isinstance(external, str) or not external.strip() or index - 1 >= len(clips):
+                continue
+            clip_cfg = clips[index - 1]
+            if not isinstance(clip_cfg, dict):
+                continue
+            if clip_cfg.get("prompt", "") != external:
+                clip_cfg["prompt"] = external
+                clip_cfg["validated"] = False
+                clip_cfg["prompt_source"] = f"clip_prompt_{index}"
 
         # Parse resolution settings
         w1, h1 = parse_resolution(pass1_resolution, 608, 352)
