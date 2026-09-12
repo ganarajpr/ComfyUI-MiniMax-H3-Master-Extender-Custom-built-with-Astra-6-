@@ -19,99 +19,128 @@ const DUR_MIN = 5;
 const DUR_SOFT_MAX = 15;
 const DUR_HARD_MAX = 30;
 
-const PROMPT_MIN_ROWS = 4;
-const PROMPT_MAX_PX = 360;   // inline box grows with the text up to this, then scrolls
+const PROMPT_PREVIEW_LINES = 4;      // compact preview inside the clip card
+const PANEL_WIDTH = 640;               // screen px, independent of canvas zoom
+const PANEL_MIN_HEIGHT = 460;
+const PANEL_GAP = 18;
 
-function autosizeTextarea(el) {
-    if (!el || !el.isConnected) return;
-    el.style.height = "auto";
-    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 17;
-    const minPx = Math.ceil(PROMPT_MIN_ROWS * lineHeight + 14);
-    const target = Math.min(PROMPT_MAX_PX, Math.max(minPx, el.scrollHeight + 2));
-    el.style.height = `${target}px`;
+// Known H3 prompt sections get a stronger colour than ad-hoc headings.
+const H3_SECTIONS = new Set([
+    "subject_definitions", "summary", "retention_analysis", "detailed_description",
+    "overall_soundscape", "non_diegetic_music", "dialogue", "sound_effects",
+    "camera", "style", "negative", "audio", "music", "voice", "shots",
+]);
+
+function escapeHtml(text) {
+    return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Inline tokens: <Picture 1> / <Subject 2> / <Audio 1> references, [Shot 3] and
+// [reference generation] tags, 00:04.500 timestamps, "quoted dialogue".
+function highlightInline(text) {
+    const re = /(<(?:Picture|Subject|Audio|Image|Ref)\s*\d*>)|(\[[^\]\n]{1,40}\])|(\b\d{1,2}:\d{2}(?:\.\d{1,3})?\b|\b\d+(?:\.\d+)?s\b)|("[^"\n]{1,200}")|(\*\*[^*\n]+\*\*)/g;
+    let out = "";
+    let last = 0;
+    for (const m of text.matchAll(re)) {
+        out += escapeHtml(text.slice(last, m.index));
+        const tok = escapeHtml(m[0]);
+        if (m[1]) out += `<span class="h3-ref">${tok}</span>`;
+        else if (m[2]) out += `<span class="h3-tag">${tok}</span>`;
+        else if (m[3]) out += `<span class="h3-time">${tok}</span>`;
+        else if (m[4]) out += `<span class="h3-quote">${tok}</span>`;
+        else out += `<span class="h3-bold">${tok}</span>`;
+        last = m.index + m[0].length;
+    }
+    return out + escapeHtml(text.slice(last));
+}
+
+// Line-level structure: # title, ## section, "- key: value" definitions.
+function highlightH3(text) {
+    const lines = (text || "").split("\n");
+    const html = lines.map((line) => {
+        let m;
+        if ((m = /^(\s*)(#{1,6})(\s+)(.*)$/.exec(line))) {
+            const name = m[4].trim().toLowerCase();
+            const cls = m[2].length >= 2 && H3_SECTIONS.has(name) ? "h3-section" : "h3-heading";
+            return `${m[1]}<span class="${cls}"><span class="h3-hash">${m[2]}</span>${m[3]}${highlightInline(m[4])}</span>`;
+        }
+        if ((m = /^(\s*[-*]\s+)([A-Za-z0-9_][\w .\-]{0,40}?)(:)(.*)$/.exec(line))) {
+            return `${escapeHtml(m[1])}<span class="h3-key">${escapeHtml(m[2])}</span><span class="h3-colon">${m[3]}</span>${highlightInline(m[4])}`;
+        }
+        if ((m = /^(\s*[-*]\s+)(.*)$/.exec(line))) {
+            return `<span class="h3-bullet">${escapeHtml(m[1])}</span>${highlightInline(m[2])}`;
+        }
+        return highlightInline(line);
+    });
+    // Trailing newline needs a visible line so the overlay height matches the textarea.
+    return html.join("\n") + "\n";
+}
+
+const H3_HIGHLIGHT_CSS = `
+.minimax-prompt-panel .h3-heading { color: #c4b5fd; font-weight: 700; }
+.minimax-prompt-panel .h3-section { color: #9d8cff; font-weight: 700; }
+.minimax-prompt-panel .h3-hash { color: #5b5b7a; font-weight: 400; }
+.minimax-prompt-panel .h3-key { color: #7dd3fc; font-weight: 600; }
+.minimax-prompt-panel .h3-colon { color: #5b5b7a; }
+.minimax-prompt-panel .h3-bullet { color: #5b5b7a; }
+.minimax-prompt-panel .h3-ref { color: #fbbf24; font-weight: 600; }
+.minimax-prompt-panel .h3-tag { color: #4ade80; }
+.minimax-prompt-panel .h3-time { color: #f472b6; }
+.minimax-prompt-panel .h3-quote { color: #fcd9a8; font-style: italic; }
+.minimax-prompt-panel .h3-bold { color: #ffffff; font-weight: 700; }
+.minimax-prompt-panel textarea::selection { background: rgba(157, 140, 255, 0.35); }
+.minimax-prompt-preview .h3-heading, .minimax-prompt-preview .h3-section { color: #b8a9ff; font-weight: 600; }
+.minimax-prompt-preview .h3-hash, .minimax-prompt-preview .h3-colon, .minimax-prompt-preview .h3-bullet { color: #5b5b7a; }
+.minimax-prompt-preview .h3-key { color: #7dd3fc; }
+.minimax-prompt-preview .h3-ref { color: #fbbf24; }
+.minimax-prompt-preview .h3-tag { color: #4ade80; }
+.minimax-prompt-preview .h3-time { color: #f472b6; }
+`;
+
+function ensureHighlightStyles() {
+    if (document.getElementById("minimax-h3-highlight-css")) return;
+    const style = document.createElement("style");
+    style.id = "minimax-h3-highlight-css";
+    style.textContent = H3_HIGHLIGHT_CSS;
+    document.head.appendChild(style);
 }
 
 function describePrompt(text) {
     const trimmed = (text || "").trim();
-    if (!trimmed) return "";
+    if (!trimmed) return "empty";
     const words = trimmed.split(/\s+/).length;
     const lines = trimmed.split(/\r?\n/).length;
     return `${words} words · ${lines} lines`;
 }
 
-// Large modal editor for a clip prompt. Ctrl+Enter saves, Esc or a click on the
-// backdrop cancels. Lives on document.body so it is never clipped by the node.
-function openPromptEditor({ title, value, onSave }) {
-    document.querySelector(".minimax-prompt-editor-backdrop")?.remove();
-    const backdrop = document.createElement("div");
-    backdrop.className = "minimax-prompt-editor-backdrop";
-    backdrop.style.cssText = `
-        position: fixed; inset: 0; z-index: 10000;
-        background: rgba(6, 6, 12, 0.72);
-        display: flex; align-items: center; justify-content: center;
-    `;
-    const panel = document.createElement("div");
-    panel.style.cssText = `
-        width: min(920px, 90vw); height: min(78vh, 900px);
-        display: flex; flex-direction: column; gap: 10px;
-        background: #14141c; border: 1px solid #383852; border-radius: 10px;
-        padding: 14px 16px; box-shadow: 0 18px 60px rgba(0,0,0,0.6);
-        color: #e2e2ec; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 12px;
-    `;
-    panel.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span style="font-size: 14px; font-weight: 700; color: #9d8cff;">${title}</span>
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <label style="display: flex; align-items: center; gap: 5px; color: #9c9cb2; font-size: 11px; cursor: pointer;">
-                    <input type="checkbox" class="mono-toggle"> monospace
-                </label>
-                <span class="editor-meta" style="color: #6f6f8a; font-size: 11px; font-variant-numeric: tabular-nums;"></span>
-            </div>
-        </div>
-        <textarea class="editor-box" spellcheck="false" style="flex: 1; width: 100%; box-sizing: border-box; resize: none; background: #0f0f16; border: 1px solid #2e2e42; border-radius: 6px; color: #ececf4; padding: 12px 14px; font-size: 13.5px; line-height: 1.55; user-select: text; -webkit-user-select: text; tab-size: 2;"></textarea>
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span style="color: #6f6f8a; font-size: 11px;">Ctrl+Enter saves · Esc cancels · Tab inserts two spaces</span>
-            <div style="display: flex; gap: 8px;">
-                <button class="cancel-btn" style="background: #252536; border: 1px solid #3f3f58; color: #c7c7e0; border-radius: 5px; padding: 6px 14px; cursor: pointer;">Cancel</button>
-                <button class="save-btn" style="background: #6355d8; border: none; color: #fff; border-radius: 5px; padding: 6px 16px; font-weight: 600; cursor: pointer;">Save</button>
-            </div>
-        </div>
-    `;
-    backdrop.appendChild(panel);
-    document.body.appendChild(backdrop);
+// Screen-space rectangle of a node, from LiteGraph's canvas transform.
+function nodeScreenRect(node) {
+    const canvas = app.canvas;
+    const rect = canvas.canvas.getBoundingClientRect();
+    const ds = canvas.ds;
+    const titleH = (window.LiteGraph && window.LiteGraph.NODE_TITLE_HEIGHT) || 30;
+    const x = rect.left + (node.pos[0] + ds.offset[0]) * ds.scale;
+    const y = rect.top + (node.pos[1] - titleH + ds.offset[1]) * ds.scale;
+    return { x, y, w: node.size[0] * ds.scale, h: (node.size[1] + titleH) * ds.scale, canvasRect: rect };
+}
 
-    const box = panel.querySelector(".editor-box");
-    const meta = panel.querySelector(".editor-meta");
-    const mono = panel.querySelector(".mono-toggle");
-    box.value = value || "";
-    const updateMeta = () => { meta.textContent = describePrompt(box.value) || "empty"; };
-    updateMeta();
-    box.oninput = updateMeta;
-    mono.onchange = () => { box.style.fontFamily = mono.checked ? "Consolas, 'Cascadia Mono', monospace" : ""; };
-
-    const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey, true); };
-    const save = () => { onSave(box.value); close(); };
-    // One capture-phase handler owns the keyboard while the editor is open. It
-    // runs before the textarea's own listeners would, so Tab is handled here too.
-    const onKey = (e) => {
-        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
-        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.stopPropagation(); save(); return; }
-        if (e.key === "Tab" && e.target === box) {
-            e.preventDefault();
-            const { selectionStart: a, selectionEnd: b } = box;
-            box.setRangeText("  ", a, b, "end");
-            box.oninput();
-        }
-        // Everything else stays inside the editor: no graph shortcuts while typing.
-        e.stopPropagation();
-    };
-    document.addEventListener("keydown", onKey, true);
-    backdrop.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
-    backdrop.onmousedown = (e) => { if (e.target === backdrop) close(); };
-    panel.querySelector(".cancel-btn").onclick = close;
-    panel.querySelector(".save-btn").onclick = save;
-    box.focus();
-    box.setSelectionRange(box.value.length, box.value.length);
+// Place the panel beside the node: right of it when there is room, else left,
+// else clamped inside the canvas. Height follows the node but stays readable.
+function placePanelNextToNode(panel, node) {
+    const r = nodeScreenRect(node);
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const height = Math.max(PANEL_MIN_HEIGHT, Math.min(r.h, vh - 40));
+    let x = r.x + r.w + PANEL_GAP;
+    if (x + PANEL_WIDTH > vw - 10) x = r.x - PANEL_GAP - PANEL_WIDTH;
+    if (x < 10) x = Math.max(10, Math.min(vw - PANEL_WIDTH - 10, r.x + r.w + PANEL_GAP));
+    let y = r.y;
+    if (y + height > vh - 10) y = vh - 10 - height;
+    if (y < 10) y = 10;
+    panel.style.left = `${Math.round(x)}px`;
+    panel.style.top = `${Math.round(y)}px`;
+    panel.style.width = `${PANEL_WIDTH}px`;
+    panel.style.height = `${Math.round(height)}px`;
 }
 
 function clampDuration(sec, beyond) {
@@ -203,6 +232,17 @@ app.registerExtension({
             } catch (e) {
                 clipsState = [];
             }
+            // The side panel addresses clips by id, so ids must be unique numbers.
+            const nextClipId = (clips) => clips.reduce((m, c) => Math.max(m, typeof c.id === "number" ? c.id : -1), -1) + 1;
+            const ensureClipIds = (clips) => {
+                const seen = new Set();
+                clips.forEach((c) => {
+                    if (typeof c.id !== "number" || seen.has(c.id)) c.id = nextClipId(clips);
+                    seen.add(c.id);
+                });
+                return clips;
+            };
+            if (Array.isArray(clipsState)) ensureClipIds(clipsState);
             if (!Array.isArray(clipsState) || clipsState.length === 0) {
                 clipsState = [
                     {
@@ -253,7 +293,7 @@ app.registerExtension({
                 }
                 try {
                     const restored = JSON.parse(clipsWidget.value || "[]");
-                    if (Array.isArray(restored)) clipsState = restored;
+                    if (Array.isArray(restored)) clipsState = ensureClipIds(restored);
                 } catch (error) {
                     console.warn("MiniMax Master: invalid saved clips JSON", error);
                 }
@@ -268,6 +308,149 @@ app.registerExtension({
                 save: saveState,
                 render: () => renderUI(),
             });
+
+            // ---- Prompt side panel: one per node, lives on document.body ----
+            const promptPanel = { el: null, clipId: null, raf: 0, textarea: null, layer: null, title: null, meta: null };
+
+            function markCardSelected(card, on) {
+                card.style.outline = on ? "2px solid #9d8cff" : "none";
+                card.style.outlineOffset = on ? "-1px" : "0";
+            }
+
+            function findClip(clipId) {
+                const index = clipsState.findIndex((c) => c.id === clipId);
+                return { index, clip: index >= 0 ? clipsState[index] : null };
+            }
+
+            function closePromptPanel() {
+                if (promptPanel.raf) cancelAnimationFrame(promptPanel.raf);
+                promptPanel.raf = 0;
+                promptPanel.el?.remove();
+                promptPanel.el = null;
+                promptPanel.textarea = null;
+                promptPanel.clipId = null;
+                container.querySelectorAll(".minimax-clip-card").forEach((c) => markCardSelected(c, false));
+            }
+
+            function buildPromptPanel() {
+                ensureHighlightStyles();
+                const el = document.createElement("div");
+                el.className = "minimax-prompt-panel";
+                el.style.cssText = `
+                    position: fixed; z-index: 9000;
+                    display: flex; flex-direction: column; gap: 8px;
+                    background: #14141c; border: 1px solid #383852; border-radius: 10px;
+                    padding: 10px 12px; box-shadow: 0 14px 44px rgba(0,0,0,0.55);
+                    color: #e2e2ec; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 12px;
+                    user-select: text;
+                `;
+                el.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <button class="pp-prev" title="Previous clip" style="background: #252536; border: 1px solid #3f3f58; color: #c7c7e0; border-radius: 3px; font-size: 11px; padding: 1px 7px; cursor: pointer;">&#9664;</button>
+                            <span class="pp-title" style="font-size: 13px; font-weight: 700; color: #9d8cff;"></span>
+                            <button class="pp-next" title="Next clip" style="background: #252536; border: 1px solid #3f3f58; color: #c7c7e0; border-radius: 3px; font-size: 11px; padding: 1px 7px; cursor: pointer;">&#9654;</button>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span class="pp-meta" style="color: #6f6f8a; font-size: 11px; font-variant-numeric: tabular-nums;"></span>
+                            <button class="pp-close" title="Close (Esc)" style="background: transparent; border: none; color: #9c9cb2; font-size: 15px; cursor: pointer; padding: 0 2px;">&#10005;</button>
+                        </div>
+                    </div>
+                    <div class="pp-editor" style="position: relative; flex: 1; min-height: 0; border: 1px solid #2e2e42; border-radius: 6px; background: #0f0f16; overflow: hidden;">
+                        <pre class="pp-layer" aria-hidden="true" style="position: absolute; inset: 0; margin: 0; padding: 12px 14px; overflow: auto; pointer-events: none; white-space: pre-wrap; word-break: break-word; color: #d9d9e6; font: 13px/1.6 'Cascadia Mono', Consolas, 'JetBrains Mono', ui-monospace, monospace; tab-size: 2;"></pre>
+                        <textarea class="pp-text" spellcheck="false" style="position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; margin: 0; padding: 12px 14px; border: none; outline: none; resize: none; background: transparent; color: transparent; caret-color: #ffffff; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 13px/1.6 'Cascadia Mono', Consolas, 'JetBrains Mono', ui-monospace, monospace; tab-size: 2; user-select: text; -webkit-user-select: text;"></textarea>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; color: #6f6f8a; font-size: 10.5px;">
+                        <span>Saves as you type · Esc closes · Tab inserts two spaces</span>
+                        <span style="display: flex; gap: 8px;">
+                            <span><span class="h3-section">## section</span></span>
+                            <span><span class="h3-key">key</span><span class="h3-colon">:</span></span>
+                            <span class="h3-ref">&lt;Picture 1&gt;</span>
+                            <span class="h3-tag">[Shot 1]</span>
+                            <span class="h3-time">00:04.500</span>
+                        </span>
+                    </div>
+                `;
+                document.body.appendChild(el);
+
+                const textarea = el.querySelector(".pp-text");
+                const layer = el.querySelector(".pp-layer");
+                const paint = () => { layer.innerHTML = highlightH3(textarea.value); };
+                const syncScroll = () => { layer.scrollTop = textarea.scrollTop; layer.scrollLeft = textarea.scrollLeft; };
+
+                let saveTimer = 0;
+                textarea.oninput = () => {
+                    paint();
+                    const { clip } = findClip(promptPanel.clipId);
+                    if (!clip) return;
+                    clip.prompt = textarea.value;
+                    clip.validated = false;
+                    el.querySelector(".pp-meta").textContent = describePrompt(textarea.value);
+                    const card = [...container.querySelectorAll(".minimax-clip-card")].find((c) => c._clipId === clip.id);
+                    card?._paintPreview?.();
+                    clearTimeout(saveTimer);
+                    saveTimer = setTimeout(saveState, 150);
+                };
+                textarea.onscroll = syncScroll;
+                textarea.addEventListener("keydown", (e) => {
+                    if (e.key === "Escape") { e.preventDefault(); closePromptPanel(); return; }
+                    if (e.key === "Tab") {
+                        e.preventDefault();
+                        const { selectionStart: a, selectionEnd: b } = textarea;
+                        textarea.setRangeText("  ", a, b, "end");
+                        textarea.oninput();
+                    }
+                    e.stopPropagation();   // no graph shortcuts while typing
+                });
+                el.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+                el.addEventListener("pointerdown", (e) => e.stopPropagation());
+                el.querySelector(".pp-close").onclick = closePromptPanel;
+                el.querySelector(".pp-prev").onclick = () => stepPromptPanel(-1);
+                el.querySelector(".pp-next").onclick = () => stepPromptPanel(1);
+
+                promptPanel.el = el;
+                promptPanel.textarea = textarea;
+                promptPanel.layer = layer;
+                promptPanel.title = el.querySelector(".pp-title");
+                promptPanel.meta = el.querySelector(".pp-meta");
+                promptPanel.paint = paint;
+
+                const follow = () => {
+                    if (!promptPanel.el) return;
+                    if (!node.graph) { closePromptPanel(); return; }   // node was deleted
+                    placePanelNextToNode(el, node);
+                    promptPanel.raf = requestAnimationFrame(follow);
+                };
+                follow();
+            }
+
+            function stepPromptPanel(delta) {
+                const { index } = findClip(promptPanel.clipId);
+                if (index < 0) return;
+                const next = clipsState[(index + delta + clipsState.length) % clipsState.length];
+                openPromptPanel(next.id);
+            }
+
+            function openPromptPanel(clipId, { focus = true } = {}) {
+                const { index, clip } = findClip(clipId);
+                if (!clip) return;
+                if (!promptPanel.el) buildPromptPanel();
+                promptPanel.clipId = clipId;
+                promptPanel.title.textContent = `Clip ${index + 1}${clip.title && clip.title !== `Clip ${index + 1}` ? ` · ${clip.title}` : ""}`;
+                promptPanel.meta.textContent = describePrompt(clip.prompt || "");
+                promptPanel.textarea.value = clip.prompt || "";
+                promptPanel.paint();
+                promptPanel.textarea.scrollTop = 0;
+                promptPanel.layer.scrollTop = 0;
+                container.querySelectorAll(".minimax-clip-card").forEach((c) => markCardSelected(c, c._clipId === clipId));
+                if (focus) promptPanel.textarea.focus({ preventScroll: true });
+            }
+
+            const originalOnRemoved = node.onRemoved;
+            node.onRemoved = function () {
+                closePromptPanel();
+                return originalOnRemoved?.apply(this, arguments);
+            };
 
             function renderUI() {
                 container.innerHTML = "";
@@ -301,7 +484,7 @@ app.registerExtension({
                 container.appendChild(projectControls.toolbar());
 
                 header.querySelector("#add-clip-btn").onclick = () => {
-                    const nextId = clipsState.length;
+                    const nextId = nextClipId(clipsState);
                     clipsState.push({
                         id: nextId,
                         title: `Clip ${nextId + 1}`,
@@ -332,6 +515,7 @@ app.registerExtension({
 
                 clipsState.forEach((clip, index) => {
                     const card = document.createElement("div");
+                    card.className = "minimax-clip-card";
                     const isValidated = Boolean(clip.validated);
                     card.style.cssText = `
                         flex: 0 0 310px;
@@ -369,16 +553,13 @@ app.registerExtension({
                             </div>
                         </div>
 
-                        <!-- Prompt Box: auto-grows with the text, scrolls without zooming the canvas, opens a large editor -->
+                        <!-- Prompt: compact preview; click it (or the card) to edit in the side panel -->
                         <div>
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
                                 <span style="font-size: 10px; color: #8888a4;">Prompt:</span>
-                                <div style="display: flex; align-items: center; gap: 6px;">
-                                    <span class="prompt-meta" style="font-size: 10px; color: #6f6f8a; font-variant-numeric: tabular-nums;"></span>
-                                    <button class="expand-btn" title="Open a large editor (Ctrl+Enter saves, Esc cancels)" style="background: #252536; border: 1px solid #3f3f58; color: #c7c7e0; border-radius: 3px; font-size: 10px; padding: 1px 7px; cursor: pointer;">Edit &#8599;</button>
-                                </div>
+                                <span class="prompt-meta" style="font-size: 10px; color: #6f6f8a; font-variant-numeric: tabular-nums;"></span>
                             </div>
-                            <textarea class="prompt-box" rows="${PROMPT_MIN_ROWS}" spellcheck="false" placeholder="Enter clip prompt..." style="width: 100%; box-sizing: border-box; background: #101016; border: 1px solid #2e2e42; border-radius: 4px; color: #ececf4; padding: 6px 8px; font-size: 12px; line-height: 1.45; resize: vertical; overflow-y: auto; user-select: text; -webkit-user-select: text; tab-size: 2;"></textarea>
+                            <div class="prompt-preview minimax-prompt-preview" title="Click to edit in the prompt panel" style="box-sizing: border-box; width: 100%; min-height: ${PROMPT_PREVIEW_LINES * 15 + 12}px; max-height: ${PROMPT_PREVIEW_LINES * 15 + 12}px; overflow: hidden; background: #101016; border: 1px solid #2e2e42; border-radius: 4px; color: #d4d4e4; padding: 6px 8px; font-size: 11px; line-height: 15px; white-space: pre-wrap; word-break: break-word; cursor: text; position: relative;"></div>
                         </div>
 
                         <!-- Duration Setting: 5-15 s slider, "go beyond" unlocks up to 30 s -->
@@ -413,39 +594,24 @@ app.registerExtension({
                     `;
 
                     // Event Listeners for Card
-                    const promptBox = card.querySelector(".prompt-box");
+                    const preview = card.querySelector(".prompt-preview");
                     const promptMeta = card.querySelector(".prompt-meta");
-                    const expandBtn = card.querySelector(".expand-btn");
-                    promptBox.value = clip.prompt || "";
-                    const refreshPromptMeta = () => { promptMeta.textContent = describePrompt(promptBox.value); };
-                    const autosize = () => autosizeTextarea(promptBox);
-                    promptBox.oninput = () => {
-                        clip.prompt = promptBox.value;
-                        clip.validated = false;
-                        autosize();
-                        refreshPromptMeta();
-                        saveState();
+                    const paintPreview = () => {
+                        const text = clip.prompt || "";
+                        preview.innerHTML = text.trim()
+                            ? highlightH3(text)
+                            : `<span style="color: #55556e;">Enter clip prompt…</span>`;
+                        promptMeta.textContent = text.trim() ? describePrompt(text) : "";
                     };
-                    // Wheel over a scrollable prompt scrolls the text; only at the
-                    // ends does it fall through to the canvas zoom.
-                    promptBox.addEventListener("wheel", (e) => {
-                        if (promptBox.scrollHeight <= promptBox.clientHeight) return;
-                        const atTop = promptBox.scrollTop <= 0 && e.deltaY < 0;
-                        const atBottom = promptBox.scrollTop + promptBox.clientHeight >= promptBox.scrollHeight - 1 && e.deltaY > 0;
-                        if (!atTop && !atBottom) e.stopPropagation();
-                    }, { passive: true });
-                    // Keep every key inside the textarea (Ctrl+A, Delete, arrows) away from the graph shortcuts.
-                    promptBox.addEventListener("keydown", (e) => e.stopPropagation());
-                    expandBtn.onclick = () => openPromptEditor({
-                        title: `Clip ${index + 1} prompt`,
-                        value: promptBox.value,
-                        onSave: (text) => {
-                            promptBox.value = text;
-                            promptBox.oninput();
-                        },
+                    paintPreview();
+                    card._paintPreview = paintPreview;
+                    card._clipId = clip.id;
+                    if (promptPanel.clipId === clip.id) markCardSelected(card, true);
+                    preview.onclick = () => openPromptPanel(clip.id);
+                    card.addEventListener("click", (e) => {
+                        if (e.target.closest("input, button, select, label, textarea")) return;
+                        openPromptPanel(clip.id);
                     });
-                    refreshPromptMeta();
-                    requestAnimationFrame(autosize);
 
                     const durSlider = card.querySelector(".dur-slider");
                     const durLabel = card.querySelector(".dur-label");
@@ -538,6 +704,11 @@ app.registerExtension({
                     </div>
                 `;
                 container.appendChild(progressBox);
+
+                if (promptPanel.el) {
+                    const { clip } = findClip(promptPanel.clipId);
+                    if (clip) openPromptPanel(clip.id, { focus: false }); else closePromptPanel();
+                }
             }
 
             renderUI();
