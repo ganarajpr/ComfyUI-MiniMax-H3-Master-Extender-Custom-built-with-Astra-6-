@@ -19,6 +19,101 @@ const DUR_MIN = 5;
 const DUR_SOFT_MAX = 15;
 const DUR_HARD_MAX = 30;
 
+const PROMPT_MIN_ROWS = 4;
+const PROMPT_MAX_PX = 360;   // inline box grows with the text up to this, then scrolls
+
+function autosizeTextarea(el) {
+    if (!el || !el.isConnected) return;
+    el.style.height = "auto";
+    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 17;
+    const minPx = Math.ceil(PROMPT_MIN_ROWS * lineHeight + 14);
+    const target = Math.min(PROMPT_MAX_PX, Math.max(minPx, el.scrollHeight + 2));
+    el.style.height = `${target}px`;
+}
+
+function describePrompt(text) {
+    const trimmed = (text || "").trim();
+    if (!trimmed) return "";
+    const words = trimmed.split(/\s+/).length;
+    const lines = trimmed.split(/\r?\n/).length;
+    return `${words} words · ${lines} lines`;
+}
+
+// Large modal editor for a clip prompt. Ctrl+Enter saves, Esc or a click on the
+// backdrop cancels. Lives on document.body so it is never clipped by the node.
+function openPromptEditor({ title, value, onSave }) {
+    document.querySelector(".minimax-prompt-editor-backdrop")?.remove();
+    const backdrop = document.createElement("div");
+    backdrop.className = "minimax-prompt-editor-backdrop";
+    backdrop.style.cssText = `
+        position: fixed; inset: 0; z-index: 10000;
+        background: rgba(6, 6, 12, 0.72);
+        display: flex; align-items: center; justify-content: center;
+    `;
+    const panel = document.createElement("div");
+    panel.style.cssText = `
+        width: min(920px, 90vw); height: min(78vh, 900px);
+        display: flex; flex-direction: column; gap: 10px;
+        background: #14141c; border: 1px solid #383852; border-radius: 10px;
+        padding: 14px 16px; box-shadow: 0 18px 60px rgba(0,0,0,0.6);
+        color: #e2e2ec; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 12px;
+    `;
+    panel.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-size: 14px; font-weight: 700; color: #9d8cff;">${title}</span>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <label style="display: flex; align-items: center; gap: 5px; color: #9c9cb2; font-size: 11px; cursor: pointer;">
+                    <input type="checkbox" class="mono-toggle"> monospace
+                </label>
+                <span class="editor-meta" style="color: #6f6f8a; font-size: 11px; font-variant-numeric: tabular-nums;"></span>
+            </div>
+        </div>
+        <textarea class="editor-box" spellcheck="false" style="flex: 1; width: 100%; box-sizing: border-box; resize: none; background: #0f0f16; border: 1px solid #2e2e42; border-radius: 6px; color: #ececf4; padding: 12px 14px; font-size: 13.5px; line-height: 1.55; user-select: text; -webkit-user-select: text; tab-size: 2;"></textarea>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #6f6f8a; font-size: 11px;">Ctrl+Enter saves · Esc cancels · Tab inserts two spaces</span>
+            <div style="display: flex; gap: 8px;">
+                <button class="cancel-btn" style="background: #252536; border: 1px solid #3f3f58; color: #c7c7e0; border-radius: 5px; padding: 6px 14px; cursor: pointer;">Cancel</button>
+                <button class="save-btn" style="background: #6355d8; border: none; color: #fff; border-radius: 5px; padding: 6px 16px; font-weight: 600; cursor: pointer;">Save</button>
+            </div>
+        </div>
+    `;
+    backdrop.appendChild(panel);
+    document.body.appendChild(backdrop);
+
+    const box = panel.querySelector(".editor-box");
+    const meta = panel.querySelector(".editor-meta");
+    const mono = panel.querySelector(".mono-toggle");
+    box.value = value || "";
+    const updateMeta = () => { meta.textContent = describePrompt(box.value) || "empty"; };
+    updateMeta();
+    box.oninput = updateMeta;
+    mono.onchange = () => { box.style.fontFamily = mono.checked ? "Consolas, 'Cascadia Mono', monospace" : ""; };
+
+    const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey, true); };
+    const save = () => { onSave(box.value); close(); };
+    const onKey = (e) => {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.stopPropagation(); save(); return; }
+        // Everything else stays inside the editor: no graph shortcuts while typing.
+        e.stopPropagation();
+    };
+    box.addEventListener("keydown", (e) => {
+        if (e.key === "Tab") {
+            e.preventDefault();
+            const { selectionStart: a, selectionEnd: b } = box;
+            box.setRangeText("  ", a, b, "end");
+            box.oninput();
+        }
+    });
+    document.addEventListener("keydown", onKey, true);
+    backdrop.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+    backdrop.onmousedown = (e) => { if (e.target === backdrop) close(); };
+    panel.querySelector(".cancel-btn").onclick = close;
+    panel.querySelector(".save-btn").onclick = save;
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+}
+
 function clampDuration(sec, beyond) {
     const max = beyond ? DUR_HARD_MAX : DUR_SOFT_MAX;
     const n = Math.round(Number(sec));
@@ -274,10 +369,16 @@ app.registerExtension({
                             </div>
                         </div>
 
-                        <!-- Prompt Box -->
+                        <!-- Prompt Box: auto-grows with the text, scrolls without zooming the canvas, opens a large editor -->
                         <div>
-                            <div style="font-size: 10px; color: #8888a4; margin-bottom: 2px;">Prompt:</div>
-                            <textarea class="prompt-box" rows="4" placeholder="Enter clip prompt..." style="width: 100%; box-sizing: border-box; background: #101016; border: 1px solid #2e2e42; border-radius: 4px; color: #ececf4; padding: 6px 8px; font-size: 11px; line-height: 1.4; resize: vertical;"></textarea>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+                                <span style="font-size: 10px; color: #8888a4;">Prompt:</span>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="prompt-meta" style="font-size: 10px; color: #6f6f8a; font-variant-numeric: tabular-nums;"></span>
+                                    <button class="expand-btn" title="Open a large editor (Ctrl+Enter saves, Esc cancels)" style="background: #252536; border: 1px solid #3f3f58; color: #c7c7e0; border-radius: 3px; font-size: 10px; padding: 1px 7px; cursor: pointer;">Edit &#8599;</button>
+                                </div>
+                            </div>
+                            <textarea class="prompt-box" rows="${PROMPT_MIN_ROWS}" spellcheck="false" placeholder="Enter clip prompt..." style="width: 100%; box-sizing: border-box; background: #101016; border: 1px solid #2e2e42; border-radius: 4px; color: #ececf4; padding: 6px 8px; font-size: 12px; line-height: 1.45; resize: vertical; overflow-y: auto; user-select: text; -webkit-user-select: text; tab-size: 2;"></textarea>
                         </div>
 
                         <!-- Duration Setting: 5-15 s slider, "go beyond" unlocks up to 30 s -->
@@ -313,12 +414,38 @@ app.registerExtension({
 
                     // Event Listeners for Card
                     const promptBox = card.querySelector(".prompt-box");
+                    const promptMeta = card.querySelector(".prompt-meta");
+                    const expandBtn = card.querySelector(".expand-btn");
                     promptBox.value = clip.prompt || "";
+                    const refreshPromptMeta = () => { promptMeta.textContent = describePrompt(promptBox.value); };
+                    const autosize = () => autosizeTextarea(promptBox);
                     promptBox.oninput = () => {
                         clip.prompt = promptBox.value;
                         clip.validated = false;
+                        autosize();
+                        refreshPromptMeta();
                         saveState();
                     };
+                    // Wheel over a scrollable prompt scrolls the text; only at the
+                    // ends does it fall through to the canvas zoom.
+                    promptBox.addEventListener("wheel", (e) => {
+                        if (promptBox.scrollHeight <= promptBox.clientHeight) return;
+                        const atTop = promptBox.scrollTop <= 0 && e.deltaY < 0;
+                        const atBottom = promptBox.scrollTop + promptBox.clientHeight >= promptBox.scrollHeight - 1 && e.deltaY > 0;
+                        if (!atTop && !atBottom) e.stopPropagation();
+                    }, { passive: true });
+                    // Keep every key inside the textarea (Ctrl+A, Delete, arrows) away from the graph shortcuts.
+                    promptBox.addEventListener("keydown", (e) => e.stopPropagation());
+                    expandBtn.onclick = () => openPromptEditor({
+                        title: `Clip ${index + 1} prompt`,
+                        value: promptBox.value,
+                        onSave: (text) => {
+                            promptBox.value = text;
+                            promptBox.oninput();
+                        },
+                    });
+                    refreshPromptMeta();
+                    requestAnimationFrame(autosize);
 
                     const durSlider = card.querySelector(".dur-slider");
                     const durLabel = card.querySelector(".dur-label");
