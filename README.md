@@ -50,7 +50,11 @@ The included workflow is deliberately blank: one empty prompt, no reference imag
    **ComfyUI Desktop:** use the installation's environment terminal and its actual custom-nodes directory. Do not install dependencies into an unrelated system Python.
 
 4. Download the models separately and place them as described below. Restart ComfyUI, then refresh the browser.
-5. Open `example_workflows/MiniMax_H3_Master_Extender_Blank.json`, select your installed model files, write a prompt, and attach reference pictures if needed. Start with `clip_by_clip` and one clip. Inspect the preview and validate a clip before continuing the chain.
+5. Open one of the example workflows, select your installed model files, write a prompt, and attach reference pictures if needed:
+   - `example_workflows/MiniMax_H3_Master_Extender_Blank.json` — the original PDD 8-step graph.
+   - `example_workflows/MiniMax_H3_Master_Extender_Turbo_SLA.json` — the faster graph: Turbo LoRA at 5 steps, comfy kitchen attention with SLA 0.9, chunked refine pass, 608x352 draft to 1280x720, one blank 15 s clip. On an RTX 5090 a 15 s clip renders in roughly 85–90 s. Needs a converted Turbo LoRA in `models/loras` (see `turbo_lora`).
+
+   Start with `clip_by_clip` and one clip. Inspect the preview and validate a clip before continuing the chain.
 
 The PDD Apply and Scheduler nodes must be installed even though they are called internally and do not appear as boxes in the example workflow. H3 Turbo is not a dependency of this workflow. Avoid duplicate installations of the same node classes. The standalone Motion Context pack is not required: the adapted motion-context implementation is included here.
 
