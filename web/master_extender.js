@@ -544,8 +544,10 @@ app.registerExtension({
 
             function engineSummary() {
                 const steps = getW("pdd_nfe", "8");
-                if (isTurbo()) return `Turbo LoRA · ${shortModelName(getW("turbo_lora"))} · ${steps} steps · ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}`;
-                return `PDD ${steps}-step · ${shortModelName(getW("pdd_file"))}`;
+                const p2 = String(getW("pass2_lora", "none"));
+                const p2note = p2 !== "none" ? ` · refine ${shortModelName(p2)}${String(getW("pass2_lora_mode", "")).startsWith("replace") ? " (replace)" : ""}` : "";
+                if (isTurbo()) return `Turbo LoRA · ${shortModelName(getW("turbo_lora"))} · ${steps} steps · ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}${p2note}`;
+                return `PDD ${steps}-step · ${shortModelName(getW("pdd_file"))}${p2note}`;
             }
             function qualitySummary() {
                 const { preset, orientation } = currentPreset();
@@ -591,6 +593,17 @@ app.registerExtension({
                 } else {
                     wrap.appendChild(uiRow("pdd file", bindSelect("pdd_file", { render: shortModelName })));
                     wrap.appendChild(uiRow("steps", bindSelect("pdd_nfe"), { hint: "PDD supports 4, 6 or 8 model evaluations; other values are clamped." }));
+                }
+                // Refine pass: optionally a different LoRA for pass 2 only.
+                const p2lora = String(getW("pass2_lora", "none"));
+                wrap.appendChild(uiRow("refine lora", bindSelect("pass2_lora", { render: shortModelName }),
+                    { hint: "LoRA applied only on the pass-2 refine tail. none = same model as pass 1." }));
+                if (p2lora !== "none") {
+                    wrap.appendChild(uiRow("refine lora strength", bindNumber("pass2_lora_strength"), { indent: true }));
+                    wrap.appendChild(uiRow("mode", bindSelect("pass2_lora_mode", { render: (v) => String(v).replace(" engine LoRA", "") }),
+                        { indent: true, hint: "stack: on top of the engine LoRA. replace: base model + this LoRA only (step-distilled LoRAs)." }));
+                    wrap.appendChild(uiRow("refine schedule steps", bindNumber("pass2_steps"),
+                        { indent: true, hint: "0 = same as engine steps. Tail length = round(steps x refine denoise)." }));
                 }
             }
 

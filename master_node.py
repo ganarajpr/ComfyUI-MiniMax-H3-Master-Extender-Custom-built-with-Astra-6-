@@ -254,6 +254,11 @@ class MiniMaxH3MasterExtender:
                 "turbo_lora_strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "tooltip": "Turbo LoRA strength."}),
                 "turbo_sampler": (comfy.samplers.KSampler.SAMPLERS, {"default": "res_multistep", "tooltip": "Sampler for Turbo LoRA mode (PDD mode always uses euler)."}),
                 "turbo_scheduler": (comfy.samplers.KSampler.SCHEDULERS, {"default": "simple", "tooltip": "Scheduler for Turbo LoRA mode. Pass 2 runs the last round(steps x pass2_denoise) steps of this schedule."}),
+                # --- Refine pass (pass 2) LoRA: a different LoRA for the high-res tail ---
+                "pass2_lora": (["none"] + folder_paths.get_filename_list("loras"), {"default": "none", "tooltip": "LoRA applied only on the pass-2 refine tail. 'none' keeps the pass-1 model."}),
+                "pass2_lora_strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "tooltip": "Strength of the pass-2 LoRA."}),
+                "pass2_lora_mode": (["stack on engine LoRA", "replace engine LoRA"], {"default": "stack on engine LoRA", "tooltip": "stack: pass-2 LoRA on top of the PDD heads / turbo LoRA. replace: pass 2 samples base model + pass-2 LoRA only (use for step-distilled LoRAs, e.g. a 3-step turbo)."}),
+                "pass2_steps": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1, "tooltip": "Full schedule length pass 2's tail is cut from when a pass-2 LoRA is set (tail = round(steps x pass2_denoise)). 0 = same as the engine steps."}),
                 # --- External prompt inputs: wire a STRING into a clip instead of typing it ---
                 "clip_prompt_1": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 1's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
                 "clip_prompt_2": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 2's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
@@ -370,7 +375,9 @@ class MiniMaxH3MasterExtender:
                     identity_continuity, refs_json,
                     bool(sla_enabled), float(sla_sparsity), str(sparse_method), float(sparse_tau),
                     int(pass2_chunk_frames), int(pass2_chunk_overlap),
-                    accel_mode, turbo_lora, float(turbo_lora_strength), turbo_sampler, turbo_scheduler]
+                    accel_mode, turbo_lora, float(turbo_lora_strength), turbo_sampler, turbo_scheduler,
+                    str(kwargs.get("pass2_lora", "none")), float(kwargs.get("pass2_lora_strength", 1.0)),
+                    str(kwargs.get("pass2_lora_mode", "stack on engine LoRA")), int(kwargs.get("pass2_steps", 0))]
         signature = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         for dp, mp, state in ((data_path, manifest_path, manifest),
                                (draft_path, draft_manifest_path, draft_manifest)):
@@ -433,6 +440,12 @@ class MiniMaxH3MasterExtender:
             sparse_tau=sparse_tau,
             background_busy=lambda: background["worker"] is not None and background["worker"].busy(),
             wait_background=lambda: _finish_background(),
+        )
+        engine.configure_pass2_lora(
+            kwargs.get("pass2_lora", "none"),
+            kwargs.get("pass2_lora_strength", 1.0),
+            kwargs.get("pass2_lora_mode", "stack on engine LoRA"),
+            kwargs.get("pass2_steps", 0),
         )
 
         previous_handle = None

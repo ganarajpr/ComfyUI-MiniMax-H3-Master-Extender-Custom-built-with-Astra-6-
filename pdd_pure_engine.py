@@ -177,6 +177,8 @@ class PurePDDEngine:
             _LOG.warning(f"Error applying MiniMaxH3SigmaShift: {e}")
             shifted_model = self.raw_model
 
+        self.shifted_model = shifted_model
+
         # 2. Acceleration: PDD head bank, or a plain turbo / lightning LoRA
         if self.turbo_mode:
             pdd_model, sigmas_p1 = self._prepare_turbo_model(shifted_model)
@@ -204,6 +206,16 @@ class PurePDDEngine:
                 sigmas_p1 = torch.linspace(1.0, 0.0, int(self.pdd_nfe) + 1)
 
 
+        self.accel_model = pdd_model
+        pdd_model = self._finish_model(pdd_model)
+
+        self.prepared_model = pdd_model
+        self.pass1_sigmas = sigmas_p1
+        return self.prepared_model, self.pass1_sigmas
+
+    def _finish_model(self, model):
+        """Dense attention backend, then optional block-sparse attention on top
+        (SLA wraps the dense backend as its fall-through, so order matters)."""
         attention_name = {
             "comfy kitchen attention": "comfy_kitchen_int8",
             "sage attention 2.2": "sage",
@@ -217,18 +229,52 @@ class PurePDDEngine:
                 f"Attention backend '{self.attention_backend}' is unavailable. "
                 "Check its installation or select another attention backend."
             )
-        pdd_model = pdd_model.clone()
-        pdd_model.set_model_optimized_attention(attention_function)
+        model = model.clone()
+        model.set_model_optimized_attention(attention_function)
         _LOG.info("PDD sampling attention: %s", self.attention_backend)
+        return self._apply_sla(model)
 
-        # 3. Optional block-sparse attention (core BlockSparseAttention). It
-        # wraps the dense backend installed above as its fall-through, so it
-        # must be applied after it.
-        pdd_model = self._apply_sla(pdd_model)
+    # ------------------------------------------------------------------
+    # Pass-2 (refine) LoRA: a different LoRA for the high-res tail only
+    # ------------------------------------------------------------------
+    def configure_pass2_lora(self, lora="none", strength=1.0, mode="stack", steps=0):
+        """`mode`: "stack" adds the LoRA on top of the engine's acceleration
+        (PDD heads or turbo LoRA); "replace" samples pass 2 with base model +
+        this LoRA only (for step-distilled LoRAs such as a 3-step turbo).
+        `steps` (0 = same as pass 1) is the full schedule length the tail is cut from."""
+        self.pass2_lora = lora if lora and lora != "none" else None
+        self.pass2_lora_strength = float(strength)
+        self.pass2_lora_mode = "replace" if str(mode).lower().startswith("replace") else "stack"
+        self.pass2_steps = int(steps or 0)
+        self.pass2_model = None
 
-        self.prepared_model = pdd_model
-        self.pass1_sigmas = sigmas_p1
-        return self.prepared_model, self.pass1_sigmas
+    def _pass2_lora_active(self):
+        return getattr(self, "pass2_lora", None) is not None
+
+    def initialize_pass2_model(self):
+        """Model used for the refine pass: the pass-1 model unless a pass-2 LoRA is set."""
+        prepared, _ = self.initialize_pdd_model()
+        if not self._pass2_lora_active():
+            return prepared
+        if getattr(self, "pass2_model", None) is not None:
+            return self.pass2_model
+        lora_cls = nodes.NODE_CLASS_MAPPINGS.get("LoraLoaderModelOnly")
+        if lora_cls is None:
+            _LOG.warning("LoraLoaderModelOnly unavailable; pass 2 uses the pass-1 model")
+            self.pass2_model = prepared
+            return prepared
+        if self.pass2_lora_mode == "replace":
+            base = self.shifted_model          # SigmaShift only: no PDD heads / turbo LoRA
+        else:
+            base = self.accel_model            # PDD heads or turbo LoRA already applied
+        res = lora_cls().load_lora_model_only(base, self.pass2_lora, self.pass2_lora_strength)
+        model = _safe_get_output(res, 0, "model")
+        self.pass2_model = self._finish_model(model)
+        _LOG.info("Pass 2 LoRA: %s @ %.2f (%s engine LoRA), %s steps schedule",
+                  self.pass2_lora, self.pass2_lora_strength,
+                  "replacing" if self.pass2_lora_mode == "replace" else "stacked on",
+                  self.pass2_steps or self.pdd_nfe)
+        return self.pass2_model
 
     # Sparse attention: dense for the first part of the schedule (structure is
     # decided there), sparse after. 0.2 is core's default and matches PDD's
@@ -313,7 +359,13 @@ class PurePDDEngine:
 
     def _pass2_sigmas(self, model, pass2_denoise):
         """Quality-tail schedule for pass 2: PDD's own tail, or the last
-        round(steps x denoise) steps of the turbo schedule."""
+        round(steps x denoise) steps of the turbo schedule. With a pass-2 LoRA
+        the schedule length can differ from pass 1 (pass2_steps), and in
+        "replace" mode the PDD scheduler no longer applies."""
+        if self._pass2_lora_active() and (self.pass2_steps > 0 or self.pass2_lora_mode == "replace" or self.turbo_mode):
+            steps = int(self.pass2_steps or self.pdd_nfe)
+            tail = max(1, int(round(steps * float(pass2_denoise))))
+            return self._basic_sigmas(model, tail, float(pass2_denoise))
         if self.turbo_mode:
             steps = int(self.pdd_nfe)
             tail = max(1, int(round(steps * float(pass2_denoise))))
@@ -790,14 +842,17 @@ class PurePDDEngine:
             f"Clip {clip_index + 1}: Pass 2 refining at {w2}x{h2} (conditioning pre-encoded), quality tail denoise={pass2_denoise}"
         )
 
+        # Pass-2 model (a different LoRA for the refine tail when configured)
+        model_p2 = self.initialize_pass2_model()
+
         # Quality-tail sigmas (PDD tail, or the turbo schedule's tail)
-        sigmas_p2 = self._pass2_sigmas(model, pass2_denoise)
+        sigmas_p2 = self._pass2_sigmas(model_p2, pass2_denoise)
 
         # Sample Pass 2 (High-Res Refine): whole clip, or overlapping temporal
         # windows when the clip is longer than pass2_chunk_frames.
         if self._pass2_chunking_active(frame_count):
             final_sampled = self._sample_pass2_chunked(
-                model=model,
+                model=model_p2,
                 positive=pos_p2,
                 latent=rejoined_latent,
                 sigmas=sigmas_p2,
@@ -805,7 +860,7 @@ class PurePDDEngine:
             )
         else:
             final_sampled = self._sample_euler(
-                model=model,
+                model=model_p2,
                 positive=pos_p2,
                 latent_image=rejoined_latent,
                 sigmas=sigmas_p2,
