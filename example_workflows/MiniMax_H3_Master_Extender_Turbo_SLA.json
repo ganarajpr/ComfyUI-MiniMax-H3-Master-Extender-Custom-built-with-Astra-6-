@@ -921,6 +921,10 @@
         1,
         "euler",
         "simple",
+        "none",
+        1.0,
+        "stack on engine LoRA",
+        0,
         ""
       ],
       "widgets_values_named": {
@@ -950,7 +954,11 @@
         "turbo_lora_strength": 1,
         "turbo_sampler": "euler",
         "turbo_scheduler": "simple",
-        "master_ui": ""
+        "master_ui": "",
+        "pass2_lora": "none",
+        "pass2_lora_strength": 1.0,
+        "pass2_lora_mode": "stack on engine LoRA",
+        "pass2_steps": 0
       }
     }
   ],
