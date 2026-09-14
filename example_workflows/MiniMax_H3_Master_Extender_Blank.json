@@ -288,7 +288,8 @@
         17,
         "fast",
         "192k",
-        true
+        true,
+        false
       ]
     },
     {

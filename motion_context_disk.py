@@ -4457,6 +4457,13 @@ class MiniMaxH3MotionContextDiskFinalDecode:
                 "preset": (["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"], {"default": "fast"}),
                 "audio_bitrate": (["128k", "192k", "256k", "320k"], {"default": "192k"}),
                 "autoplay": ("BOOLEAN", {"default": True, "tooltip": "Auto-play the video preview when generating finishes or the node is loaded."}),
+                "save_output": ("BOOLEAN", {"default": True,
+                    "tooltip": "Write the final video into the output folder (filename_prefix / "
+                               "output_directory).\n"
+                               "Off: the video is encoded under ComfyUI's temp folder instead, so "
+                               "the preview and the VIDEO output still work but nothing lands in "
+                               "output/. Use this when a SaveVideo node downstream does the saving, "
+                               "otherwise every render is written twice."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -4487,6 +4494,7 @@ class MiniMaxH3MotionContextDiskFinalDecode:
         unique_id=None,
         prompt=None,
         extra_pnginfo=None,
+        save_output=True,
     ):
         data_path, manifest_path, manifest = _load_manifest(cache)
         # FPS is cache metadata, never a user choice. The compatibility widget
@@ -4517,7 +4525,15 @@ class MiniMaxH3MotionContextDiskFinalDecode:
 
         ffmpeg = _find_ffmpeg()
 
-        if str(output_directory).strip():
+        if not save_output:
+            # The encode is a streaming ffmpeg pipe, so a file has to exist somewhere;
+            # temp is cleared on server start and is not served as an output. The
+            # VIDEO output wraps this path, so a downstream SaveVideo still works.
+            if folder_paths is not None:
+                out_dir = Path(folder_paths.get_temp_directory()).resolve() / "h3_final_decode"
+            else:
+                out_dir = _ensure_cache_root() / "_final_decode"
+        elif str(output_directory).strip():
             out_dir = Path(str(output_directory).strip()).expanduser().resolve()
         elif folder_paths is not None:
             out_dir = Path(folder_paths.get_output_directory()).resolve()

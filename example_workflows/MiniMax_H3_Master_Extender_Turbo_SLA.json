@@ -245,7 +245,8 @@
         17,
         "fast",
         "192k",
-        true
+        true,
+        false
       ],
       "widgets_values_named": {
         "fps": 24,
