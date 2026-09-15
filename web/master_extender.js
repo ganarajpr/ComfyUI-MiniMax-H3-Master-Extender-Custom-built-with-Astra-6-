@@ -222,7 +222,7 @@ function setupModeWidgets(node) {
 
 // ---------------------------------------------------------------------------
 // Simplified panel: every native widget is hidden and drawn by the DOM panel
-// instead, grouped into Engine / Quality / Clips / Continuity / Performance.
+// instead, grouped into Engine / Quality / Continuity / Performance / Clips.
 // Values still live in the native widgets, so the API and saved workflows are
 // unchanged; this is presentation only.
 // ---------------------------------------------------------------------------
@@ -234,7 +234,9 @@ const QUALITY_PRESETS = {
                 pass2: { "16:9": "1280x720", "9:16": "720x1280 (9:16)", "1:1": "1024x1024 (1:1)" }, denoise: 0.25 },
     high:     { label: "High · 768p",     pass1: { "16:9": "608x352 (16:9)", "9:16": "352x608 (9:16)", "1:1": "512x512 (1:1)" },
                 pass2: { "16:9": "1344x768 (16:9)", "9:16": "768x1344 (9:16)", "1:1": "1024x1024 (1:1)" }, denoise: 0.25 },
-    cinema:   { label: "Cinema · 1080p",  pass1: { "16:9": "608x352 (16:9)", "9:16": "352x608 (9:16)", "1:1": "512x512 (1:1)" },
+    // 1080p drafts at 608p: the 3D latent upscaler is a ~2x model, and a 352p draft
+    // blown up 3x leaves it inventing detail the refine pass then has to fix.
+    cinema:   { label: "Cinema · 1080p",  pass1: { "16:9": "1056x608 (16:9)", "9:16": "608x1056 (9:16)", "1:1": "512x512 (1:1)" },
                 pass2: { "16:9": "1920x1088 (16:9)", "9:16": "1088x1920 (9:16)", "1:1": "1024x1024 (1:1)" }, denoise: 0.25 },
 };
 
@@ -341,7 +343,7 @@ function uiSegmented(values, current, onChange) {
     return wrap;
 }
 
-function uiSectionHeader(title, { summary, open, collapsible, onToggle } = {}) {
+function uiSectionHeader(title, { summary, open, collapsible, onToggle, actions } = {}) {
     const head = document.createElement("div");
     head.style.cssText = `display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px; border-radius: 6px; background: #1a1a26; border: 1px solid #262636; ${collapsible ? "cursor: pointer;" : ""} user-select: none;`;
     const left = document.createElement("span");
@@ -355,6 +357,7 @@ function uiSectionHeader(title, { summary, open, collapsible, onToggle } = {}) {
         sum.textContent = summary;
         right.appendChild(sum);
     }
+    if (actions) right.appendChild(actions);
     if (collapsible) {
         const chev = document.createElement("span");
         chev.textContent = open ? "▴" : "▾";
@@ -579,7 +582,15 @@ app.registerExtension({
             }
 
             function buildEngine(wrap) {
-                wrap.appendChild(uiRow("engine", bindSelect("accel_mode"), { hint: "PDD 8-step: official parallel-decoding LoRA (4/6/8 steps). Turbo LoRA: any turbo LoRA with its own step count." }));
+                // Each engine has a native step count: PDD is trained for 8 evaluations,
+                // the turbo LoRAs for 4. Switching engine resets steps to that default.
+                const accelW = W("accel_mode");
+                const accelSel = uiSelect(comboValues(accelW), accelW?.value, (v) => {
+                    setW("accel_mode", v, { rerender: false });
+                    setW("pdd_nfe", String(v).toLowerCase().startsWith("turbo") ? "4" : "8", { rerender: false });
+                    renderUI();
+                });
+                wrap.appendChild(uiRow("engine", accelSel, { hint: "PDD 8-step: official parallel-decoding LoRA (4/6/8 steps). Turbo LoRA: any turbo LoRA with its own step count." }));
                 if (isTurbo()) {
                     wrap.appendChild(uiRow("turbo lora", bindSelect("turbo_lora", { render: shortModelName })));
                     wrap.appendChild(uiRow("steps", bindSelect("pdd_nfe")));
@@ -846,7 +857,6 @@ app.registerExtension({
                         <span style="color: #9292ab; font-size: 11px; font-weight: 500;">
                             ${clipsState.length} Clips (${totalSec.toFixed(1)}s / ${totalFrames} frames)
                         </span>
-                        <button id="add-clip-btn" style="background: #6355d8; hover: #7568e6; color: #ffffff; border: none; padding: 5px 12px; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 12px; box-shadow: 0 2px 4px rgba(99,85,216,0.3);">+ Add Clip</button>
                     </div>
                 `;
                 container.appendChild(header);
@@ -860,7 +870,7 @@ app.registerExtension({
                 container.appendChild(section("engine", "Engine", engineSummary, buildEngine));
                 container.appendChild(section("quality", "Quality", qualitySummary, buildQuality));
 
-                header.querySelector("#add-clip-btn").onclick = () => {
+                const addClip = () => {
                     const nextId = nextClipId(clipsState);
                     clipsState.push({
                         id: nextId,
@@ -877,9 +887,19 @@ app.registerExtension({
                     renderUI();
                 };
 
+                // 3. Continuity (expert only) + Performance sit above the clips, so the
+                // clip cards are the last thing before the run bar.
+                if (expert()) container.appendChild(section("continuity", "Continuity", continuitySummary, buildContinuity));
+                container.appendChild(section("performance", "Performance", performanceSummary, buildPerformance));
+
+                // 4. Clips: header carries the Add Clip button so it sits next to the cards.
                 {
                     const totalSecClips = clipsState.reduce((acc, c) => acc + Number(c.duration || DUR_DEFAULT), 0);
-                    container.appendChild(uiSectionHeader("Clips", { summary: `${clipsState.length} clip${clipsState.length === 1 ? "" : "s"} · ${totalSecClips.toFixed(0)} s`, collapsible: false }));
+                    const addBtn = document.createElement("button");
+                    addBtn.textContent = "+ Add Clip";
+                    addBtn.style.cssText = "background: #6355d8; color: #ffffff; border: none; padding: 3px 10px; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 11px; box-shadow: 0 2px 4px rgba(99,85,216,0.3); white-space: nowrap;";
+                    addBtn.onclick = (e) => { e.stopPropagation(); addClip(); };
+                    container.appendChild(uiSectionHeader("Clips", { summary: `${clipsState.length} clip${clipsState.length === 1 ? "" : "s"} · ${totalSecClips.toFixed(0)} s`, collapsible: false, actions: addBtn }));
                 }
                 container.appendChild(projectControls.references());
 
@@ -1064,11 +1084,7 @@ app.registerExtension({
 
                 container.appendChild(horizontalContainer);
 
-                // 3b. Continuity (expert only) + Performance (collapsed summary by default)
-                if (expert()) container.appendChild(section("continuity", "Continuity", continuitySummary, buildContinuity));
-                container.appendChild(section("performance", "Performance", performanceSummary, buildPerformance));
-
-                // 4. Footer: run mode + Run
+                // 5. Footer: run mode + Run
                 const footer = document.createElement("div");
                 footer.style.cssText = "display: flex; gap: 10px; align-items: center;";
                 const runRow = uiRow("run", bindSelect("run_mode", { render: (v) => String(v).replace("_", " ") }), { hint: "clip by clip renders one clip and pauses for validation; full batch renders everything." });
