@@ -549,8 +549,10 @@ app.registerExtension({
                 const steps = getW("pdd_nfe", "8");
                 const p2 = String(getW("pass2_lora", "none"));
                 const p2note = p2 !== "none" ? ` · refine ${shortModelName(p2)}${String(getW("pass2_lora_mode", "")).startsWith("replace") ? " (replace)" : ""}` : "";
-                if (isTurbo()) return `Turbo LoRA · ${shortModelName(getW("turbo_lora"))} · ${steps} steps · ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}${p2note}`;
-                return `PDD ${steps}-step · ${shortModelName(getW("pdd_file"))}${p2note}`;
+                const bridge = String(getW("semantic_bridge", "none"));
+                const bridgeNote = bridge !== "none" ? ` · bridge α ${Number(getW("semantic_bridge_alpha", 0)).toFixed(2)}` : "";
+                if (isTurbo()) return `Turbo LoRA · ${shortModelName(getW("turbo_lora"))} · ${steps} steps · ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}${p2note}${bridgeNote}`;
+                return `PDD ${steps}-step · ${shortModelName(getW("pdd_file"))}${p2note}${bridgeNote}`;
             }
             function qualitySummary() {
                 const { preset, orientation } = currentPreset();
@@ -615,6 +617,18 @@ app.registerExtension({
                         { indent: true, hint: "stack: on top of the engine LoRA. replace: base model + this LoRA only (step-distilled LoRAs)." }));
                     wrap.appendChild(uiRow("refine schedule steps", bindNumber("pass2_steps"),
                         { indent: true, hint: "0 = same as engine steps. Tail length = round(steps x refine denoise)." }));
+                }
+                // Semantic bridge (BUNNY H3 Conditioning Bridge): a small residual MLP on the
+                // text conditioning of both passes. Only shown on node builds that have the widget.
+                if (W("semantic_bridge")) {
+                    const bridge = String(getW("semantic_bridge", "none"));
+                    wrap.appendChild(uiRow("semantic bridge", bindSelect("semantic_bridge", { render: shortModelName }),
+                        { hint: "BUNNY bridge on the conditioning of both passes: who does what to whom, object ownership, state continuity. none = off." }));
+                    if (bridge !== "none") {
+                        wrap.appendChild(uiRow("bridge alpha", bindNumber("semantic_bridge_alpha"),
+                            { indent: true, hint: "Residual strength. 0.10-0.15 recommended; higher is not better." }));
+                        if (expert()) wrap.appendChild(uiRow("magnitude match", bindSelect("semantic_bridge_match"), { indent: true }));
+                    }
                 }
             }
 

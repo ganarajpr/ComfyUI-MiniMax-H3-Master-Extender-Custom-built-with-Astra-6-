@@ -926,6 +926,9 @@
         1.0,
         "stack on engine LoRA",
         0,
+        "none",
+        0.12,
+        "per_token",
         ""
       ],
       "widgets_values_named": {

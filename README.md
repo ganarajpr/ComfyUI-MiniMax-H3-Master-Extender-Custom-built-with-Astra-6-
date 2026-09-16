@@ -58,6 +58,8 @@ The included workflow is deliberately blank: one empty prompt, no reference imag
 
 The PDD Apply and Scheduler nodes must be installed even though they are called internally and do not appear as boxes in the example workflow. H3 Turbo is not a dependency of this workflow. Avoid duplicate installations of the same node classes. The standalone Motion Context pack is not required: the adapted motion-context implementation is included here.
 
+   **Optional: semantic bridge.** The Master node has `semantic_bridge` / `semantic_bridge_alpha` / `semantic_bridge_match` widgets that run the [BUNNY H3 Conditioning Bridge](https://github.com/aa335615543-ux/BUNNY_H3_Conditioning_Bridge) on the conditioning of both passes (model: [JOKER141/BUNNY_H3_Conditioning_Bridge](https://huggingface.co/JOKER141/BUNNY_H3_Conditioning_Bridge)). Install that node and put the adapter in its `models/` folder or in `models/semantic_bridge`; leave `semantic_bridge` at `none` when it is not installed.
+
 ## Model files (not included)
 
 These are the filenames selected in the source workflow. Choose compatible alternatives in the dropdowns if you use another supported precision or filename; renaming an incompatible model does not make it compatible.

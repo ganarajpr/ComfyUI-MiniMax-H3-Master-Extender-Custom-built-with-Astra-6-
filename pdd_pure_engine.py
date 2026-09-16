@@ -91,6 +91,28 @@ def _safe_get_output(obj, idx: int, key: str = None):
     return obj
 
 
+def apply_semantic_bridge(positive, adapter, alpha, magnitude_match, node_mappings, label="", log=None):
+    """Run the BUNNY H3 Conditioning Bridge (a small residual MLP over the
+    5120-d H3 text conditioning) on `positive`. `adapter` "none" / "" or
+    alpha 0 = pass-through. The bridge pack (custom_nodes/BUNNY_H3_Conditioning_Bridge)
+    is an optional dependency resolved from `node_mappings` at run time."""
+    if not adapter or str(adapter).lower() == "none" or float(alpha) == 0.0:
+        return positive
+    bridge_cls = node_mappings.get("BunnyH3ConditioningBridge")
+    if bridge_cls is None:
+        raise RuntimeError(
+            "semantic_bridge is set but the BUNNY H3 Conditioning Bridge node is not installed "
+            "(clone github.com/aa335615543-ux/BUNNY_H3_Conditioning_Bridge into custom_nodes and "
+            "restart ComfyUI), or set semantic_bridge to none."
+        )
+    res = bridge_cls().apply(positive, str(adapter), float(alpha), str(magnitude_match), True)
+    bridged = _safe_get_output(res, 0, "conditioning")
+    if log is not None:
+        log.info("Semantic bridge%s: %s @ alpha %.2f (%s)",
+                 f" ({label})" if label else "", adapter, float(alpha), magnitude_match)
+    return bridged
+
+
 class PurePDDEngine:
     def __init__(
         self,
@@ -247,6 +269,19 @@ class PurePDDEngine:
         self.pass2_lora_mode = "replace" if str(mode).lower().startswith("replace") else "stack"
         self.pass2_steps = int(steps or 0)
         self.pass2_model = None
+
+    def configure_semantic_bridge(self, adapter="none", alpha=0.12, magnitude_match="per_token"):
+        """BUNNY H3 Conditioning Bridge on the conditioning of both passes ("none" = off).
+        Applied right after the Ref2VA encoder, before the motion context is attached."""
+        self.semantic_bridge = adapter if adapter and str(adapter).lower() != "none" else None
+        self.semantic_bridge_alpha = float(alpha)
+        self.semantic_bridge_match = str(magnitude_match or "per_token")
+
+    def _bridge(self, positive, label=""):
+        if getattr(self, "semantic_bridge", None) is None:
+            return positive
+        return apply_semantic_bridge(positive, self.semantic_bridge, self.semantic_bridge_alpha,
+                                     self.semantic_bridge_match, nodes.NODE_CLASS_MAPPINGS, label, _LOG)
 
     def _pass2_lora_active(self):
         return getattr(self, "pass2_lora", None) is not None
@@ -750,7 +785,7 @@ class PurePDDEngine:
             ref_image_size="match",
             ref_images=ref_images,
         )
-        pos_p1 = _safe_get_output(out_p1, 0, "positive")
+        pos_p1 = self._bridge(_safe_get_output(out_p1, 0, "positive"), "pass 1")
         latent_p1 = _safe_get_output(out_p1, 1, "latent")
 
         # If extending (clip_index > 0) and previous latent available: attach motion context
@@ -783,7 +818,7 @@ class PurePDDEngine:
             ref_image_size="match",
             ref_images=ref_images,
         )
-        pos_p2 = _safe_get_output(out_p2, 0, "positive")
+        pos_p2 = self._bridge(_safe_get_output(out_p2, 0, "positive"), "pass 2")
         latent_p2 = _safe_get_output(out_p2, 1, "latent")
         if clip_index > 0 and previous_latent is not None:
             pos_p2, trim_p2, _, _, _ = self.motion_ram.apply(

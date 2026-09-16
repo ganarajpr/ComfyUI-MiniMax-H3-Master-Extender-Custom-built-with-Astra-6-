@@ -170,6 +170,24 @@ def _send_progress(owner, clip_index, total_clips, stage, message, pct=0.0):
         pass
 
 
+
+def _semantic_bridge_adapters():
+    """Adapter files known to the BUNNY H3 Conditioning Bridge pack (optional dependency):
+    its bundled models/ folder plus the `semantic_bridge` model category."""
+    names = []
+    bridge_cls = nodes.NODE_CLASS_MAPPINGS.get("BunnyH3ConditioningBridge")
+    if bridge_cls is not None:
+        try:
+            names = list(bridge_cls.INPUT_TYPES()["required"]["adapter"][0])
+        except Exception:
+            names = []
+    if not names:
+        try:
+            names = list(folder_paths.get_filename_list("semantic_bridge"))
+        except Exception:
+            names = []
+    return [n for n in names if n.lower().endswith(".safetensors") and not n.startswith("NO_ADAPTER_FOUND")]
+
 class MiniMaxH3MasterExtender:
     """Master node for MiniMax H3 multishot video generation with Pure PDD engine."""
 
@@ -259,6 +277,10 @@ class MiniMaxH3MasterExtender:
                 "pass2_lora_strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "tooltip": "Strength of the pass-2 LoRA."}),
                 "pass2_lora_mode": (["stack on engine LoRA", "replace engine LoRA"], {"default": "stack on engine LoRA", "tooltip": "stack: pass-2 LoRA on top of the PDD heads / turbo LoRA. replace: pass 2 samples base model + pass-2 LoRA only (use for step-distilled LoRAs, e.g. a 3-step turbo)."}),
                 "pass2_steps": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1, "tooltip": "Full schedule length pass 2's tail is cut from when a pass-2 LoRA is set (tail = round(steps x pass2_denoise)). 0 = same as the engine steps."}),
+                # --- Semantic bridge (BUNNY H3 Conditioning Bridge, optional dependency) ---
+                "semantic_bridge": (["none"] + _semantic_bridge_adapters(), {"default": "none", "tooltip": "BUNNY H3 Conditioning Bridge adapter applied to the text conditioning of both passes (needs the BUNNY_H3_Conditioning_Bridge custom node). Improves who-does-what-to-whom, object ownership and state continuity in complex multi-character action. none = off."}),
+                "semantic_bridge_alpha": ("FLOAT", {"default": 0.12, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Residual strength of the semantic bridge. 0.10-0.15 recommended by the author; higher is not better."}),
+                "semantic_bridge_match": (["per_token", "global", "none"], {"default": "per_token", "tooltip": "How the bridge output is rescaled to the original conditioning magnitude before blending. per_token is the recommended setting."}),
                 # --- External prompt inputs: wire a STRING into a clip instead of typing it ---
                 "clip_prompt_1": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 1's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
                 "clip_prompt_2": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 2's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
@@ -377,7 +399,9 @@ class MiniMaxH3MasterExtender:
                     int(pass2_chunk_frames), int(pass2_chunk_overlap),
                     accel_mode, turbo_lora, float(turbo_lora_strength), turbo_sampler, turbo_scheduler,
                     str(kwargs.get("pass2_lora", "none")), float(kwargs.get("pass2_lora_strength", 1.0)),
-                    str(kwargs.get("pass2_lora_mode", "stack on engine LoRA")), int(kwargs.get("pass2_steps", 0))]
+                    str(kwargs.get("pass2_lora_mode", "stack on engine LoRA")), int(kwargs.get("pass2_steps", 0)),
+                    str(kwargs.get("semantic_bridge", "none")), float(kwargs.get("semantic_bridge_alpha", 0.12)),
+                    str(kwargs.get("semantic_bridge_match", "per_token"))]
         signature = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
         for dp, mp, state in ((data_path, manifest_path, manifest),
                                (draft_path, draft_manifest_path, draft_manifest)):
@@ -446,6 +470,11 @@ class MiniMaxH3MasterExtender:
             kwargs.get("pass2_lora_strength", 1.0),
             kwargs.get("pass2_lora_mode", "stack on engine LoRA"),
             kwargs.get("pass2_steps", 0),
+        )
+        engine.configure_semantic_bridge(
+            kwargs.get("semantic_bridge", "none"),
+            kwargs.get("semantic_bridge_alpha", 0.12),
+            kwargs.get("semantic_bridge_match", "per_token"),
         )
 
         previous_handle = None
