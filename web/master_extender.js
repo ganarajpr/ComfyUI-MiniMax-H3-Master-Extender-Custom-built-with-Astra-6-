@@ -650,10 +650,13 @@ app.registerExtension({
                     wrap.appendChild(uiRow("draft resolution", bindSelect("pass1_resolution"), { indent: true }));
                     wrap.appendChild(uiRow("refine resolution", bindSelect("pass2_resolution"), { indent: true }));
                     wrap.appendChild(uiRow("refine denoise", bindNumber("pass2_denoise"), { indent: true }));
-                    wrap.appendChild(uiRow("upscaler", bindSelect("upscaler_model", { render: shortModelName }), { indent: true }));
                 } else {
-                    wrap.appendChild(uiHint(`${qualitySummary().split(" · ").slice(2).join(" · ")} · upscaler ${shortModelName(getW("upscaler_model"))}`));
+                    wrap.appendChild(uiHint(qualitySummary().split(" · ").slice(2).join(" · ")));
                 }
+                // The latent upscaler is a per-render choice independent of the preset, so it
+                // stays visible in Simple mode too (models/latent_upscale_models).
+                wrap.appendChild(uiRow("upscaler", bindSelect("upscaler_model", { render: shortModelName }),
+                    { hint: "3D latent upscaler between the draft and refine passes." }));
             }
 
             function buildContinuity(wrap) {
