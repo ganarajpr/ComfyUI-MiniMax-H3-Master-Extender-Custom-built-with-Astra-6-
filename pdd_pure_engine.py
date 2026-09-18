@@ -113,6 +113,34 @@ def apply_semantic_bridge(positive, adapter, alpha, magnitude_match, node_mappin
     return bridged
 
 
+_UPSCALER_PRECISION_CACHE = {}
+
+
+def _upscaler_precision(model_name, default="fp16"):
+    """Compute precision for the latent upscaler, matched to the checkpoint's own
+    storage dtype (a bf16 requantization runs as bf16, an fp16 file as fp16; fp32
+    files keep the fast fp16 default). Cached per file name."""
+    if model_name in _UPSCALER_PRECISION_CACHE:
+        return _UPSCALER_PRECISION_CACHE[model_name]
+    precision = default
+    try:
+        import folder_paths
+        from safetensors import safe_open
+        path = folder_paths.get_full_path("latent_upscale_models", model_name)
+        if path:
+            with safe_open(path, framework="pt", device="cpu") as f:
+                dtypes = {f.get_slice(k).get_dtype() for k in list(f.keys())[:64]}
+            if "BF16" in dtypes:
+                precision = "bf16"
+            elif dtypes == {"F16"}:
+                precision = "fp16"
+    except Exception as exc:  # unknown format: keep the default
+        _LOG.debug("upscaler precision probe failed for %s: %s", model_name, exc)
+    _UPSCALER_PRECISION_CACHE[model_name] = precision
+    _LOG.info("Latent upscaler %s -> compute precision %s", model_name, precision)
+    return precision
+
+
 class PurePDDEngine:
     def __init__(
         self,
@@ -704,7 +732,7 @@ class PurePDDEngine:
             "align": 32,
             "keep_proportion": False,
             "device": device,
-            "precision": "fp16",
+            "precision": _upscaler_precision(self.upscaler_model),
             "offload_after_upscale": self.smart_offload,
             "enable_temporal_chunking": True,
             "force_unload": bool(self.smart_offload),
