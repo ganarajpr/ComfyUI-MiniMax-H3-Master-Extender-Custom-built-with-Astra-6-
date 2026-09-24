@@ -9,7 +9,7 @@ import folder_paths
 import nodes
 from server import PromptServer
 
-from .motion_context_disk import _ensure_cache_root, _preview_temp_root
+from .motion_context_disk import _chain_paths, _ensure_cache_root, _preview_temp_root
 
 
 def load_reference_images(refs_json):
@@ -59,6 +59,55 @@ def _chain_key(clips):
     return "c_" + hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+def _clip_fingerprint(previous, clip, seed):
+    """Fingerprint of clip i = its inputs + seed + everything before it."""
+    blob = json.dumps([previous or "", _clip_identity(clip), int(seed)], sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def clip_cache_states(clips):
+    """Per clip: 'cached' (on disk, rendered from exactly these inputs), 'stale' (on disk,
+    inputs changed since), 'unverified' (on disk, cached before fingerprints) or 'none'.
+
+    Reads the chain manifest as-is (no recovery), so it is safe while a clip renders.
+    """
+    data_path, manifest_path = _chain_paths(f"master_v2_{_chain_key(clips)}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = {}
+    count = len(manifest.get("segments", []))
+    stored = list(manifest.get("clip_fingerprints") or [])[:count]
+    states, previous = [], None
+    for index, clip in enumerate(clips):
+        try:
+            previous = _clip_fingerprint(previous, clip, clip.get("seed", 42))
+        except (TypeError, ValueError):
+            previous = None
+        if index >= count:
+            states.append("none")
+        elif index >= len(stored) or not stored[index]:
+            states.append("unverified")
+        else:
+            states.append("cached" if stored[index] == previous else "stale")
+    return states, _clip_videos(data_path, count)
+
+
+def _clip_videos(data_path, count):
+    """The per-clip final segments Final Decode joins, as /view parameters (output folder only)."""
+    final_dir = Path(data_path).with_suffix(".final.video")
+    try:
+        subfolder = final_dir.resolve().relative_to(Path(folder_paths.get_output_directory()).resolve()).as_posix()
+    except ValueError:
+        return [None] * count
+    videos = []
+    for index in range(count):
+        found = sorted(final_dir.glob(f"ref2va_{index:04d}.mp4"))
+        videos.append({"filename": found[0].name, "subfolder": subfolder,
+                       "mtime": int(found[0].stat().st_mtime)} if found else None)
+    return videos
+
+
 def clear_project_cache(clips_list, final_ids):
     """Delete the disk-cache chains of the given projects (their clips_json).
 
@@ -98,6 +147,16 @@ def clear_project_cache(clips_list, final_ids):
             shutil.rmtree(path)
         else:
             path.unlink(missing_ok=True)
+
+
+@PromptServer.instance.routes.post("/minimax_master/cache_status")
+async def cache_status(request):
+    body = await request.json()
+    clips = json.loads(body.get("clips") or "[]") if isinstance(body, dict) else None
+    if not isinstance(clips, list) or not clips or not all(isinstance(c, dict) for c in clips):
+        return web.json_response({"states": [], "videos": []})
+    states, videos = clip_cache_states(clips)
+    return web.json_response({"states": states, "videos": videos})
 
 
 @PromptServer.instance.routes.post("/minimax_master/clear_cache")

@@ -34,6 +34,20 @@ const H3_SECTIONS = new Set([
     "camera", "style", "negative", "audio", "music", "voice", "shots",
 ]);
 
+async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.cssText = "position: fixed; left: -9999px;";
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+}
+
 function escapeHtml(text) {
     return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -423,6 +437,12 @@ app.registerExtension({
             if (refsWidget) refsWidget.type = "hidden";
 
             let clipsState = [];
+            // Validated clips show as one line; ids the user expanded this session.
+            const expandedValidated = new Set();
+            // Disk-cache state per clip index, from /minimax_master/cache_status.
+            let cacheStates = [];
+            let cacheVideos = [];
+            let cacheTimer = 0;
             try {
                 clipsState = JSON.parse(clipsWidget.value || "[]");
             } catch (e) {
@@ -477,6 +497,74 @@ app.registerExtension({
                     clipsWidget.value = JSON.stringify(clipsState, null, 2);
                 }
                 node.setDirtyCanvas(true, true);
+                refreshCacheStatus();
+            }
+
+            function refreshCacheStatus() {
+                clearTimeout(cacheTimer);
+                cacheTimer = setTimeout(async () => {
+                    try {
+                        const response = await api.fetchApi("/minimax_master/cache_status", {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ clips: JSON.stringify(clipsState) }),
+                        });
+                        const result = await response.json();
+                        const states = result.states || [], videos = result.videos || [];
+                        if (JSON.stringify([states, videos]) !== JSON.stringify([cacheStates, cacheVideos])) {
+                            cacheStates = states;
+                            cacheVideos = videos;
+                            renderUI();
+                        }
+                    } catch (error) {
+                        console.warn("MiniMax Master: cache status check failed", error);
+                    }
+                }, 400);
+            }
+
+            const CACHE_BADGES = {
+                cached: ["● cached", "#4ade80", "On disk, rendered from exactly this prompt, seed, duration and LoRAs (and the clips before it). Validating it reuses the render."],
+                stale: ["● changed", "#f59e0b", "On disk, but the prompt, seed, duration, LoRAs or an earlier clip changed since it was rendered. It will render again."],
+                unverified: ["● on disk", "#9ca3af", "On disk from before cache checks existed; cannot confirm it matches the current inputs."],
+                none: ["○ not cached", "#6b7280", "Not rendered yet for these inputs."],
+            };
+            function cacheBadge(index) {
+                const badge = CACHE_BADGES[cacheStates[index]];
+                return badge ? `<span title="${badge[2]}" style="color: ${badge[1]}; font-size: 10px; white-space: nowrap;">${badge[0]}</span>` : "";
+            }
+
+            function clipVideo(index, style) {
+                const info = cacheVideos[index];
+                if (!info) return null;
+                const video = document.createElement("video");
+                const query = new URLSearchParams({ filename: info.filename, subfolder: info.subfolder, type: "output", t: String(info.mtime) });
+                video.src = api.apiURL(`/view?${query}`);
+                video.muted = true;
+                video.loop = true;
+                video.playsInline = true;
+                video.preload = "metadata";
+                video.title = "Rendered clip (hover to play)";
+                video.style.cssText = `display: block; background: #000; border-radius: 4px; object-fit: contain; ${style}`;
+                video.onmouseenter = () => video.play().catch(() => {});
+                video.onmouseleave = () => video.pause();
+                return video;
+            }
+
+            function copyButton(clip) {
+                const button = document.createElement("button");
+                button.textContent = "⧉ Copy";
+                button.title = "Copy the prompt this clip renders from (the rewritten text when it was rewritten)";
+                button.style.cssText = "background: #252536; border: 1px solid #3f3f58; color: #ddd; border-radius: 3px; cursor: pointer; padding: 1px 6px; font-size: 10px; white-space: nowrap;";
+                button.onclick = async (e) => {
+                    e.stopPropagation();
+                    try {
+                        await copyText(clip.prompt || "");
+                        button.textContent = "✓ Copied";
+                    } catch (error) {
+                        button.textContent = "Copy failed";
+                    }
+                    setTimeout(() => { button.textContent = "⧉ Copy"; }, 1200);
+                };
+                return button;
             }
 
             const originalConfigure = node.onConfigure;
@@ -1137,24 +1225,42 @@ app.registerExtension({
                     }
                 }
 
-                // 3. HORIZONTAL Clip Cards Container (Placed horizontally side-by-side)
-                const horizontalContainer = document.createElement("div");
-                horizontalContainer.style.cssText = `
-                    display: flex;
-                    flex-direction: row;
-                    overflow-x: auto;
-                    gap: 14px;
-                    padding: 6px 2px 14px 2px;
-                    scroll-behavior: smooth;
+                // Clip cards wrap into rows; validated clips collapse to one line each.
+                const clipGrid = document.createElement("div");
+                clipGrid.style.cssText = `
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+                    gap: 10px;
+                    padding: 6px 2px 10px 2px;
                 `;
 
                 clipsState.forEach((clip, index) => {
+                    const isValidated = Boolean(clip.validated);
+                    if (isValidated && !expandedValidated.has(clip.id)) {
+                        const row = document.createElement("div");
+                        row.className = "minimax-clip-card";
+                        row._clipId = clip.id;
+                        row.title = "Validated. Click to expand.";
+                        row.style.cssText = "grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; background: #18261e; border: 1px solid #2e6a45; border-radius: 6px; padding: 5px 10px; cursor: pointer; box-sizing: border-box;";
+                        const thumb = clipVideo(index, "width: 96px; height: 54px; flex: 0 0 96px;");
+                        if (thumb) row.appendChild(thumb);
+                        row.insertAdjacentHTML("beforeend", `
+                            <span style="color: #4ade80; font-weight: 700; font-size: 12px; white-space: nowrap;">✓ Clip ${index + 1}</span>
+                            <span style="background: #111118; color: #9c9cb8; padding: 1px 5px; border-radius: 3px; font-size: 10px; white-space: nowrap;">${clip.duration}s</span>
+                            ${cacheBadge(index)}
+                            <span style="flex: 1;"></span>
+                        `);
+                        row.appendChild(copyButton(clip));
+                        row.insertAdjacentHTML("beforeend", `<span style="color: #6b8f7a; font-size: 11px;">▾</span>`);
+                        row.onclick = () => { expandedValidated.add(clip.id); renderUI(); };
+                        if (promptPanel.clipId === clip.id) markCardSelected(row, true);
+                        clipGrid.appendChild(row);
+                        return;
+                    }
                     const card = document.createElement("div");
                     card.className = "minimax-clip-card";
-                    const isValidated = Boolean(clip.validated);
                     card.style.cssText = `
-                        flex: 0 0 310px;
-                        width: 310px;
+                        min-width: 0;
                         background: ${isValidated ? "#18261e" : "#1c1c28"};
                         border: 1px solid ${isValidated ? "#2e6a45" : "#323246"};
                         border-radius: 7px;
@@ -1187,6 +1293,7 @@ app.registerExtension({
                                     <input type="checkbox" class="val-check" ${isValidated ? "checked" : ""}>
                                     <span>Validated</span>
                                 </label>
+                                ${isValidated ? `<button class="fold-btn" title="Collapse this validated clip" style="background: transparent; border: none; color: #6b8f7a; cursor: pointer; font-size: 12px; padding: 0 2px;">▴</button>` : ''}
                                 ${clipsState.length > 1 ? `<button class="del-btn" title="Delete Clip" style="background: transparent; border: none; color: #ef4444; cursor: pointer; font-size: 14px; padding: 0 2px;">✕</button>` : ''}
                             </div>
                         </div>
@@ -1194,8 +1301,8 @@ app.registerExtension({
                         <!-- Prompt: compact preview; click it (or the card) to edit in the side panel -->
                         <div>
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
-                                <span style="font-size: 10px; color: #8888a4;">Prompt:</span>
-                                <span class="prompt-meta" style="font-size: 10px; color: #6f6f8a; font-variant-numeric: tabular-nums;"></span>
+                                <span style="display: flex; align-items: center; gap: 6px;"><span style="font-size: 10px; color: #8888a4;">Prompt:</span>${cacheBadge(index)}</span>
+                                <span style="display: flex; align-items: center; gap: 6px;"><span class="prompt-meta" style="font-size: 10px; color: #6f6f8a; font-variant-numeric: tabular-nums;"></span><span class="copy-slot"></span></span>
                             </div>
                             <div class="prompt-preview minimax-prompt-preview" title="Click to edit in the prompt panel" style="box-sizing: border-box; width: 100%; min-height: ${PROMPT_PREVIEW_LINES * 15 + 12}px; max-height: ${PROMPT_PREVIEW_LINES * 15 + 12}px; overflow: hidden; background: #101016; border: 1px solid #2e2e42; border-radius: 4px; color: #d4d4e4; padding: 6px 8px; font-size: 11px; line-height: 15px; white-space: pre-wrap; word-break: break-word; cursor: text; position: relative;"></div>
                         </div>
@@ -1234,8 +1341,14 @@ app.registerExtension({
                     // Event Listeners for Card
                     const preview = card.querySelector(".prompt-preview");
                     const promptMeta = card.querySelector(".prompt-meta");
+                    const cardVideo = clipVideo(index, "width: 100%; aspect-ratio: 16 / 9;");
+                    if (cardVideo) preview.parentElement.appendChild(cardVideo);
                     const paintPreview = () => {
                         const live = liveRewrite.get(clip.id);
+                        if (cardVideo) {
+                            cardVideo.style.display = live ? "none" : "block";
+                            preview.style.display = live ? "" : "none";
+                        }
                         const text = live ? (live.phase === "writing" ? live.text : clip.prompt || "") : (clip.prompt || "");
                         const { text: shown, fromSummary } = previewText(text);
                         preview.innerHTML = text.trim()
@@ -1305,9 +1418,14 @@ app.registerExtension({
                     const valCheck = card.querySelector(".val-check");
                     valCheck.onchange = () => {
                         clip.validated = valCheck.checked;
+                        expandedValidated.delete(clip.id);
                         saveState();
                         renderUI();
                     };
+
+                    card.querySelector(".copy-slot").appendChild(copyButton(clip));
+                    const foldBtn = card.querySelector(".fold-btn");
+                    if (foldBtn) foldBtn.onclick = () => { expandedValidated.delete(clip.id); renderUI(); };
 
                     const delBtn = card.querySelector(".del-btn");
                     if (delBtn) {
@@ -1318,10 +1436,10 @@ app.registerExtension({
                         };
                     }
 
-                    horizontalContainer.appendChild(card);
+                    clipGrid.appendChild(card);
                 });
 
-                container.appendChild(horizontalContainer);
+                container.appendChild(clipGrid);
 
                 // 5. Footer: run mode + Run
                 const footer = document.createElement("div");
@@ -1374,6 +1492,7 @@ app.registerExtension({
             }
 
             renderUI();
+            refreshCacheStatus();
             node.addDOMWidget("master_ui", "Master Director UI", container);
 
             // The panel draws every setting itself; the native widgets only hold
@@ -1397,6 +1516,7 @@ app.registerExtension({
                     if (pPct) pPct.textContent = `${pct}%`;
                     if (pBar) pBar.style.width = `${pct}%`;
                 }
+                if (data.stage === "done") refreshCacheStatus();
             };
             api.addEventListener(EVENT_PROGRESS, progressHandler);
 

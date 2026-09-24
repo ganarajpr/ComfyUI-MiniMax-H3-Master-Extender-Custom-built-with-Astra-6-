@@ -26,8 +26,10 @@ class MasterProjectTests(unittest.TestCase):
             "json": json, "hashlib": hashlib, "Path": Path, "re": re, "shutil": shutil,
             "_ensure_cache_root": lambda: self.cache,
             "_preview_temp_root": lambda: self.preview,
+            "_chain_paths": lambda owner: (self.cache / f"chain_{owner}.h3cache", self.cache / f"chain_{owner}.json"),
             "folder_paths": SimpleNamespace(
                 get_input_directory=lambda: str(self.inputs),
+                get_output_directory=lambda: str(self.root),
                 get_annotated_filepath=lambda name: str(self.inputs / name),
             ),
             "nodes": SimpleNamespace(LoadImage=lambda: SimpleNamespace(load_image=self.load_image)),
@@ -113,6 +115,28 @@ class MasterProjectTests(unittest.TestCase):
         for change in ({"prompt": "b"}, {"duration": 10}, {"loras": [{"lora": "x"}]}):
             self.assertNotEqual(key, self.ns["_chain_key"]([dict(base, **change)]))
         self.assertRegex(key, r"^c_[0-9a-f]{16}$")
+
+    def test_cache_states_follow_fingerprints(self):
+        clips = [{"id": i, "prompt": f"clip {i}", "duration": 15, "loras": [], "seed": 10 + i} for i in range(4)]
+        fps, previous = [], None
+        for clip in clips[:3]:
+            previous = self.ns["_clip_fingerprint"](previous, clip, clip["seed"])
+            fps.append(previous)
+        manifest = {"segments": [{}, {}, {}], "clip_fingerprints": [fps[0], None, fps[2]]}
+        key = self.ns["_chain_key"](clips)
+        (self.cache / f"chain_master_v2_{key}.json").write_text(json.dumps(manifest))
+        final_dir = self.cache / f"chain_master_v2_{key}.final.video"
+        final_dir.mkdir()
+        (final_dir / "ref2va_0000.mp4").write_bytes(b"x")
+        (final_dir / "ref2va_0.guide.pt").write_bytes(b"x")
+        videos = self.ns["clip_cache_states"](clips)[1]
+        self.assertEqual([v and (v["filename"], v["subfolder"]) for v in videos],
+                         [("ref2va_0000.mp4", f"cache/chain_master_v2_{key}.final.video"), None, None])
+        self.assertEqual(self.ns["clip_cache_states"](clips)[0], ["cached", "unverified", "cached", "none"])
+        clips[1]["seed"] = 99   # an earlier clip changed -> every later cached clip is stale too
+        self.assertEqual(self.ns["clip_cache_states"](clips)[0], ["cached", "unverified", "stale", "none"])
+        other = [dict(clips[0], prompt="another project")]
+        self.assertEqual(self.ns["clip_cache_states"](other)[0], ["none"])
 
     def test_clear_rejects_bad_input(self):
         for final in ("*", "../", "6.*", "", "6/7"):

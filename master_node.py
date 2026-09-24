@@ -22,7 +22,7 @@ from server import PromptServer
 
 import folder_paths
 import nodes
-from .master_projects import load_reference_images, _clip_identity, _chain_key
+from .master_projects import load_reference_images, _clip_identity, _chain_key, _clip_fingerprint
 from . import prompt_rewriter
 
 from . import motion_context_disk
@@ -200,12 +200,6 @@ def _send_clips(owner, clips, fields=None, chain=None):
         _send_to_queuer(EVENT_CLIPS, payload)
     except Exception:
         pass
-
-
-def _clip_fingerprint(previous, clip, seed):
-    """Fingerprint of clip i = its inputs + seed + everything before it."""
-    blob = json.dumps([previous or "", _clip_identity(clip), int(seed)], sort_keys=True, default=str)
-    return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
 def _stored_fingerprints(data_path, manifest_path):
