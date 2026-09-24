@@ -493,6 +493,15 @@ app.registerExtension({
                 } catch (error) {
                     console.warn("MiniMax Master: invalid saved clips JSON", error);
                 }
+                // configure() replaced node.properties.h3_ui with the saved object; take its
+                // panel state (mode etc.) into the live `ui` and point the property back at it,
+                // but start with every section collapsed so the Clips section fits.
+                const savedUi = node.properties?.h3_ui;
+                if (savedUi && savedUi !== ui && typeof savedUi === "object") {
+                    for (const [key, value] of Object.entries(savedUi)) if (key !== "open") ui[key] = value;
+                }
+                ui.open = { engine: false, quality: false, continuity: false, performance: false, rewriter: false };
+                node.properties.h3_ui = ui;
                 renderUI();
                 hideNativeWidgets(node);
                 return result;
@@ -511,7 +520,10 @@ app.registerExtension({
                 { mode: "simple", open: { engine: true, quality: true, continuity: false, performance: false, rewriter: false } },
                 node.properties.h3_ui || {},
             );
-            ui.open = Object.assign({ engine: true, quality: true, continuity: false, performance: false, rewriter: false }, ui.open || {});
+            // Every settings section starts collapsed when the workflow loads (each shows a
+            // one-line summary), so the node's default size reaches the Clips section; the
+            // open state saved in the workflow is deliberately not restored.
+            ui.open = { engine: false, quality: false, continuity: false, performance: false, rewriter: false };
             const expert = () => ui.mode === "expert";
 
             const W = (name) => node.widgets?.find((w) => w.name === name);
