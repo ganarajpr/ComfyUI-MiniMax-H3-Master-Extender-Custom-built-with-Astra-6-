@@ -22,7 +22,8 @@ from server import PromptServer
 
 import folder_paths
 import nodes
-from .master_projects import load_reference_images
+from .master_projects import load_reference_images, _clip_identity, _chain_key
+from . import prompt_rewriter
 
 from . import motion_context_disk
 from .motion_context_disk import (
@@ -48,6 +49,8 @@ from .pdd_pure_engine import (
 
 _LOG = logging.getLogger("minimax_h3_master_extender")
 EVENT_PROGRESS = "master_extender_progress"
+EVENT_CLIPS = "master_extender_clips"
+EVENT_REWRITE = "master_extender_rewrite"
 
 
 def _default_clips():
@@ -152,10 +155,21 @@ def _async_decode_allowed(mode, vae, sampled_latent):
         return False
 
 
+def _send_to_queuer(event, payload):
+    """Send a panel event only to the browser that queued the running job.
+
+    Broadcasting reached every open tab, and the panel matches by node id --
+    so a run in one tab rewrote prompts/seeds in another tab whose Master node
+    had the same id. Jobs queued without a client id (API) still broadcast.
+    """
+    server = PromptServer.instance
+    server.send_sync(event, payload, getattr(server, "client_id", None))
+
+
 def _send_progress(owner, clip_index, total_clips, stage, message, pct=0.0):
     """Send real-time progress update to ComfyUI frontend."""
     try:
-        PromptServer.instance.send_sync(
+        _send_to_queuer(
             EVENT_PROGRESS,
             {
                 "owner": str(owner),
@@ -169,6 +183,62 @@ def _send_progress(owner, clip_index, total_clips, stage, message, pct=0.0):
     except Exception:
         pass
 
+
+
+def _send_clips(owner, clips, fields=None, chain=None):
+    """Hand the clip list back to the panel.
+
+    ``fields`` names what the panel may take over; anything else it keeps as the
+    user has it. The rewrite pass sends the prompt fields; the end of the run
+    sends only the seeds, so an edit or 'Rewrite again' made while the clips
+    were rendering is not undone by stale server-side state.
+    """
+    payload = {"owner": str(owner), "clips": clips, "fields": list(fields or [])}
+    if chain:
+        payload["chain"] = str(chain)
+    try:
+        _send_to_queuer(EVENT_CLIPS, payload)
+    except Exception:
+        pass
+
+
+def _clip_fingerprint(previous, clip, seed):
+    """Fingerprint of clip i = its inputs + seed + everything before it."""
+    blob = json.dumps([previous or "", _clip_identity(clip), int(seed)], sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def _stored_fingerprints(data_path, manifest_path):
+    state = _load_manifest_from_paths(data_path, manifest_path) or {}
+    count = len(state.get("segments", []))
+    return list(state.get("clip_fingerprints") or [])[:count]
+
+
+def _store_fingerprints(data_path, manifest_path, fingerprints):
+    """Record per-clip fingerprints for the clips currently on disk."""
+    state = _load_manifest_from_paths(data_path, manifest_path)
+    if not state:
+        return
+    count = len(state.get("segments", []))
+    merged = list(state.get("clip_fingerprints") or [])[:count]
+    merged += [None] * (count - len(merged))
+    for index, value in fingerprints.items():
+        if index < count:
+            merged[index] = value
+    if merged != state.get("clip_fingerprints"):
+        state["clip_fingerprints"] = merged
+        _write_json_atomic(manifest_path, state)
+
+
+def _send_rewrite(owner, index, clip_id, phase, text):
+    """Stream one clip's rewrite to the panel while the writer is still going."""
+    try:
+        _send_to_queuer(
+            EVENT_REWRITE,
+            {"owner": str(owner), "index": int(index), "clip_id": clip_id, "phase": str(phase), "text": text or ""},
+        )
+    except Exception:
+        pass
 
 
 def _semantic_bridge_adapters():
@@ -286,6 +356,34 @@ class MiniMaxH3MasterExtender:
                 "clip_prompt_2": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 2's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
                 "clip_prompt_3": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 3's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
                 "clip_prompt_4": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: feed Clip 4's prompt from another node (a prompter, a text box). When connected and non-empty it replaces the prompt typed in the panel for that clip."}),
+                # --- Built-in prompt rewriter (MiniMax-H3-Prompt-Rewriter-ComfyUI, optional dependency).
+                #     Appended last so saved workflows keep their widget order; 'off' = old behaviour.
+                "rewrite_mode": (prompt_rewriter.MODES, {"default": "off", "tooltip": "Rewrite the clip prompts into the MiniMax-H3 format at the start of the run, on a local GGUF via llama.cpp (needs the MiniMax-H3-Prompt-Rewriter-ComfyUI pack). 'pending clips' rewrites only clips not rewritten yet (new or restored to raw); 'all clips' rewrites every clip from its raw text again. Reference pictures are described once and cached."}),
+                "rewrite_task": (prompt_rewriter.TASKS, {"default": "auto", "tooltip": "auto: Ref2VA (six sections, references described and labelled <Picture N> in slot order) when reference pictures are connected, otherwise T2VA."}),
+                "rewrite_writer_model": (prompt_rewriter.writer_choices(), {"tooltip": "GGUF that writes the prompt (the rewriter pack's writer list). Pick the same file as the caption model to run captions and writing on one server, which is also what enables thinking."}),
+                "rewrite_caption_model": (prompt_rewriter.captioner_choices(), {"tooltip": "Multimodal GGUF + mmproj that describes the reference pictures (the rewriter pack's captioner list). Must be on disk already."}),
+                "rewrite_caption_length": (prompt_rewriter.CAPTION_LENGTHS, {"default": "standard"}),
+                "rewrite_greedy": ("BOOLEAN", {"default": True, "tooltip": "Deterministic decoding for the writer. Off samples at rewrite_temperature."}),
+                "rewrite_temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 2.0, "step": 0.01}),
+                "rewrite_max_new_tokens": ("INT", {"default": 4096, "min": 256, "max": 16384, "step": 64, "tooltip": "Output budget per clip prompt. The context is sized from the guide plus this automatically."}),
+                "rewrite_seed": ("INT", {"default": 42, "min": 0, "max": 2147483647}),
+                "rewrite_thinking": ("BOOLEAN", {"default": False, "tooltip": "Let a thinking model (Qwen3.x, Swift) deliberate before writing each prompt. Writer only; captions never think. Needs writer and caption model to be the same GGUF."}),
+                "rewrite_reasoning_budget": ("INT", {"default": 4096, "min": -1, "max": 32768, "step": 64, "tooltip": "llama.cpp --reasoning-budget: -1 unrestricted, N tokens of thinking at most (added on top of rewrite_max_new_tokens)."}),
+                "rewrite_reasoning_budget_message": ("STRING", {"default": "", "multiline": True, "tooltip": "llama.cpp --reasoning-budget-message: injected when the thinking budget runs out, e.g. 'Time is up, write the answer now.'"}),
+                "rewrite_parallel": ("INT", {"default": 3, "min": 1, "max": 8, "tooltip": "How many captions, and how many clip prompts, are generated at the same time on the server (one slot each; the KV pool grows with it)."}),
+                "rewrite_system_prompt": ("STRING", {"default": "", "multiline": True, "tooltip": "Replace MiniMax's writing guide with your own system prompt (the H3 format lives in that text). Empty = the official guide for the task. The rewrite_system_prompt_in socket overrides this while connected."}),
+                "rewrite_system_prompt_in": ("STRING", {"forceInput": True, "multiline": True, "tooltip": "Optional: the rewriter's system prompt from another node. Overrides rewrite_system_prompt while connected and non-empty."}),
+                # --- Video / audio references (core MiniMaxH3ReferenceToVideo: <Video k>, <Audio j> after the pictures) ---
+                "ref_video_1": ("IMAGE,VIDEO", {"tooltip": "Reference video 1: a Load Video output directly (frames are resampled to 24 fps and its soundtrack is used unless ref_video_audio_1 is wired), or an IMAGE frame batch at 24 fps (2-15 s). Labelled <Video 1> in the prompt; the rewriter describes it from sampled frames."}),
+                "ref_video_2": ("IMAGE,VIDEO", {"tooltip": "Reference video 2 (VIDEO or 24 fps frames). <Video 2>."}),
+                "ref_video_3": ("IMAGE,VIDEO", {"tooltip": "Reference video 3 (VIDEO or 24 fps frames). <Video 3>."}),
+                "ref_video_audio_1": ("AUDIO", {"tooltip": "Soundtrack of reference video 1. Gets its own <Audio j> label, emitted right before <Video 1>."}),
+                "ref_video_audio_2": ("AUDIO", {"tooltip": "Soundtrack of reference video 2."}),
+                "ref_video_audio_3": ("AUDIO", {"tooltip": "Soundtrack of reference video 3."}),
+                "ref_audio_1": ("AUDIO", {"tooltip": "Standalone reference audio (a voice or sound to reuse). <Audio j>, numbered after the video soundtracks."}),
+                "ref_audio_2": ("AUDIO", {"tooltip": "Standalone reference audio 2."}),
+                "ref_audio_3": ("AUDIO", {"tooltip": "Standalone reference audio 3."}),
+                "rewrite_previous_clips": (prompt_rewriter.CONTINUITY, {"default": "raw asks", "tooltip": "What the writer is told about the earlier clips when it writes clip N: 'raw asks' puts clips 1..N-1 as you typed them into the task message (previous_clips), so clip N continues where N-1 ends. Editing an earlier clip's ask re-invalidates the later clips."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -373,6 +471,10 @@ class MiniMaxH3MasterExtender:
                 clip_cfg["prompt"] = external
                 clip_cfg["validated"] = False
                 clip_cfg["prompt_source"] = f"clip_prompt_{index}"
+                # New text from the socket is raw again as far as the rewriter is concerned.
+                clip_cfg["prompt_rewritten"] = False
+                clip_cfg.pop("prompt_raw", None)
+                clip_cfg.pop("rewrite_meta", None)
 
         # Parse resolution settings
         w1, h1 = parse_resolution(pass1_resolution, 608, 352)
@@ -386,10 +488,71 @@ class MiniMaxH3MasterExtender:
             ref_k = f"ref_image_{idx}"
             if f"ref_image_{idx - 1}" not in refs and ref_k in kwargs and kwargs[ref_k] is not None:
                 refs[f"ref_image_{idx - 1}"] = kwargs[ref_k]
+        # Slot order is <Picture i> order for the text encoder and the rewriter alike.
+        refs = dict(sorted(refs.items(), key=lambda item: int(item[0].rsplit("_", 1)[1])))
+
+        # Video / audio references (sockets only): ref_video_N -> <Video k>, soundtracks and
+        # standalone audio -> <Audio j>. Keys are 0-based like the pictures, so the core
+        # node pairs ref_video_audio_N with ref_video_N.
+        def _socket_refs(prefix, count):
+            found = {}
+            for idx in range(1, count + 1):
+                value = kwargs.get(f"{prefix}_{idx}")
+                if value is not None:
+                    found[f"{prefix}_{idx - 1}"] = value
+            return found
+        ref_videos = _socket_refs("ref_video", 3)
+        ref_video_audios = _socket_refs("ref_video_audio", 3)
+        ref_audios = _socket_refs("ref_audio", 3)
+        # A VIDEO object straight from Load Video: take its frames (resampled to H3's
+        # 24 fps) and, unless a soundtrack socket is wired for it, its own audio.
+        for key, value in list(ref_videos.items()):
+            if not hasattr(value, "get_components"):
+                continue
+            comps = value.get_components()
+            frames = comps.images
+            fps = float(comps.frame_rate) if comps.frame_rate else 24.0
+            count = int(frames.shape[0])
+            if fps > 0 and abs(fps - 24.0) > 0.25 and count > 1:
+                wanted = max(1, int(round(count * 24.0 / fps)))
+                index = torch.clamp((torch.arange(wanted, dtype=torch.float64) * (fps / 24.0)).round().long(), 0, count - 1)
+                frames = frames[index]
+            ref_videos[key] = frames
+            audio_key = key.replace("ref_video_", "ref_video_audio_")
+            if audio_key not in ref_video_audios and getattr(comps, "audio", None) is not None:
+                ref_video_audios[audio_key] = comps.audio
+            _LOG.info("%s: VIDEO input -> %d frames at %.3g fps resampled to %d frames at 24 fps%s",
+                      key, count, fps, int(frames.shape[0]), ", soundtrack taken from the video" if audio_key in ref_video_audios else "")
+        for key in list(ref_video_audios):
+            if key.replace("ref_video_audio_", "ref_video_") not in ref_videos:
+                _LOG.warning("%s has no matching video; ignored (a standalone sound goes on ref_audio_N)", key)
+                ref_video_audios.pop(key)
+        if ref_videos or ref_audios:
+            _LOG.info("References: %d picture(s), %d video(s) (%d with soundtrack), %d audio",
+                      len(refs), len(ref_videos), len(ref_video_audios), len(ref_audios))
+
+        # Built-in prompt rewriter: pending clip prompts become H3 descriptions
+        # before anything is rendered; the panel gets the result back.
+        rewrite_notes = []
+        if str(kwargs.get("rewrite_mode", "off")) != "off":
+            def rewrite_progress(stage, message, pct):
+                _send_progress(owner, 0, len(clips), stage, message, pct)
+            def rewrite_stream(index, clip_id, phase, text):
+                _send_rewrite(owner, index, clip_id, phase, text)
+            rewrite_notes = prompt_rewriter.rewrite_clips(
+                clips, refs, kwargs, aspect_text=str(pass2_resolution),
+                progress_cb=rewrite_progress, stream_cb=rewrite_stream,
+                videos=ref_videos, video_audios=ref_video_audios, audios=ref_audios,
+            )
+            for note in rewrite_notes:
+                _LOG.info("Rewriter: %s", note)
+            _send_clips(owner, clips, fields=["prompt", "prompt_raw", "prompt_rewritten", "rewrite_text", "rewrite_meta", "validated"])
 
         # Setup persistent disk caching
-        cache_owner = f"master_v2_{owner}"
+        chain_key = _chain_key(clips)
+        cache_owner = f"master_v2_{chain_key}"
         draft_owner = f"{cache_owner}_draft"
+        _LOG.info(f"Disk cache chain: {cache_owner} (keyed by clip 1's prompt, duration and LoRAs)")
         data_path, manifest_path, manifest = _manifest_for_first(cache_owner, FPS)
         draft_path, draft_manifest_path, draft_manifest = _manifest_for_first(draft_owner, FPS)
         settings = [pass1_resolution, pass2_resolution, pass2_denoise, pdd_nfe,
@@ -489,11 +652,36 @@ class MiniMaxH3MasterExtender:
             f"MiniMax H3 Master Extender starting: {len(clips)} total clips, mode={run_mode}"
         )
 
+        fingerprints = {}
+        previous_fp = None
+        unvalidated_any = False
         for i, clip_cfg in enumerate(clips):
             current_manifest = _load_manifest_from_paths(data_path, manifest_path)
             existing_count = len(current_manifest.get("segments", [])) if current_manifest else 0
             is_on_disk = i < existing_count
-            is_validated = bool(clip_cfg.get("validated", False))
+            is_validated = str(clip_cfg.get("validated", False)).lower() == "true"
+
+            # A validated clip is only reused when the cached clip was rendered
+            # from the same inputs (prompt, duration, LoRAs, seed and every
+            # earlier clip). Clips cached before fingerprints existed pass.
+            if is_validated and is_on_disk:
+                try:
+                    expected_fp = _clip_fingerprint(previous_fp, clip_cfg, clip_cfg.get("seed", 42))
+                except (TypeError, ValueError):
+                    expected_fp = None
+                stored = _stored_fingerprints(data_path, manifest_path)
+                stored_fp = stored[i] if i < len(stored) else None
+                if expected_fp and stored_fp and stored_fp != expected_fp:
+                    _LOG.warning(
+                        f"Clip {i + 1}: marked validated, but the cached clip was rendered from "
+                        f"different inputs (prompt, seed, duration, LoRAs or an earlier clip changed) - re-rendering."
+                    )
+                    clip_cfg["validated"] = False
+                    is_validated = False
+                    unvalidated_any = True
+                elif expected_fp:
+                    fingerprints[i] = expected_fp
+                    previous_fp = expected_fp
 
             # 1. Reuse existing validated clip from disk cache
             if is_validated:
@@ -557,6 +745,7 @@ class MiniMaxH3MasterExtender:
             elif seed_mode == "decrement":
                 seed_val = max(0, seed_val - 1)
                 clip_cfg["seed"] = seed_val
+            clip_fp = _clip_fingerprint(previous_fp, clip_cfg, seed_val)
 
             # Render clip through Pure 2-Stage PDD Engine
             sampled_latent, _ = engine.render_clip(
@@ -574,6 +763,9 @@ class MiniMaxH3MasterExtender:
                 audio_context_length=int(audio_context_length),
                 last_frame_guide=last_frame_tensor if (identity_continuity and i > 0) else None,
                 progress_cb=progress_hook,
+                ref_videos=ref_videos,
+                ref_video_audios=ref_video_audios,
+                ref_audios=ref_audios,
             )
 
             # Save clip to disk cache (the manifest is shared with a running
@@ -599,6 +791,10 @@ class MiniMaxH3MasterExtender:
             )
             previous_handle = join_result[0]
             previous_proxy = join_result[1]
+            fingerprints = {k: v for k, v in fingerprints.items() if k < i}
+            fingerprints[i] = clip_fp
+            previous_fp = clip_fp
+            _store_fingerprints(data_path, manifest_path, fingerprints)
             progress_hook("decode", f"Clip {i + 1} - Decoding and caching preview...", 0.9)
             more_clips_pending = any(
                 not bool(c.get("validated", False)) for c in clips[i + 1:]
@@ -638,7 +834,12 @@ class MiniMaxH3MasterExtender:
                 break
 
         _finish_background()
+        # Re-apply after any background decode rewrote the manifest.
+        _store_fingerprints(data_path, manifest_path, fingerprints)
         status_msg = f"Completed {rendered_count} clip(s). Validated: {validated_count}/{len(clips)}"
+        if rewrite_notes:
+            status_msg += " | " + "; ".join(rewrite_notes)
+        _send_clips(owner, clips, fields=["seed", "validated"] if unvalidated_any else ["seed"], chain=chain_key)
         return (
             previous_handle,
             len(clips),

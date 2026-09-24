@@ -774,8 +774,17 @@ class PurePDDEngine:
         audio_context_length: int = 0,
         last_frame_guide: torch.Tensor = None,
         progress_cb=None,
+        ref_videos: dict = None,
+        ref_video_audios: dict = None,
+        ref_audios: dict = None,
     ):
-        """Execute the complete 2-Stage 2-Pass Pure PDD Pipeline for a single clip."""
+        """Execute the complete 2-Stage 2-Pass Pure PDD Pipeline for a single clip.
+
+        ``ref_videos`` (``ref_video_N`` -> 24 fps IMAGE batch), ``ref_video_audios``
+        (``ref_video_audio_N`` -> AUDIO, the soundtrack of the same-numbered video)
+        and ``ref_audios`` (``ref_audio_N`` -> AUDIO) go straight to the core
+        reference node, which labels them <Video k> / <Audio j> after the pictures.
+        """
         model, pdd_sigmas_p1 = self.initialize_pdd_model()
 
         frame_count = duration_to_h3_frames(duration_sec)
@@ -812,6 +821,9 @@ class PurePDDEngine:
             length=frame_count,
             ref_image_size="match",
             ref_images=ref_images,
+            ref_videos=ref_videos or None,
+            ref_video_audios=ref_video_audios or None,
+            ref_audios=ref_audios or None,
         )
         pos_p1 = self._bridge(_safe_get_output(out_p1, 0, "positive"), "pass 1")
         latent_p1 = _safe_get_output(out_p1, 1, "latent")
@@ -845,6 +857,9 @@ class PurePDDEngine:
             length=frame_count,
             ref_image_size="match",
             ref_images=ref_images,
+            ref_videos=ref_videos or None,
+            ref_video_audios=ref_video_audios or None,
+            ref_audios=ref_audios or None,
         )
         pos_p2 = self._bridge(_safe_get_output(out_p2, 0, "positive"), "pass 2")
         latent_p2 = _safe_get_output(out_p2, 1, "latent")

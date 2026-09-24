@@ -276,7 +276,14 @@ CACHE_TYPE = "H3_MOTION_DISK_CACHE"
 _LOG = logging.getLogger("minimax_h3_tail_from_latent.motion_context_disk")
 
 _NODE_DIR = Path(__file__).resolve().parent
-_CACHE_ROOT = _NODE_DIR / "cache"
+_LEGACY_CACHE_ROOT = _NODE_DIR / "cache"
+# Chains live in ComfyUI's output folder (output/MasterExtender_cache) so they sit
+# with the renders and survive reinstalling/updating the node; the node folder is
+# only the fallback when ComfyUI's folder_paths is unavailable (tests, tools).
+_CACHE_ROOT = (
+    Path(folder_paths.get_output_directory()) / "MasterExtender_cache"
+    if folder_paths is not None else _LEGACY_CACHE_ROOT
+)
 _DATA_MAGIC = b"H3MCACHE12\x00"
 _DATA_START = len(_DATA_MAGIC)
 _AUDIO_CACHE_MAGIC = b"H3MAUDIO1\x00"
@@ -309,8 +316,38 @@ def _safe_name(value):
     return value or "h3_chain"
 
 
+_LEGACY_MIGRATED = False
+
+
+def _migrate_legacy_cache():
+    """One-time move of chains from the old <node>/cache folder into _CACHE_ROOT."""
+    global _LEGACY_MIGRATED
+    if _LEGACY_MIGRATED:
+        return
+    _LEGACY_MIGRATED = True
+    try:
+        if _LEGACY_CACHE_ROOT.resolve() == _CACHE_ROOT.resolve() or not _LEGACY_CACHE_ROOT.is_dir():
+            return
+        moved = skipped = 0
+        for entry in list(_LEGACY_CACHE_ROOT.iterdir()):
+            target = _CACHE_ROOT / entry.name
+            if target.exists():
+                skipped += 1
+                continue
+            shutil.move(str(entry), str(target))
+            moved += 1
+        if moved or skipped:
+            _LOG.info("Master Extender cache: moved %d item(s) from %s to %s%s", moved, _LEGACY_CACHE_ROOT,
+                      _CACHE_ROOT, f" ({skipped} already present, left in place)" if skipped else "")
+        if not any(_LEGACY_CACHE_ROOT.iterdir()):
+            _LEGACY_CACHE_ROOT.rmdir()
+    except OSError as exc:
+        _LOG.warning("Master Extender cache: could not move the old cache folder (%s); it is left in place", exc)
+
+
 def _ensure_cache_root():
     _CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    _migrate_legacy_cache()
     return _CACHE_ROOT
 
 

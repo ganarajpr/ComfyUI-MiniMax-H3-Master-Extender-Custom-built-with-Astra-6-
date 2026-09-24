@@ -52,12 +52,17 @@ function pickFile(accept, action) {
     input.click();
 }
 
-async function clearCache(extraOwners = [], extraFinals = []) {
-    const owners = [...new Set([...masters().map(n => String(n.id)), ...extraOwners])];
-    const final_ids = [...new Set([...app.graph._nodes.filter(n => n.type === FINAL).map(n => String(n.id)), ...extraFinals])];
+// Chains are keyed by the project's opening clip (master_node._chain_key), so send
+// the clips and let the server derive the key. Never clear by node id: every
+// workflow's Master node is id 6, so that deleted other tabs' projects.
+const masterClips = () => masters().map(n => n.widgets?.find(w => w.name === "clips_json")?.value).filter(v => typeof v === "string" && v);
+
+async function clearCache() {
+    const clips = masterClips();
+    const final_ids = [...new Set([...app.graph._nodes.filter(n => n.type === FINAL).map(n => String(n.id))])];
     await responseJSON(await api.fetchApi("/minimax_master/clear_cache", {
         method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({owners, final_ids}),
+        body: JSON.stringify({clips, final_ids}),
     }));
 }
 
@@ -165,7 +170,8 @@ export function createProjectControls(node, {getClips, setClips, save, render}) 
             for (const clip of clips) clip.validated = false;
             entry.settings.clips_json = JSON.stringify(clips);
         }
-        await clearCache(project.masters.map(m => String(m.id)), project.workflow.nodes.filter(n => n.type === FINAL).map(n => String(n.id)));
+        // No cache clearing here: the loaded project has its own chain (keyed by its
+        // clips) and the one being replaced stays usable if it is reopened.
         await app.loadGraphData(project.workflow);
         for (const entry of project.masters) {
             const master = app.graph.getNodeById(entry.id);

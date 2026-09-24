@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -22,7 +23,7 @@ class MasterProjectTests(unittest.TestCase):
             directory.mkdir()
         self.loaded = []
         self.ns = {
-            "json": json, "Path": Path, "re": re, "shutil": shutil,
+            "json": json, "hashlib": hashlib, "Path": Path, "re": re, "shutil": shutil,
             "_ensure_cache_root": lambda: self.cache,
             "_preview_temp_root": lambda: self.preview,
             "folder_paths": SimpleNamespace(
@@ -80,7 +81,13 @@ class MasterProjectTests(unittest.TestCase):
             self.assertLessEqual(len(refs), 9)
 
     def test_clear_removes_active_cache_only(self):
-        for stem in ("chain_master_v2_6", "chain_master_v2_6_draft", "chain_master_v2_60", "chain_other_6"):
+        clips = [{"id": 0, "prompt": "a", "duration": 15, "loras": []}]
+        other = [{"id": 0, "prompt": "b", "duration": 15, "loras": []}]
+        key = self.ns["_chain_key"](clips)
+        other_key = self.ns["_chain_key"](other)
+        self.assertNotEqual(key, other_key)
+        for stem in (f"chain_master_v2_{key}", f"chain_master_v2_{key}_draft",
+                     f"chain_master_v2_{other_key}", "chain_master_v2_6"):
             (self.cache / f"{stem}.h3cache").touch()
             directory = self.cache / f"{stem}.final.video"
             directory.mkdir()
@@ -88,19 +95,33 @@ class MasterProjectTests(unittest.TestCase):
         for name in ("h3_motion_preview_7_0.mp4", "h3_motion_preview_70_0.mp4"):
             (self.preview / name).touch()
         (self.inputs / "picture.png").touch()
-        self.ns["clear_project_cache"](["6"], ["7"])
-        self.assertFalse((self.cache / "chain_master_v2_6.h3cache").exists())
-        self.assertFalse((self.cache / "chain_master_v2_6_draft.final.video").exists())
-        self.assertTrue((self.cache / "chain_master_v2_60.h3cache").exists())
-        self.assertTrue((self.cache / "chain_other_6.final.video/guide.pt").exists())
+        self.ns["clear_project_cache"]([json.dumps(clips)], ["7"])
+        self.assertFalse((self.cache / f"chain_master_v2_{key}.h3cache").exists())
+        self.assertFalse((self.cache / f"chain_master_v2_{key}_draft.final.video").exists())
+        # Another project's chain and legacy node-id chains are never touched.
+        self.assertTrue((self.cache / f"chain_master_v2_{other_key}.h3cache").exists())
+        self.assertTrue((self.cache / "chain_master_v2_6.final.video/guide.pt").exists())
         self.assertTrue((self.inputs / "picture.png").exists())
         self.assertFalse((self.preview / "h3_motion_preview_7_0.mp4").exists())
         self.assertTrue((self.preview / "h3_motion_preview_70_0.mp4").exists())
 
-    def test_clear_rejects_wildcards_and_paths(self):
-        for owner in ("*", "../", "6.*", "", "6/7"):
+    def test_chain_key_ignores_seed_and_validation_but_not_content(self):
+        base = {"id": 0, "prompt": "a", "duration": 15, "loras": [], "seed": 1, "validated": False}
+        key = self.ns["_chain_key"]([base])
+        self.assertEqual(key, self.ns["_chain_key"]([dict(base, seed=2, validated=True, id=9)]))
+        self.assertEqual(key, self.ns["_chain_key"]([dict(base, duration="15", loras="[]")]))
+        for change in ({"prompt": "b"}, {"duration": 10}, {"loras": [{"lora": "x"}]}):
+            self.assertNotEqual(key, self.ns["_chain_key"]([dict(base, **change)]))
+        self.assertRegex(key, r"^c_[0-9a-f]{16}$")
+
+    def test_clear_rejects_bad_input(self):
+        for final in ("*", "../", "6.*", "", "6/7"):
             with self.assertRaises(ValueError):
-                self.ns["clear_project_cache"]([owner], [])
+                self.ns["clear_project_cache"]([], [final])
+        with self.assertRaises(ValueError):
+            self.ns["clear_project_cache"]("not a list", [])
+        # Unparseable project clips are skipped, never turned into a glob.
+        self.ns["clear_project_cache"](["{not json", "[]", "*"], [])
 
 
 if __name__ == "__main__":

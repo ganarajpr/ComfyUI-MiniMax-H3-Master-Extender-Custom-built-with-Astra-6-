@@ -4,6 +4,8 @@ import { createProjectControls } from "./master_projects.js";
 
 const TARGET_NODE = "MiniMaxH3MasterExtender";
 const EVENT_PROGRESS = "master_extender_progress";
+const EVENT_CLIPS = "master_extender_clips";
+const EVENT_REWRITE = "master_extender_rewrite";
 
 function alignH3Frames(sec) {
     let frames = Math.max(5, Math.round(Number(sec) * 24.0));
@@ -329,6 +331,26 @@ function uiToggle(current, onChange) {
     return label;
 }
 
+function uiTextarea(current, onChange, { rows = 4, placeholder } = {}) {
+    const ta = document.createElement("textarea");
+    ta.style.cssText = "width: 100%; box-sizing: border-box; background: #101016; border: 1px solid #2e2e42; border-radius: 4px; color: #ececf4; font-size: 11px; padding: 4px 6px; resize: vertical; font-family: inherit;";
+    ta.rows = rows;
+    ta.spellcheck = false;
+    if (placeholder) ta.placeholder = placeholder;
+    ta.value = current ?? "";
+    let timer = 0;
+    ta.oninput = () => { clearTimeout(timer); timer = setTimeout(() => onChange(ta.value), 200); };
+    ta.addEventListener("keydown", (e) => e.stopPropagation());
+    ta.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+    ta.addEventListener("pointerdown", (e) => e.stopPropagation());
+    return ta;
+}
+
+function modelLabel(v) {
+    // The rewriter pack's labels carry size and note after " · "; the name is enough here.
+    return String(v ?? "").split(" · ")[0];
+}
+
 function uiSegmented(values, current, onChange) {
     const wrap = document.createElement("div");
     wrap.style.cssText = "display: flex; background: #101016; border: 1px solid #2e2e42; border-radius: 12px; padding: 2px; gap: 2px;";
@@ -486,10 +508,10 @@ app.registerExtension({
             // ---- Simplified panel state (persisted in node.properties) ----
             node.properties = node.properties || {};
             const ui = node.properties.h3_ui = Object.assign(
-                { mode: "simple", open: { engine: true, quality: true, continuity: false, performance: false } },
+                { mode: "simple", open: { engine: true, quality: true, continuity: false, performance: false, rewriter: false } },
                 node.properties.h3_ui || {},
             );
-            ui.open = Object.assign({ engine: true, quality: true, continuity: false, performance: false }, ui.open || {});
+            ui.open = Object.assign({ engine: true, quality: true, continuity: false, performance: false, rewriter: false }, ui.open || {});
             const expert = () => ui.mode === "expert";
 
             const W = (name) => node.widgets?.find((w) => w.name === name);
@@ -568,6 +590,61 @@ app.registerExtension({
             }
             function continuitySummary() {
                 return `motion ${getW("context_length", "22")} f · audio ${getW("audio_context_length", 0)} f · identity ${getW("identity_continuity", true) ? "on" : "off"}`;
+            }
+
+            function rewriterSummary() {
+                const mode = String(getW("rewrite_mode", "off"));
+                if (!W("rewrite_mode")) return "not available";
+                if (mode === "off") return "off";
+                const parts = [mode, modelLabel(getW("rewrite_writer_model", ""))];
+                if (getW("rewrite_thinking", false)) parts.push(`thinking ${getW("rewrite_reasoning_budget", 0)}`);
+                return parts.join(" · ");
+            }
+
+            function buildRewriter(wrap) {
+                if (!W("rewrite_mode")) {
+                    wrap.appendChild(uiHint("This node build has no built-in rewriter widgets; update the Master Extender pack."));
+                    return;
+                }
+                wrap.appendChild(uiRow("rewrite prompts", bindSelect("rewrite_mode"), {
+                    hint: "pending clips: rewrite clips not rewritten yet, at the start of the run. all clips: rewrite every clip from its raw text again.",
+                }));
+                if (String(getW("rewrite_mode", "off")) === "off") {
+                    wrap.appendChild(uiHint("Off: clip prompts are used exactly as typed (or as fed by the clip_prompt inputs)."));
+                    return;
+                }
+                const noPack = String(getW("rewrite_writer_model", "")).startsWith("(");
+                if (noPack) wrap.appendChild(uiHint("The MiniMax-H3-Prompt-Rewriter-ComfyUI pack is not installed beside this node; the run will stop with that message."));
+                wrap.appendChild(uiRow("task", bindSelect("rewrite_task"), { hint: "auto: Ref2VA when reference pictures are connected, else T2VA." }));
+                wrap.appendChild(uiRow("writer model", bindSelect("rewrite_writer_model", { render: modelLabel })));
+                wrap.appendChild(uiRow("caption model", bindSelect("rewrite_caption_model", { render: modelLabel }), { hint: "Describes the reference pictures. Same GGUF as the writer = one server for everything, and thinking becomes available." }));
+                wrap.appendChild(uiRow("caption length", bindSelect("rewrite_caption_length"), { indent: true }));
+                wrap.appendChild(uiRow("thinking (writer only)", bindToggle("rewrite_thinking")));
+                if (getW("rewrite_thinking", false)) {
+                    wrap.appendChild(uiRow("thinking budget (tokens)", bindNumber("rewrite_reasoning_budget"), { indent: true, hint: "-1 = unrestricted" }));
+                    const msg = uiTextarea(getW("rewrite_reasoning_budget_message", ""), (v) => setW("rewrite_reasoning_budget_message", v, { rerender: false }), { rows: 2, placeholder: "Message injected when the budget runs out, e.g. 'Time is up, write the answer now.'" });
+                    const msgWrap = document.createElement("div");
+                    msgWrap.style.cssText = "margin-left: 14px;";
+                    msgWrap.appendChild(msg);
+                    wrap.appendChild(msgWrap);
+                }
+                if (W("rewrite_previous_clips")) wrap.appendChild(uiRow("continuity for clip N", bindSelect("rewrite_previous_clips"), { hint: "Earlier clips' raw asks go into the task message as previous_clips, so clip N continues from where N-1 ends." }));
+                wrap.appendChild(uiRow("greedy decoding", bindToggle("rewrite_greedy")));
+                if (!getW("rewrite_greedy", true)) wrap.appendChild(uiRow("temperature", bindNumber("rewrite_temperature"), { indent: true }));
+                wrap.appendChild(uiRow("max new tokens", bindNumber("rewrite_max_new_tokens")));
+                if (expert()) {
+                    wrap.appendChild(uiRow("seed", bindNumber("rewrite_seed")));
+                    wrap.appendChild(uiRow("parallel slots", bindNumber("rewrite_parallel"), { hint: "Captions and clip prompts generated at the same time on the server." }));
+                }
+                const sysWired = Boolean(node.inputs?.find((i) => i.name === "rewrite_system_prompt_in" && i.link != null));
+                const sysLabel = document.createElement("div");
+                sysLabel.style.cssText = "font-size: 10.5px; color: #8888a4; padding: 2px 4px 0;";
+                sysLabel.textContent = sysWired ? "system prompt: fed from the rewrite_system_prompt_in input (text below ignored)" : "system prompt (empty = MiniMax's official writing guide)";
+                wrap.appendChild(sysLabel);
+                const sys = uiTextarea(getW("rewrite_system_prompt", ""), (v) => setW("rewrite_system_prompt", v, { rerender: false }), { rows: 3, placeholder: "Leave empty for the official H3 guide, or paste your own house style." });
+                if (sysWired) sys.style.opacity = "0.5";
+                wrap.appendChild(sys);
+                wrap.appendChild(uiHint("Rewritten clips show a ✎ badge. They are rewritten again automatically when their raw text, duration, aspect, reference pictures, models or system prompt change; otherwise they are left alone. 'Rewrite again' in a clip's prompt panel forces it."));
             }
 
             function section(key, title, summaryFn, buildBody, { collapsible = true } = {}) {
@@ -694,7 +771,21 @@ app.registerExtension({
             }
 
             // ---- Prompt side panel: one per node, lives on document.body ----
-            const promptPanel = { el: null, clipId: null, raf: 0, textarea: null, layer: null, title: null, meta: null };
+            const promptPanel = { el: null, clipId: null, raf: 0, textarea: null, layer: null, title: null, meta: null, view: "auto", viewClipId: null };
+            // Rewrites in flight, by clip id: { phase, text } -- shown live in the panel and on the card.
+            const liveRewrite = new Map();
+
+            function rawTextOf(clip) {
+                return typeof clip.prompt_raw === "string" ? clip.prompt_raw : (clip.prompt || "");
+            }
+            function rewrittenTextOf(clip) {
+                if (typeof clip.rewrite_text === "string") return clip.rewrite_text;
+                return clip.prompt_rewritten ? (clip.prompt || "") : "";
+            }
+            function panelView(clip) {
+                if (promptPanel.viewClipId === clip.id && (promptPanel.view === "raw" || promptPanel.view === "rewritten")) return promptPanel.view;
+                return (liveRewrite.has(clip.id) || clip.prompt_rewritten || rewrittenTextOf(clip)) ? "rewritten" : "raw";
+            }
 
             function markCardSelected(card, on) {
                 card.style.outline = on ? "2px solid #9d8cff" : "none";
@@ -737,6 +828,11 @@ app.registerExtension({
                         </div>
                         <div style="display: flex; align-items: center; gap: 10px;">
                             <span class="pp-meta" style="color: #6f6f8a; font-size: 11px; font-variant-numeric: tabular-nums;"></span>
+                            <span class="pp-view" style="display: inline-flex; border: 1px solid #3f3f58; border-radius: 4px; overflow: hidden;">
+                                <button data-view="raw" style="background: #252536; border: none; color: #c7c7e0; font-size: 10.5px; padding: 2px 8px; cursor: pointer;">raw</button>
+                                <button data-view="rewritten" style="background: #252536; border: none; border-left: 1px solid #3f3f58; color: #c7c7e0; font-size: 10.5px; padding: 2px 8px; cursor: pointer;">rewritten</button>
+                            </span>
+                            <button class="pp-raw" title="Mark this clip pending: the rewriter writes it again from the raw text on the next run (the current rewrite stays visible until then)" style="display: none; background: #3a2e14; border: 1px solid #6b5416; color: #fcd34d; border-radius: 3px; font-size: 10.5px; padding: 1px 7px; cursor: pointer;">Rewrite again</button>
                             <button class="pp-close" title="Close (Esc)" style="background: transparent; border: none; color: #9c9cb2; font-size: 15px; cursor: pointer; padding: 0 2px;">&#10005;</button>
                         </div>
                     </div>
@@ -745,7 +841,7 @@ app.registerExtension({
                         <textarea class="pp-text" spellcheck="false" style="position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; margin: 0; padding: 12px 14px; border: none; outline: none; resize: none; background: transparent; color: transparent; caret-color: #ffffff; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 13px/1.6 'Cascadia Mono', Consolas, 'JetBrains Mono', ui-monospace, monospace; tab-size: 2; user-select: text; -webkit-user-select: text;"></textarea>
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center; color: #6f6f8a; font-size: 10.5px;">
-                        <span>Saves as you type · Esc closes · Tab inserts two spaces</span>
+                        <span class="pp-foot">Saves as you type · Esc closes · Tab inserts two spaces</span>
                         <span style="display: flex; gap: 8px;">
                             <span><span class="h3-section">## section</span></span>
                             <span><span class="h3-key">key</span><span class="h3-colon">:</span></span>
@@ -766,15 +862,40 @@ app.registerExtension({
                 textarea.oninput = () => {
                     paint();
                     const { clip } = findClip(promptPanel.clipId);
-                    if (!clip) return;
-                    clip.prompt = textarea.value;
+                    if (!clip || textarea.readOnly) return;
+                    const value = textarea.value;
+                    if (panelView(clip) === "raw") {
+                        // Editing the original: the clip is pending again, and renders from
+                        // this text until the rewriter has replaced it. The last rewrite is
+                        // kept (rewrite_text) so it can still be read, marked stale.
+                        clip.prompt_raw = value;
+                        clip.prompt = value;
+                        if (clip.prompt_rewritten) {
+                            clip.prompt_rewritten = false;
+                            if (clip.rewrite_meta) clip.rewrite_meta = Object.assign({}, clip.rewrite_meta, { stale: true });
+                            renderUI();
+                        }
+                    } else {
+                        // Editing the rewritten text: used as is, not rewritten again.
+                        clip.rewrite_text = value;
+                        clip.prompt = value;
+                    }
                     clip.validated = false;
-                    el.querySelector(".pp-meta").textContent = describePrompt(textarea.value);
+                    refreshPanelChrome(clip);
                     const card = [...container.querySelectorAll(".minimax-clip-card")].find((c) => c._clipId === clip.id);
                     card?._paintPreview?.();
                     clearTimeout(saveTimer);
                     saveTimer = setTimeout(saveState, 150);
                 };
+                el.querySelectorAll(".pp-view button").forEach((b) => {
+                    b.onclick = () => {
+                        const { clip } = findClip(promptPanel.clipId);
+                        if (!clip) return;
+                        promptPanel.view = b.dataset.view;
+                        promptPanel.viewClipId = clip.id;
+                        openPromptPanel(clip.id, { focus: false });
+                    };
+                });
                 textarea.onscroll = syncScroll;
                 textarea.addEventListener("keydown", (e) => {
                     if (e.key === "Escape") { e.preventDefault(); closePromptPanel(); return; }
@@ -789,6 +910,19 @@ app.registerExtension({
                 el.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
                 el.addEventListener("pointerdown", (e) => e.stopPropagation());
                 el.querySelector(".pp-close").onclick = closePromptPanel;
+                el.querySelector(".pp-raw").onclick = () => {
+                    const { clip } = findClip(promptPanel.clipId);
+                    if (!clip) return;
+                    if (typeof clip.prompt_raw === "string" && clip.prompt_raw.trim()) clip.prompt = clip.prompt_raw;
+                    clip.prompt_rewritten = false;
+                    if (clip.rewrite_meta) clip.rewrite_meta = Object.assign({}, clip.rewrite_meta, { stale: true });
+                    clip.validated = false;
+                    saveState();
+                    renderUI();
+                    promptPanel.view = "raw";
+                    promptPanel.viewClipId = clip.id;
+                    openPromptPanel(clip.id, { focus: true });
+                };
                 el.querySelector(".pp-prev").onclick = () => stepPromptPanel(-1);
                 el.querySelector(".pp-next").onclick = () => stepPromptPanel(1);
 
@@ -815,19 +949,75 @@ app.registerExtension({
                 openPromptPanel(next.id);
             }
 
+            // Header, toggle, footer and read-only state for the clip in the panel.
+            function refreshPanelChrome(clip) {
+                if (!promptPanel.el) return;
+                const view = panelView(clip);
+                const live = liveRewrite.get(clip.id);
+                const stale = !clip.prompt_rewritten && Boolean(rewrittenTextOf(clip));
+                promptPanel.el.querySelectorAll(".pp-view button").forEach((b) => {
+                    const on = b.dataset.view === view;
+                    b.style.background = on ? "#6355d8" : "#252536";
+                    b.style.color = on ? "#ffffff" : "#c7c7e0";
+                    if (b.dataset.view === "rewritten") {
+                        b.textContent = live ? (live.phase === "thinking" ? "rewritten · thinking…" : "rewritten · writing…")
+                            : stale ? "rewritten (stale)" : (clip.prompt_rewritten ? "rewritten ✎" : "rewritten");
+                    }
+                });
+                const rawBtn = promptPanel.el.querySelector(".pp-raw");
+                if (rawBtn) rawBtn.style.display = view === "rewritten" && clip.prompt_rewritten && !live ? "" : "none";
+                const foot = promptPanel.el.querySelector(".pp-foot");
+                let meta;
+                if (view === "raw") {
+                    meta = (clip.prompt_rewritten ? "original · rendered from the rewrite" : "original · pending rewrite") + " · " + describePrompt(rawTextOf(clip));
+                    if (foot) foot.textContent = clip.prompt_rewritten
+                        ? "Editing the original marks the clip pending again · Esc closes"
+                        : "Saves as you type · rewritten at the start of the next run · Esc closes";
+                } else if (live) {
+                    meta = `${live.phase === "thinking" ? "thinking" : "writing"} · ${(live.text || "").length} chars`;
+                    if (foot) foot.textContent = "Live from the rewriter · read-only until it finishes";
+                } else if (stale) {
+                    meta = "stale · original edited since · " + describePrompt(rewrittenTextOf(clip));
+                    if (foot) foot.textContent = "This rewrite is stale: the original changed, the clip renders from the original until the next run rewrites it";
+                } else if (clip.prompt_rewritten) {
+                    const m = clip.rewrite_meta || {};
+                    meta = `✎ ${m.model ? modelLabel(m.model).split(".")[0] : "rewritten"}${m.thinking ? " · thinking" : ""}${m.seconds ? ` · ${m.seconds}s` : ""} · ${describePrompt(clip.prompt || "")}`;
+                    if (foot) foot.textContent = "Edits here are used as is (not rewritten again) · 'Rewrite again' marks the clip pending · Esc closes";
+                } else {
+                    meta = "not rewritten yet";
+                    if (foot) foot.textContent = "The rewriter fills this at the start of the next run (Prompt Rewriter section: mode ≠ off)";
+                }
+                promptPanel.meta.textContent = meta;
+            }
+
             function openPromptPanel(clipId, { focus = true } = {}) {
                 const { index, clip } = findClip(clipId);
                 if (!clip) return;
                 if (!promptPanel.el) buildPromptPanel();
+                if (promptPanel.clipId !== clipId) { promptPanel.view = "auto"; promptPanel.viewClipId = null; }
                 promptPanel.clipId = clipId;
                 promptPanel.title.textContent = `Clip ${index + 1}${clip.title && clip.title !== `Clip ${index + 1}` ? ` · ${clip.title}` : ""}`;
-                promptPanel.meta.textContent = describePrompt(clip.prompt || "");
-                promptPanel.textarea.value = clip.prompt || "";
-                promptPanel.paint();
+                const view = panelView(clip);
+                const live = liveRewrite.get(clip.id);
+                let text;
+                if (view === "raw") text = rawTextOf(clip);
+                else if (live) text = live.text || (live.phase === "thinking" ? "(thinking…)" : "(writing…)");
+                else text = rewrittenTextOf(clip);
+                const stale = view === "rewritten" && !clip.prompt_rewritten && Boolean(rewrittenTextOf(clip));
+                promptPanel.textarea.readOnly = view === "rewritten" && (Boolean(live) || stale || !clip.prompt_rewritten);
+                promptPanel.textarea.style.caretColor = promptPanel.textarea.readOnly ? "transparent" : "#ffffff";
+                promptPanel.layer.style.opacity = live && live.phase === "thinking" ? "0.6" : (stale ? "0.7" : "1");
+                promptPanel.textarea.value = text;
+                if (!text && view === "rewritten") {
+                    promptPanel.layer.innerHTML = `<span style="color: #55556e;">Not rewritten yet. With the Prompt Rewriter on, this fills in live at the start of the next run.</span>`;
+                } else {
+                    promptPanel.paint();
+                }
+                refreshPanelChrome(clip);
                 promptPanel.textarea.scrollTop = 0;
                 promptPanel.layer.scrollTop = 0;
                 container.querySelectorAll(".minimax-clip-card").forEach((c) => markCardSelected(c, c._clipId === clipId));
-                if (focus) promptPanel.textarea.focus({ preventScroll: true });
+                if (focus && !promptPanel.textarea.readOnly) promptPanel.textarea.focus({ preventScroll: true });
             }
 
             const originalOnRemoved = node.onRemoved;
@@ -844,7 +1034,8 @@ app.registerExtension({
             const originalOnConnectionsChange = node.onConnectionsChange;
             node.onConnectionsChange = function (type, slotIndex, connected, linkInfo, ioSlot) {
                 const r = originalOnConnectionsChange?.apply(this, arguments);
-                if (ioSlot && String(ioSlot.name || "").startsWith("clip_prompt_")) renderUI();
+                const changed = String(ioSlot?.name || "");
+                if (changed.startsWith("clip_prompt_") || changed.startsWith("ref_video") || changed.startsWith("ref_audio") || changed === "rewrite_system_prompt_in") renderUI();
                 return r;
             };
 
@@ -908,6 +1099,7 @@ app.registerExtension({
                 // clip cards are the last thing before the run bar.
                 if (expert()) container.appendChild(section("continuity", "Continuity", continuitySummary, buildContinuity));
                 container.appendChild(section("performance", "Performance", performanceSummary, buildPerformance));
+                container.appendChild(section("rewriter", "Prompt Rewriter", rewriterSummary, buildRewriter));
 
                 // 4. Clips: header carries the Add Clip button so it sits next to the cards.
                 {
@@ -919,6 +1111,19 @@ app.registerExtension({
                     container.appendChild(uiSectionHeader("Clips", { summary: `${clipsState.length} clip${clipsState.length === 1 ? "" : "s"} · ${totalSecClips.toFixed(0)} s`, collapsible: false, actions: addBtn }));
                 }
                 container.appendChild(projectControls.references());
+                {
+                    // Video / audio references arrive on sockets; say which are wired.
+                    const wired = (prefix, n) => Array.from({ length: n }, (_, i) => i + 1)
+                        .filter((i) => node.inputs?.find((inp) => inp.name === `${prefix}_${i}` && inp.link != null));
+                    const vids = wired("ref_video", 3), vAud = wired("ref_video_audio", 3), auds = wired("ref_audio", 3);
+                    if (vids.length || vAud.length || auds.length) {
+                        const parts = [];
+                        if (vids.length) parts.push(`video ${vids.map((i) => `<Video ${i}>`).join(", ")}`);
+                        if (vAud.length) parts.push(`soundtrack for video ${vAud.join(", ")}`);
+                        if (auds.length) parts.push(`${auds.length} standalone audio`);
+                        container.appendChild(uiHint(`Also referenced via sockets: ${parts.join(" · ")}. Videos are described by the rewriter from sampled frames; audio is labelled <Audio j> but not described.`));
+                    }
+                }
 
                 // 3. HORIZONTAL Clip Cards Container (Placed horizontally side-by-side)
                 const horizontalContainer = document.createElement("div");
@@ -962,6 +1167,8 @@ app.registerExtension({
                                 <span style="background: #111118; color: #9c9cb8; padding: 1px 5px; border-radius: 3px; font-size: 10px;">${clip.duration}s (${frames}f)</span>
                                 ${index > 0 ? `<span style="background: #2b2866; color: #c7d2fe; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">🔗 Linked</span>` : ''}
                                 ${externalPromptWired(index) ? `<span title="Prompt comes from the clip_prompt_${index + 1} input; the text below is ignored while it is connected." style="background: #1f3a2a; color: #86efac; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">⇐ input</span>` : ''}
+                                ${!clip.prompt_rewritten && rewrittenTextOf(clip) ? `<span title="The original was edited after the last rewrite; the clip renders from the original until the next run rewrites it. The old rewrite is still readable in the prompt panel." style="background: #2a2438; color: #c4b5fd; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">✎ pending</span>` : ''}
+                                ${clip.prompt_rewritten ? `<span title="Rewritten by the built-in prompt rewriter${clip.rewrite_meta ? ` (${clip.rewrite_meta.model || ""}, ${clip.rewrite_meta.task || ""}${clip.rewrite_meta.thinking ? ", thinking" : ""}, ${clip.rewrite_meta.seconds || 0}s)` : ""}. It is not rewritten again; use 'Restore raw' in the prompt panel to redo it." style="background: #3a2e14; color: #fcd34d; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">✎ rewritten</span>` : ''}
                             </div>
                             <div style="display: flex; align-items: center; gap: 6px;">
                                 <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; color: ${isValidated ? "#4ade80" : "#aaa"}; font-size: 11px;">
@@ -1016,7 +1223,8 @@ app.registerExtension({
                     const preview = card.querySelector(".prompt-preview");
                     const promptMeta = card.querySelector(".prompt-meta");
                     const paintPreview = () => {
-                        const text = clip.prompt || "";
+                        const live = liveRewrite.get(clip.id);
+                        const text = live ? (live.phase === "writing" ? live.text : clip.prompt || "") : (clip.prompt || "");
                         const { text: shown, fromSummary } = previewText(text);
                         preview.innerHTML = text.trim()
                             ? highlightH3(shown)
@@ -1032,6 +1240,8 @@ app.registerExtension({
                         promptMeta.textContent = text.trim()
                             ? `${fromSummary ? "summary · " : ""}${describePrompt(text)}`
                             : "";
+                        if (live) promptMeta.textContent = `✎ ${live.phase === "thinking" ? "thinking" : "writing"} · ${(live.text || "").length} chars`;
+                        else if (!clip.prompt_rewritten && rewrittenTextOf(clip)) promptMeta.textContent = "pending rewrite · " + promptMeta.textContent;
                     };
                     paintPreview();
                     card._paintPreview = paintPreview;
@@ -1177,9 +1387,83 @@ app.registerExtension({
                 }
             };
             api.addEventListener(EVENT_PROGRESS, progressHandler);
+
+            // The backend hands the clip list back (rewritten prompts, seeds used);
+            // merge by clip id so the panel and the saved widget reflect the run.
+            const clipsHandler = (event) => {
+                const data = event.detail;
+                if (!data || String(data.owner) !== String(node.id) || !Array.isArray(data.clips)) return;
+                const byId = new Map(clipsState.map((c) => [c.id, c]));
+                let changed = false;
+                const keys = Array.isArray(data.fields) && data.fields.length
+                    ? data.fields
+                    : ["prompt", "prompt_raw", "prompt_rewritten", "rewrite_text", "rewrite_meta", "seed", "prompt_source"];
+                // Clip ids repeat across workflows (0, 1, 2 ...), so only take an update
+                // for a clip that is recognisably the one the server rendered: same raw
+                // source for a rewrite pass, same prompt otherwise.
+                const rawOf = (c) => (typeof c.prompt_raw === "string" && c.prompt_raw) || c.prompt || "";
+                const sameClip = (local, incoming) => keys.includes("prompt")
+                    ? rawOf(local) === rawOf(incoming) || (local.prompt || "") === (incoming.prompt_raw || incoming.prompt || "")
+                    : (local.prompt || "") === (incoming.prompt || "");
+                for (const incoming of data.clips) {
+                    if (!incoming || typeof incoming !== "object") continue;
+                    const local = byId.get(incoming.id);
+                    if (!local || !sameClip(local, incoming)) continue;
+                    for (const key of keys) {
+                        if (key in incoming && JSON.stringify(local[key]) !== JSON.stringify(incoming[key])) {
+                            local[key] = incoming[key];
+                            changed = true;
+                        }
+                    }
+                }
+                if (!changed) return;
+                saveState();
+                renderUI();
+                if (promptPanel.el) {
+                    const { clip } = findClip(promptPanel.clipId);
+                    if (clip) openPromptPanel(clip.id, { focus: false });
+                }
+            };
+            api.addEventListener(EVENT_CLIPS, clipsHandler);
+
+            // A clip's rewrite as it is being written: thinking, then the answer, then done.
+            const rewriteHandler = (event) => {
+                const data = event.detail;
+                if (!data || String(data.owner) !== String(node.id)) return;
+                const { clip } = findClip(data.clip_id);
+                if (!clip) return;
+                if (data.phase === "done") {
+                    liveRewrite.delete(clip.id);
+                    if (data.text) {
+                        if (typeof clip.prompt_raw !== "string" || clip.prompt_rewritten === false) clip.prompt_raw = clip.prompt || "";
+                        clip.rewrite_text = data.text;
+                        clip.prompt = data.text;
+                        clip.prompt_rewritten = true;
+                        clip.validated = false;
+                        saveState();
+                    }
+                    renderUI();
+                } else {
+                    liveRewrite.set(clip.id, { phase: data.phase, text: data.text || "" });
+                    const card = [...container.querySelectorAll(".minimax-clip-card")].find((c) => c._clipId === clip.id);
+                    card?._paintPreview?.();
+                }
+                if (promptPanel.el && promptPanel.clipId === clip.id) {
+                    if (data.phase !== "done" && panelView(clip) !== "rewritten") { promptPanel.view = "rewritten"; promptPanel.viewClipId = clip.id; }
+                    const stick = promptPanel.textarea && promptPanel.layer.scrollTop + promptPanel.layer.clientHeight >= promptPanel.layer.scrollHeight - 24;
+                    openPromptPanel(clip.id, { focus: false });
+                    if (stick && data.phase !== "done") {
+                        promptPanel.layer.scrollTop = promptPanel.layer.scrollHeight;
+                        promptPanel.textarea.scrollTop = promptPanel.textarea.scrollHeight;
+                    }
+                }
+            };
+            api.addEventListener(EVENT_REWRITE, rewriteHandler);
             const onRemoved = node.onRemoved;
             node.onRemoved = function () {
                 api.removeEventListener(EVENT_PROGRESS, progressHandler);
+                api.removeEventListener(EVENT_CLIPS, clipsHandler);
+                api.removeEventListener(EVENT_REWRITE, rewriteHandler);
                 return onRemoved?.apply(this, arguments);
             };
         };

@@ -116,7 +116,7 @@ For Desktop, put the desired flags in your existing launch configuration if supp
 
 ## Outputs and troubleshooting
 
-- The extension writes working data into its `cache/` folder; keep it writable and allow sufficient disk space. Caches are generated locally and are not part of the release.
+- The extension writes working data (cache chains) into `ComfyUI/output/MasterExtender_cache/`; keep it writable and allow sufficient disk space. A `cache/` folder left by older versions inside the node folder is moved there automatically on first use. Caches are generated locally and are not part of the release.
 - Leave Final Decode's output directory empty to use the default ComfyUI output location. Use its preview/export controls or the connected SaveVideo node to save a result.
 - Missing `MiniMaxH3PDDAccApply` / `MiniMaxH3PDDAccScheduler`: install the PDD dependency before rendering. This build contains a fallback when PDD is absent, but it does not provide the intended accelerated result.
 - Missing `MinimaxH3LatentUpscaler3D`: install the upscaler dependency and its model.

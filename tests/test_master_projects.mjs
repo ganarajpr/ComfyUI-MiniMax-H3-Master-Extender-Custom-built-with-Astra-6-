@@ -42,7 +42,10 @@ const api = {
         if (refuseClear) return Response.json({error: "Wait for the running jobs."}, {status: 409});
         clearCalls++;
         const request = JSON.parse(options.body);
-        assert(request.owners.includes("6"));
+        // The project is identified by its clips (server derives the chain key), never by node id.
+        assert.equal(request.owners, undefined);
+        assert(Array.isArray(request.clips) && request.clips.length === 1);
+        assert(Array.isArray(JSON.parse(request.clips[0])));
         return Response.json({ok: true});
     },
 };
@@ -134,6 +137,6 @@ assert(JSON.parse(current.node.widgets[1].value).images.every(i => i === null));
 assert(current.node.inputs.every(i => i.link === null));
 assert.equal(current.node.widgets[2].value, 0.25);
 assert.equal(current.node.properties.master_project_name, "Untitled");
-assert.equal(clearCalls, 3);
+assert.equal(clearCalls, 2);  // Clear Cache + New Project; Load Project no longer clears (chains are per project)
 assert.throws(() => context.parseProject('{"format":"wrong"}'));
 console.log("PASS: nine slots, upload/remove, portable project round trip, settings, cache clear, blank reset, busy-job rejection");
