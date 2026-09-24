@@ -1053,6 +1053,11 @@ class MiniMaxH3MotionContextDiskJoin:
 # -----------------------------------------------------------------------------
 
 
+# Latent frames of the previous clip kept as decoder warm-up (>= 2 decoder chunks;
+# only the first chunk of the tail differs from a full decode and it is discarded).
+PAIR_PREVIOUS_TAIL_T = 10
+
+
 def _build_pair_video(data_path, prev_desc, curr_desc):
     prev_v = _load_segment_video(data_path, prev_desc)
     next_v = _load_segment_video(data_path, curr_desc)
@@ -1078,6 +1083,17 @@ def _build_pair_video(data_path, prev_desc, curr_desc):
 
     if (int(prev_v.shape[2]) - decode_start_t) % 5 != 0:
         raise RuntimeError("Disk Final Decode: H3 temporal phase mismatch.")
+
+    # Only a phase-aligned tail of the previous clip is decoded as warm-up. The
+    # H3 decoder works on independent 5-latent chunks (+2 overlap) blended only
+    # with the chunk before, so dropping whole 5-latent groups from the front
+    # leaves every current-clip frame and the previous clip's last frames (all
+    # that the seam scorer and colour match read) bit-identical -- while no
+    # longer re-decoding the entire previous clip for every continuation.
+    prev_drop = max(0, ((int(prev_v.shape[2]) - PAIR_PREVIOUS_TAIL_T) // 5) * 5)
+    if prev_drop:
+        prev_v = prev_v[:, :, prev_drop:, :, :]
+        previous_frames = _frames_from_video_t(int(prev_v.shape[2]))
 
     chain = torch.cat((prev_v, next_v[:, :, decode_start_t:, :, :]), dim=2)
     decode_frames = _frames_from_video_t(int(chain.shape[2]))
