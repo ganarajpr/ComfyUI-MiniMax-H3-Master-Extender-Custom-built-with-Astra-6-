@@ -2609,6 +2609,8 @@ def _ensure_ref2va_final_segment_cache(
     progress=None,
     decoded_video=None,
     color_adjustment=None,
+    encoded_mp4=None,
+    encoded_settings=None,
 ):
     """Ensure exactly one Ref2VA clip has a final-profile sidecar.
 
@@ -2643,16 +2645,31 @@ def _ensure_ref2va_final_segment_cache(
         pass
 
     temp = path.with_name(path.stem + f".tmp_{uuid.uuid4().hex[:8]}" + path.suffix)
+    # The preview checkpoint was just encoded from the same RGB frames through
+    # the same encoder; when its codec/CRF/preset equal the export profile and
+    # no colour is baked in, the sidecar would be byte-identical -> copy it.
+    reuse = (
+        encoded_mp4 is not None
+        and encoded_settings is not None
+        and Path(encoded_mp4).is_file()
+        and _color_is_neutral(adjustment)
+        and path.suffix.lower() == Path(encoded_mp4).suffix.lower()
+        and tuple(encoded_settings) == (profile["codec"], int(profile["crf"]), str(profile["preset"]))
+    )
     try:
-        _encode_final_segment_video(
-            ffmpeg,
-            video,
-            float(fps),
-            temp,
-            f"ref2va_final_{idx}_{uuid.uuid4().hex[:6]}",
-            profile,
-            adjustment,
-        )
+        if reuse:
+            shutil.copyfile(encoded_mp4, temp)
+            _LOG.info("H3 final segment %d: reused the preview encode (same codec/CRF/preset)", idx + 1)
+        else:
+            _encode_final_segment_video(
+                ffmpeg,
+                video,
+                float(fps),
+                temp,
+                f"ref2va_final_{idx}_{uuid.uuid4().hex[:6]}",
+                profile,
+                adjustment,
+            )
         os.replace(temp, path)
         manifest, _ = _tag_ref2va_final_segment_cache(
             manifest_path, manifest, idx, profile, adjustment
@@ -3283,6 +3300,7 @@ def cache_full_batch_ref2va_segment(
 
     rendered_video = None
     rendered_audio = None
+    rendered_mp4 = None
     seam_shift = int(desc.get("decoded_seam_shift", 0) or 0)
     temp_root = _ensure_cache_root()
     token = f"fullbatch_ref_{idx}_{uuid.uuid4().hex[:8]}"
@@ -3346,6 +3364,8 @@ def cache_full_batch_ref2va_segment(
                 profile,
                 decoded_video=rendered_video,
                 color_adjustment=adjustment,
+                encoded_mp4=rendered_mp4,
+                encoded_settings=("H.264", FULL_BATCH_H264_CACHE_CRF, FULL_BATCH_H264_CACHE_PRESET),
             )
             segments = [dict(x) for x in manifest.get("segments", [])]
             desc = dict(segments[idx])
