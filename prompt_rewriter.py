@@ -310,7 +310,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     ``rewrite_system_prompt_in`` socket). ``refs`` is the extender's reference
     dict (``ref_image_N`` -> IMAGE). ``aspect_text`` is the target frame size,
     e.g. ``"1280x736"``; the pack turns it into the guide's aspect label.
-    ``stream_cb(index, clip_id, phase, text)`` is called while a clip is being
+    ``stream_cb(index, clip_id, phase, text, source)`` is called while a clip is being
     written -- phase ``thinking`` / ``writing`` with the text so far, then
     ``done`` with the final answer -- so the panel can show the rewrite live.
     ``videos`` (``ref_video_N`` -> 24 fps frame batch) are described from a few
@@ -579,7 +579,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                     return
                 last["at"] = now
                 try:
-                    stream_cb(index, clip_id, phase, text)
+                    stream_cb(index, clip_id, phase, text, source)
                 except Exception:
                     _LOG.debug("stream callback failed", exc_info=True)
 

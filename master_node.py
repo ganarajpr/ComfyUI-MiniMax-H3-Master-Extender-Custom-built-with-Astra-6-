@@ -224,12 +224,16 @@ def _store_fingerprints(data_path, manifest_path, fingerprints):
         _write_json_atomic(manifest_path, state)
 
 
-def _send_rewrite(owner, index, clip_id, phase, text):
-    """Stream one clip's rewrite to the panel while the writer is still going."""
+def _send_rewrite(owner, index, clip_id, phase, text, source=""):
+    """Stream one clip's rewrite to the panel while the writer is still going.
+
+    ``source`` is the raw text being rewritten, so the panel can drop a rewrite
+    whose original was replaced after the run was queued."""
     try:
         _send_to_queuer(
             EVENT_REWRITE,
-            {"owner": str(owner), "index": int(index), "clip_id": clip_id, "phase": str(phase), "text": text or ""},
+            {"owner": str(owner), "index": int(index), "clip_id": clip_id, "phase": str(phase), "text": text or "",
+             "source": source or ""},
         )
     except Exception:
         pass
@@ -469,6 +473,7 @@ class MiniMaxH3MasterExtender:
                 clip_cfg["prompt_rewritten"] = False
                 clip_cfg.pop("prompt_raw", None)
                 clip_cfg.pop("rewrite_meta", None)
+                clip_cfg.pop("rewrite_text", None)
 
         # Parse resolution settings
         w1, h1 = parse_resolution(pass1_resolution, 608, 352)
@@ -531,8 +536,8 @@ class MiniMaxH3MasterExtender:
         if str(kwargs.get("rewrite_mode", "off")) != "off":
             def rewrite_progress(stage, message, pct):
                 _send_progress(owner, 0, len(clips), stage, message, pct)
-            def rewrite_stream(index, clip_id, phase, text):
-                _send_rewrite(owner, index, clip_id, phase, text)
+            def rewrite_stream(index, clip_id, phase, text, source=""):
+                _send_rewrite(owner, index, clip_id, phase, text, source)
             rewrite_notes = prompt_rewriter.rewrite_clips(
                 clips, refs, kwargs, aspect_text=str(pass2_resolution),
                 progress_cb=rewrite_progress, stream_cb=rewrite_stream,

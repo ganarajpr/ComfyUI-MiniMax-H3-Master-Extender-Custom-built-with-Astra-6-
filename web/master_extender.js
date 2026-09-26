@@ -882,6 +882,29 @@ app.registerExtension({
                 if (typeof clip.rewrite_text === "string") return clip.rewrite_text;
                 return clip.prompt_rewritten ? (clip.prompt || "") : "";
             }
+            // Drop a clip's rewrite (text, flag, meta, live stream) so it is pending
+            // from its raw text. With continuity on, later clips were written from this
+            // clip's raw ask, so theirs go too. Returns true when anything was dropped.
+            function wipeRewrite(clip) {
+                const had = clip.prompt_rewritten || typeof clip.rewrite_text === "string" || clip.rewrite_meta || liveRewrite.has(clip.id);
+                if (!had) return false;
+                if (clip.prompt_rewritten && typeof clip.prompt_raw === "string") clip.prompt = clip.prompt_raw;
+                clip.prompt_rewritten = false;
+                delete clip.rewrite_text;
+                delete clip.rewrite_meta;
+                liveRewrite.delete(clip.id);
+                clip.validated = false;
+                return true;
+            }
+            function wipeRewrites(clip) {
+                let dropped = wipeRewrite(clip);
+                const continuity = node.widgets?.find((w) => w.name === "rewrite_previous_clips")?.value;
+                if (continuity && continuity !== "off") {
+                    const { index } = findClip(clip.id);
+                    for (const later of clipsState.slice(index + 1)) dropped = wipeRewrite(later) || dropped;
+                }
+                return dropped;
+            }
             function panelView(clip) {
                 if (promptPanel.viewClipId === clip.id && (promptPanel.view === "raw" || promptPanel.view === "rewritten")) return promptPanel.view;
                 return (liveRewrite.has(clip.id) || clip.prompt_rewritten || rewrittenTextOf(clip)) ? "rewritten" : "raw";
@@ -965,16 +988,12 @@ app.registerExtension({
                     if (!clip || textarea.readOnly) return;
                     const value = textarea.value;
                     if (panelView(clip) === "raw") {
-                        // Editing the original: the clip is pending again, and renders from
-                        // this text until the rewriter has replaced it. The last rewrite is
-                        // kept (rewrite_text) so it can still be read, marked stale.
+                        // Editing the original: the clip is pending again and renders from
+                        // this text until the rewriter has replaced it. The old rewrite is
+                        // wiped so it can never be rendered for the new text.
                         clip.prompt_raw = value;
                         clip.prompt = value;
-                        if (clip.prompt_rewritten) {
-                            clip.prompt_rewritten = false;
-                            if (clip.rewrite_meta) clip.rewrite_meta = Object.assign({}, clip.rewrite_meta, { stale: true });
-                            renderUI();
-                        }
+                        if (wipeRewrites(clip)) renderUI();
                     } else {
                         // Editing the rewritten text: used as is, not rewritten again.
                         clip.rewrite_text = value;
@@ -1208,7 +1227,26 @@ app.registerExtension({
                     addBtn.textContent = "+ Add Clip";
                     addBtn.style.cssText = "background: #6355d8; color: #ffffff; border: none; padding: 3px 10px; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 11px; box-shadow: 0 2px 4px rgba(99,85,216,0.3); white-space: nowrap;";
                     addBtn.onclick = (e) => { e.stopPropagation(); addClip(); };
-                    container.appendChild(uiSectionHeader("Clips", { summary: `${clipsState.length} clip${clipsState.length === 1 ? "" : "s"} · ${totalSecClips.toFixed(0)} s`, collapsible: false, actions: addBtn }));
+                    // Remove every clip in one go (long or collapsed sets); one empty clip is left.
+                    const clearBtn = document.createElement("button");
+                    clearBtn.textContent = "Remove all";
+                    clearBtn.title = "Delete every clip and start again from one empty clip";
+                    clearBtn.style.cssText = "background: transparent; color: #ef4444; border: 1px solid #5a2a2a; padding: 3px 10px; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 11px; white-space: nowrap;";
+                    clearBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        if (!confirm(`Remove all ${clipsState.length} clip${clipsState.length === 1 ? "" : "s"}? Their prompts are lost (rendered clips stay in the disk cache).`)) return;
+                        closePromptPanel();
+                        liveRewrite.clear();
+                        expandedValidated.clear();
+                        cacheStates = [];
+                        cacheVideos = [];
+                        clipsState.length = 0;
+                        addClip();
+                    };
+                    const actions = document.createElement("span");
+                    actions.style.cssText = "display: inline-flex; gap: 6px; align-items: center;";
+                    actions.append(clearBtn, addBtn);
+                    container.appendChild(uiSectionHeader("Clips", { summary: `${clipsState.length} clip${clipsState.length === 1 ? "" : "s"} · ${totalSecClips.toFixed(0)} s`, collapsible: false, actions }));
                 }
                 container.appendChild(projectControls.references());
                 {
@@ -1564,6 +1602,12 @@ app.registerExtension({
                 if (!data || String(data.owner) !== String(node.id)) return;
                 const { clip } = findClip(data.clip_id);
                 if (!clip) return;
+                // Written from a raw text that was replaced after the run was queued:
+                // it belongs to the old prompt, never apply it to the new one.
+                if (typeof data.source === "string" && data.source.trim() !== rawTextOf(clip).trim()) {
+                    if (liveRewrite.delete(clip.id)) renderUI();
+                    return;
+                }
                 if (data.phase === "done") {
                     liveRewrite.delete(clip.id);
                     if (data.text) {
