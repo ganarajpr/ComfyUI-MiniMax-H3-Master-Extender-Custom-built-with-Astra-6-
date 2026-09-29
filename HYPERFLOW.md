@@ -44,3 +44,11 @@ Workflows saved before HyperFlow (UI or API format) load with the three HyperFlo
 ## Cache
 
 The disk cache does not re-render when settings change. Clear the chain (panel "clear cache", or `POST /comfyui/minimax_master/clear_cache`) before comparing engines.
+
+## `hyperflow_lora_mode` (optional, default `bypass`)
+
+- `bypass`: the reference behaviour. The rank-256 LoRA is computed on top of the model at every step.
+  Measured cost is about 25% more time per pass-1 step than PDD (3.44 s against 2.74 s per step at 608x352).
+- `merge`: the LoRA is folded into the weights once, so each step should cost about the same as the
+  plain model. The node pack warns that merging into quantized (int8) weights can change numerical
+  results, so A/B it before relying on it. The two small base time projections stay in bypass in both modes.

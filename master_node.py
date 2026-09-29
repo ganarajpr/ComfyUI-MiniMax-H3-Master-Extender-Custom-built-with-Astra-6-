@@ -398,6 +398,7 @@ class MiniMaxH3MasterExtender:
                 "hyperflow_file": (_hyperflow_files(), {"default": HYPERFLOW_DEFAULT_FILE, "tooltip": "Converted HyperFlow build (models/hyperflow), used only in HyperFlow 8-step mode. Full MiniMax-H3 bases need the file without '_pruned'; pruned bases (e.g. Singularity) need the '_pruned' build."}),
                 "hyperflow_curve_refit": ("BOOLEAN", {"default": True, "tooltip": "HyperFlow 8-step on a pruned base: restore most of the two-time (t, r) conditioning with the bundled curve fit for that exact checkpoint (Singularity ref2va pruned v1.3 is covered). Off = LoRA-only. Ignored on a full base."}),
                 "hyperflow_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05, "tooltip": "HyperFlow adapter strength. 1.0 is the released model; the curve refit needs 1.0."}),
+                "hyperflow_lora_mode": (["bypass", "merge"], {"default": "bypass", "tooltip": "HyperFlow LoRA application. bypass (default): computed on top of the model at every step, the reference behaviour. merge: folded into the weights once, so each step costs about the same as the plain model (faster), but merging into quantized (int8) weights can change numerical results. The two small base time projections stay in bypass either way."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -658,6 +659,7 @@ class MiniMaxH3MasterExtender:
             hyperflow_file=kwargs.get("hyperflow_file") or HYPERFLOW_DEFAULT_FILE,
             hyperflow_curve_refit=kwargs.get("hyperflow_curve_refit", True),
             hyperflow_strength=kwargs.get("hyperflow_strength", 1.0),
+            hyperflow_lora_mode=kwargs.get("hyperflow_lora_mode") or "bypass",
             background_busy=lambda: background["worker"] is not None and background["worker"].busy(),
             wait_background=lambda: _finish_background(),
         )

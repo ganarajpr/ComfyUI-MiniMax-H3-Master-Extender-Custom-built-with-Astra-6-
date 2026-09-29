@@ -185,6 +185,7 @@ class PurePDDEngine:
         hyperflow_file="custom_node_hyperflow_8step_v1.0_comfyui_pruned.safetensors",
         hyperflow_curve_refit=True,
         hyperflow_strength=1.0,
+        hyperflow_lora_mode="bypass",
     ):
         self.raw_model = model
         self.accel_mode = str(accel_mode)
@@ -193,6 +194,7 @@ class PurePDDEngine:
         self.hyperflow_file = str(hyperflow_file)
         self.hyperflow_curve_refit = bool(hyperflow_curve_refit)
         self.hyperflow_strength = float(hyperflow_strength)
+        self.hyperflow_lora_mode = "merge" if str(hyperflow_lora_mode).lower() == "merge" else "bypass"
         self.hyperflow_pruned_refit = False
         self.turbo_lora = turbo_lora if turbo_lora and turbo_lora != "none" else None
         self.turbo_lora_strength = float(turbo_lora_strength)
@@ -428,14 +430,15 @@ class PurePDDEngine:
         if pruned_base and not self.hyperflow_curve_refit:
             _LOG.warning("HyperFlow: pruned base without curve refit; running LoRA-only (single-time, off-recipe)")
         self.hyperflow_pruned_refit = pruned_base and self.hyperflow_curve_refit
-        _LOG.info("HyperFlow: %s on a %s base, curve refit %s, strength %.2f",
+        _LOG.info("HyperFlow: %s on a %s base, curve refit %s, strength %.2f, lora_mode %s",
                   self.hyperflow_file, "pruned" if pruned_base else "full",
-                  "requested" if self.hyperflow_curve_refit else "off", self.hyperflow_strength)
+                  "requested" if self.hyperflow_curve_refit else "off", self.hyperflow_strength,
+                  self.hyperflow_lora_mode)
         res = apply_cls().apply(
             model,
             hyperflow_file=self.hyperflow_file,
             strength=self.hyperflow_strength,
-            lora_mode="bypass",
+            lora_mode=self.hyperflow_lora_mode,
             variant="auto",
             download_if_missing=False,
             verbose=False,

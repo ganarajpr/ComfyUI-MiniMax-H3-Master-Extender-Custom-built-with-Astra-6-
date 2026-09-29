@@ -187,7 +187,7 @@ function clampDuration(sec, beyond) {
 // value and its slot in widgets_values; it just draws with zero height.
 const TURBO_ONLY_WIDGETS = ["turbo_lora", "turbo_lora_strength", "turbo_sampler", "turbo_scheduler"];
 const PDD_ONLY_WIDGETS = ["pdd_file"];
-const HYPERFLOW_ONLY_WIDGETS = ["hyperflow_file", "hyperflow_curve_refit", "hyperflow_strength"];
+const HYPERFLOW_ONLY_WIDGETS = ["hyperflow_file", "hyperflow_curve_refit", "hyperflow_strength", "hyperflow_lora_mode"];
 const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 
 function setWidgetVisible(widget, visible) {
