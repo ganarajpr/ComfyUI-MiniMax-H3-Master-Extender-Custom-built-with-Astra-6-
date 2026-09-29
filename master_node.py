@@ -255,6 +255,19 @@ def _semantic_bridge_adapters():
             names = []
     return [n for n in names if n.lower().endswith(".safetensors") and not n.startswith("NO_ADAPTER_FOUND")]
 
+HYPERFLOW_DEFAULT_FILE = "custom_node_hyperflow_8step_v1.0_comfyui_pruned.safetensors"
+
+
+def _hyperflow_files():
+    """Converted HyperFlow builds in models/hyperflow (registered by the ComfyUI-HyperFlow-H3 pack)."""
+    try:
+        names = [n for n in folder_paths.get_filename_list("hyperflow")
+                 if not n.replace("\\", "/").startswith("curve_fits/")]
+    except Exception:
+        names = []
+    return names or [HYPERFLOW_DEFAULT_FILE]
+
+
 class MiniMaxH3MasterExtender:
     """Master node for MiniMax H3 multishot video generation with Pure PDD engine."""
 
@@ -334,7 +347,7 @@ class MiniMaxH3MasterExtender:
                 "sparse_method": (["sla", "sol-attn", "vsa"], {"default": "sla", "tooltip": "Selection method for core BlockSparseAttention when sla_enabled is on. sla: keep a fixed top-k percent of key blocks (1 - sla_sparsity). sol-attn: training-free adaptive threshold per head/query block (tau), the choice for models without an SLA-distilled LoRA such as PDD. vsa: FastVideo cube attention, only with FastH3-VSA weights."}),
                 "sparse_tau": ("FLOAT", {"default": 1.3, "min": 0.0, "max": 4.0, "step": 0.05, "tooltip": "sol-attn threshold in score sigmas. Higher = sparser: 1.0 keeps ~16% of key blocks, 1.5 ~7%, 2.0 ~2.7%."}),
                 # --- Acceleration: PDD (default) or any turbo / lightning LoRA ---
-                "accel_mode": (["PDD 8-step", "Turbo LoRA"], {"default": "PDD 8-step", "tooltip": "PDD 8-step: the official Parallel Decoding Distillation LoRA + head bank (needs ComfyUI-MiniMax-H3-PDD-Acc). Turbo LoRA: a plain step-distilled LoRA (turbo / lightning / lightx2v) with a regular scheduler; 'steps' above becomes the turbo step count."}),
+                "accel_mode": (["PDD 8-step", "Turbo LoRA", "HyperFlow 8-step"], {"default": "PDD 8-step", "tooltip": "PDD 8-step: the official Parallel Decoding Distillation LoRA + head bank (needs ComfyUI-MiniMax-H3-PDD-Acc). Turbo LoRA: a plain step-distilled LoRA (turbo / lightning / lightx2v) with a regular scheduler; 'steps' above becomes the turbo step count. HyperFlow 8-step: Video Rebirth's 8-step LoRA + two-time conditioning (needs ComfyUI-HyperFlow-H3); always its own trained 8-step grid with Euler, 'steps' is ignored."}),
                 "turbo_lora": (["none"] + folder_paths.get_filename_list("loras"), {"default": "none", "tooltip": "Turbo LoRA file (models/loras). Used only in Turbo LoRA mode."}),
                 "turbo_lora_strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "tooltip": "Turbo LoRA strength."}),
                 "turbo_sampler": (comfy.samplers.KSampler.SAMPLERS, {"default": "res_multistep", "tooltip": "Sampler for Turbo LoRA mode (PDD mode always uses euler)."}),
@@ -381,6 +394,10 @@ class MiniMaxH3MasterExtender:
                 "ref_audio_2": ("AUDIO", {"tooltip": "Standalone reference audio 2."}),
                 "ref_audio_3": ("AUDIO", {"tooltip": "Standalone reference audio 3."}),
                 "rewrite_previous_clips": (prompt_rewriter.CONTINUITY, {"default": "raw asks", "tooltip": "What the writer is told about the earlier clips when it writes clip N: 'raw asks' puts clips 1..N-1 as you typed them into the task message (previous_clips), so clip N continues where N-1 ends. Editing an earlier clip's ask re-invalidates the later clips."}),
+                # --- HyperFlow 8-step (appended last so saved workflows keep their widget order) ---
+                "hyperflow_file": (_hyperflow_files(), {"default": HYPERFLOW_DEFAULT_FILE, "tooltip": "Converted HyperFlow build (models/hyperflow), used only in HyperFlow 8-step mode. Full MiniMax-H3 bases need the file without '_pruned'; pruned bases (e.g. Singularity) need the '_pruned' build."}),
+                "hyperflow_curve_refit": ("BOOLEAN", {"default": True, "tooltip": "HyperFlow 8-step on a pruned base: restore most of the two-time (t, r) conditioning with the bundled curve fit for that exact checkpoint (Singularity ref2va pruned v1.3 is covered). Off = LoRA-only. Ignored on a full base."}),
+                "hyperflow_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05, "tooltip": "HyperFlow adapter strength. 1.0 is the released model; the curve refit needs 1.0."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -627,6 +644,9 @@ class MiniMaxH3MasterExtender:
             pass2_chunk_overlap=pass2_chunk_overlap,
             sparse_method=sparse_method,
             sparse_tau=sparse_tau,
+            hyperflow_file=kwargs.get("hyperflow_file", HYPERFLOW_DEFAULT_FILE),
+            hyperflow_curve_refit=kwargs.get("hyperflow_curve_refit", True),
+            hyperflow_strength=kwargs.get("hyperflow_strength", 1.0),
             background_busy=lambda: background["worker"] is not None and background["worker"].busy(),
             wait_background=lambda: _finish_background(),
         )

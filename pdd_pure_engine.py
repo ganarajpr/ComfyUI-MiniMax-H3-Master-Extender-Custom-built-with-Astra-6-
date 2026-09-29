@@ -141,6 +141,18 @@ def _upscaler_precision(model_name, default="fp16"):
     return precision
 
 
+def pass_sampler_name(turbo_mode, sampler_name):
+    """PDD and HyperFlow were distilled for plain Euler; only Turbo LoRA mode uses the user's sampler."""
+    return sampler_name if turbo_mode else "euler"
+
+
+def hyperflow_tail_sigmas(grid, denoise):
+    """Last round(steps x denoise) steps of HyperFlow's own 9-point grid (steps + 1 points)."""
+    steps = len(grid) - 1
+    tail = max(1, int(round(steps * float(denoise))))
+    return grid[-(tail + 1):]
+
+
 class PurePDDEngine:
     def __init__(
         self,
@@ -170,10 +182,17 @@ class PurePDDEngine:
         wait_background=None,
         sparse_method="sla",
         sparse_tau=1.3,
+        hyperflow_file="custom_node_hyperflow_8step_v1.0_comfyui_pruned.safetensors",
+        hyperflow_curve_refit=True,
+        hyperflow_strength=1.0,
     ):
         self.raw_model = model
         self.accel_mode = str(accel_mode)
         self.turbo_mode = self.accel_mode.lower().startswith("turbo")
+        self.hyperflow_mode = self.accel_mode.lower().startswith("hyperflow")
+        self.hyperflow_file = str(hyperflow_file)
+        self.hyperflow_curve_refit = bool(hyperflow_curve_refit)
+        self.hyperflow_strength = float(hyperflow_strength)
         self.turbo_lora = turbo_lora if turbo_lora and turbo_lora != "none" else None
         self.turbo_lora_strength = float(turbo_lora_strength)
         self.sampler_name = sampler_name
@@ -232,6 +251,8 @@ class PurePDDEngine:
         # 2. Acceleration: PDD head bank, or a plain turbo / lightning LoRA
         if self.turbo_mode:
             pdd_model, sigmas_p1 = self._prepare_turbo_model(shifted_model)
+        elif self.hyperflow_mode:
+            pdd_model, sigmas_p1 = self._prepare_hyperflow_model(shifted_model)
         else:
             pdd_apply_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3PDDAccApply")
             if pdd_apply_cls:
@@ -295,6 +316,10 @@ class PurePDDEngine:
         self.pass2_lora = lora if lora and lora != "none" else None
         self.pass2_lora_strength = float(strength)
         self.pass2_lora_mode = "replace" if str(mode).lower().startswith("replace") else "stack"
+        if self.hyperflow_mode and self.pass2_lora and self.pass2_lora_mode != "replace":
+            _LOG.info("HyperFlow: pass-2 LoRA forces 'replace' mode (pass 2 runs on the SigmaShift model + this "
+                      "LoRA, without HyperFlow, so HyperFlow never sees a non-trained sigma tail)")
+            self.pass2_lora_mode = "replace"
         self.pass2_steps = int(steps or 0)
         self.pass2_model = None
 
@@ -377,6 +402,56 @@ class PurePDDEngine:
 
         return model, self._basic_sigmas(model, steps, 1.0)
 
+    def _prepare_hyperflow_model(self, model):
+        """HyperFlow 8-step (ComfyUI-HyperFlow-H3): backbone LoRA + two-time (t, r)
+        conditioning. Its MODEL and its trained 9-point SIGMAS are used as-is; the
+        schedule is never a BasicScheduler one, and pdd_nfe does not apply."""
+        apply_cls = nodes.NODE_CLASS_MAPPINGS.get("ApplyHyperFlowH3")
+        if apply_cls is None:
+            raise RuntimeError("HyperFlow 8-step needs the ComfyUI-HyperFlow-H3 node pack "
+                               "(ApplyHyperFlowH3) in custom_nodes.")
+        if self.pdd_nfe != "8":
+            _LOG.warning("HyperFlow mode always runs its trained 8 steps; ignoring steps=%s", self.pdd_nfe)
+            self.pdd_nfe = "8"
+        dm = model.get_model_object("diffusion_model")
+        pruned_base = hasattr(dm, "adaln_t_table") or not hasattr(dm, "time_embedder")
+        pruned_file = "_pruned" in self.hyperflow_file.lower()
+        if pruned_base and not pruned_file:
+            raise ValueError(f"{self.hyperflow_file} is the FULL-base build but the loaded base is a pruned/curve "
+                             "MiniMax-H3 with no time_embedder. Select the pruned-base build "
+                             "(custom_node_hyperflow_8step_v1.0_comfyui_pruned.safetensors).")
+        if not pruned_base and pruned_file:
+            raise ValueError(f"{self.hyperflow_file} is the PRUNED-base build (backbone LoRA only) but the loaded "
+                             "base is a full MiniMax-H3. Select custom_node_hyperflow_8step_v1.0_comfyui.safetensors "
+                             "(the file without '_pruned') instead.")
+        if pruned_base and not self.hyperflow_curve_refit:
+            _LOG.warning("HyperFlow: pruned base without curve refit; running LoRA-only (single-time, off-recipe)")
+        _LOG.info("HyperFlow: %s on a %s base, curve refit %s, strength %.2f",
+                  self.hyperflow_file, "pruned" if pruned_base else "full",
+                  "requested" if self.hyperflow_curve_refit else "off", self.hyperflow_strength)
+        res = apply_cls().apply(
+            model,
+            hyperflow_file=self.hyperflow_file,
+            strength=self.hyperflow_strength,
+            lora_mode="bypass",
+            variant="auto",
+            download_if_missing=False,
+            verbose=False,
+            experimental_curve_refit=self.hyperflow_curve_refit and pruned_base,
+        )
+        hf_model = _safe_get_output(res, 0, "model")
+        sigmas = _safe_get_output(res, 1, "sigmas")
+        if hf_model is None or sigmas is None:
+            raise RuntimeError("ApplyHyperFlowH3 returned no model / sigmas")
+        _LOG.info("HyperFlow: trained grid %s, sampler euler", [round(float(x), 4) for x in sigmas])
+        if self.sla_enabled:
+            _LOG.info("HyperFlow: extender sparse attention is ON (%s, tau %.2f, dense before %.0f%%); HyperFlow's "
+                      "validated sol-attn recipe is start 0.16, dense_blocks 0,1, tau 1.0, sink off",
+                      self.sparse_method, self.sparse_tau, self.SPARSE_START_PERCENT * 100)
+        else:
+            _LOG.info("HyperFlow: sparse attention is OFF (dense recipe)")
+        return hf_model, sigmas
+
     def _apply_sla(self, model):
         """Block-sparse attention for both passes. On long sequences it roughly
         halves the per-step time (measured 39 -> 22 s/step at 1344x768 / 362
@@ -425,6 +500,11 @@ class PurePDDEngine:
         round(steps x denoise) steps of the turbo schedule. With a pass-2 LoRA
         the schedule length can differ from pass 1 (pass2_steps), and in
         "replace" mode the PDD scheduler no longer applies."""
+        if self.hyperflow_mode and not self._pass2_lora_active():
+            tail = hyperflow_tail_sigmas(self.pass1_sigmas, pass2_denoise)
+            _LOG.info("HyperFlow: pass 2 uses the tail of HyperFlow's own grid (%d steps): %s",
+                      len(tail) - 1, [round(float(x), 4) for x in tail])
+            return tail
         if self._pass2_lora_active() and (self.pass2_steps > 0 or self.pass2_lora_mode == "replace" or self.turbo_mode):
             steps = int(self.pass2_steps or self.pdd_nfe)
             tail = max(1, int(round(steps * float(pass2_denoise))))
@@ -595,7 +675,7 @@ class PurePDDEngine:
         model = self._with_ff_chunking(model, window_tokens)
         self._reclaim_vram(model, tokens=window_tokens)
 
-        sampler_name = self.sampler_name if getattr(self, "turbo_mode", False) else "euler"
+        sampler_name = pass_sampler_name(getattr(self, "turbo_mode", False), self.sampler_name)
         res = split_cls.execute(
             latent=latent,
             conditioning=positive,
@@ -652,7 +732,7 @@ class PurePDDEngine:
 
         # Build sampler object: PDD was distilled for plain Euler; turbo mode
         # uses the user's sampler (res_multistep by default).
-        euler_sampler = comfy.samplers.sampler_object(self.sampler_name if self.turbo_mode else "euler")
+        euler_sampler = comfy.samplers.sampler_object(pass_sampler_name(self.turbo_mode, self.sampler_name))
 
         # Fix empty latent channels if needed
         latent = dict(latent_image)

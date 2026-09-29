@@ -165,6 +165,9 @@ def _settings_summary(inputs: dict | None, clips: list[dict]) -> str:
         steps = inputs.get("pdd_nfe", "?")
         if str(accel).lower().startswith("turbo"):
             lines.append(f"Engine: Turbo LoRA {inputs.get('turbo_lora', '')} x{inputs.get('turbo_lora_strength', 1.0)} · {steps} steps · {inputs.get('turbo_sampler', '')} / {inputs.get('turbo_scheduler', '')}")
+        elif str(accel).lower().startswith("hyperflow"):
+            refit = "curve refit on" if inputs.get("hyperflow_curve_refit", True) else "curve refit off"
+            lines.append(f"Engine: HyperFlow 8-step {inputs.get('hyperflow_file', '')} x{inputs.get('hyperflow_strength', 1.0)} · {refit} · euler")
         else:
             lines.append(f"Engine: PDD {steps}-step · {inputs.get('pdd_file', '')}")
         lines.append(f"Quality: draft {inputs.get('pass1_resolution', '?')} → refine {inputs.get('pass2_resolution', '?')} · denoise {inputs.get('pass2_denoise', '?')} · upscaler {inputs.get('upscaler_model', '?')}")

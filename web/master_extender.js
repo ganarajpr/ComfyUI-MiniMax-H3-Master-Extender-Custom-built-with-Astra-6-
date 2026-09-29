@@ -187,6 +187,7 @@ function clampDuration(sec, beyond) {
 // value and its slot in widgets_values; it just draws with zero height.
 const TURBO_ONLY_WIDGETS = ["turbo_lora", "turbo_lora_strength", "turbo_sampler", "turbo_scheduler"];
 const PDD_ONLY_WIDGETS = ["pdd_file"];
+const HYPERFLOW_ONLY_WIDGETS = ["hyperflow_file", "hyperflow_curve_refit", "hyperflow_strength"];
 const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 
 function setWidgetVisible(widget, visible) {
@@ -211,10 +212,13 @@ function setupModeWidgets(node) {
     if (!accel && !sla) return;
 
     const apply = () => {
-        const turbo = String(accel?.value ?? "").toLowerCase().startsWith("turbo");
+        const mode = String(accel?.value ?? "").toLowerCase();
+        const turbo = mode.startsWith("turbo");
+        const hyperflow = mode.startsWith("hyperflow");
         const slaOn = sla ? !!sla.value : false;
         TURBO_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), turbo));
-        PDD_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), !turbo));
+        HYPERFLOW_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), hyperflow));
+        PDD_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), !turbo && !hyperflow));
         SLA_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), slaOn));
         // Let LiteGraph recompute the node height without shrinking the DOM
         // editor that sits at the bottom of the node.
@@ -626,6 +630,7 @@ app.registerExtension({
                 if (rerender) renderUI();
             };
             const isTurbo = () => String(getW("accel_mode", "")).toLowerCase().startsWith("turbo");
+            const isHyperflow = () => String(getW("accel_mode", "")).toLowerCase().startsWith("hyperflow");
 
             function bindSelect(name, opts = {}) {
                 const w = W(name);
@@ -673,6 +678,7 @@ app.registerExtension({
                 const p2note = p2 !== "none" ? ` · refine ${shortModelName(p2)}${String(getW("pass2_lora_mode", "")).startsWith("replace") ? " (replace)" : ""}` : "";
                 const bridge = String(getW("semantic_bridge", "none"));
                 const bridgeNote = bridge !== "none" ? ` · bridge α ${Number(getW("semantic_bridge_alpha", 0)).toFixed(2)}` : "";
+                if (isHyperflow()) return `HyperFlow 8-step · ${shortModelName(getW("hyperflow_file"))} · refit ${getW("hyperflow_curve_refit", true) ? "on" : "off"} · euler${p2note}${bridgeNote}`;
                 if (isTurbo()) return `Turbo LoRA · ${shortModelName(getW("turbo_lora"))} · ${steps} steps · ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}${p2note}${bridgeNote}`;
                 return `PDD ${steps}-step · ${shortModelName(getW("pdd_file"))}${p2note}${bridgeNote}`;
             }
@@ -769,8 +775,15 @@ app.registerExtension({
                     setW("pdd_nfe", String(v).toLowerCase().startsWith("turbo") ? "4" : "8", { rerender: false });
                     renderUI();
                 });
-                wrap.appendChild(uiRow("engine", accelSel, { hint: "PDD 8-step: official parallel-decoding LoRA (4/6/8 steps). Turbo LoRA: any turbo LoRA with its own step count." }));
-                if (isTurbo()) {
+                wrap.appendChild(uiRow("engine", accelSel, { hint: "PDD 8-step: official parallel-decoding LoRA (4/6/8 steps). Turbo LoRA: any turbo LoRA with its own step count. HyperFlow 8-step: Video Rebirth's 8-step LoRA with two-time conditioning." }));
+                if (isHyperflow()) {
+                    wrap.appendChild(uiRow("hyperflow file", bindSelect("hyperflow_file", { render: shortModelName }),
+                        { hint: "Pruned bases (Singularity) need the _pruned build; full bases need the one without. Always the trained 8-step grid with Euler." }));
+                    wrap.appendChild(uiRow("curve refit", bindToggle("hyperflow_curve_refit"),
+                        { hint: "Pruned base only: restores most of the two-time (t, r) conditioning. Off = LoRA-only." }));
+                    if (expert()) wrap.appendChild(uiRow("strength", bindNumber("hyperflow_strength"), { indent: true }));
+                    wrap.appendChild(uiHint("Pass 2 without a refine LoRA is cut from HyperFlow's own grid; a refine LoRA forces replace mode (no HyperFlow on that tail)."));
+                } else if (isTurbo()) {
                     wrap.appendChild(uiRow("turbo lora", bindSelect("turbo_lora", { render: shortModelName })));
                     wrap.appendChild(uiRow("steps", bindSelect("pdd_nfe")));
                     if (expert()) {
@@ -1177,7 +1190,7 @@ app.registerExtension({
                 header.innerHTML = `
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span style="font-size: 15px; font-weight: 700; color: #9d8cff; letter-spacing: -0.2px;">🎬 MiniMax H3 Master</span>
-                        <span style="background: #252538; color: #a5a5c5; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid #383852;">${isTurbo() ? "Turbo" : "PDD"} · ${getW("pdd_nfe", "8")} steps · 2-pass</span>
+                        <span style="background: #252538; color: #a5a5c5; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid #383852;">${isHyperflow() ? "HyperFlow" : isTurbo() ? "Turbo" : "PDD"} · ${isHyperflow() ? "8" : getW("pdd_nfe", "8")} steps · 2-pass</span>
                         <button id="mode-toggle" title="Simple shows the eight decisions that matter; Expert shows every field." style="background: ${expert() ? "#4a3c22" : "#2b3a55"}; color: ${expert() ? "#e6c28f" : "#8fb0e6"}; border: 1px solid ${expert() ? "#6b5530" : "#3c5480"}; padding: 2px 9px; border-radius: 10px; font-size: 10.5px; font-weight: 600; cursor: pointer;">${expert() ? "Expert" : "Simple"}</button>
                     </div>
                     <div style="display: flex; align-items: center; gap: 12px;">
