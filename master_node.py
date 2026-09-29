@@ -21,7 +21,7 @@ from server import PromptServer
 
 import folder_paths
 import nodes
-from .master_projects import load_reference_images, _clip_identity, _chain_key, _clip_fingerprint
+from .master_projects import load_reference_images, _clip_identity, _chain_key, _clip_fingerprint, _audio_refine_signature
 from . import prompt_rewriter
 
 from . import motion_context_disk
@@ -399,6 +399,10 @@ class MiniMaxH3MasterExtender:
                 "hyperflow_curve_refit": ("BOOLEAN", {"default": True, "tooltip": "HyperFlow 8-step on a pruned base: restore most of the two-time (t, r) conditioning with the bundled curve fit for that exact checkpoint (Singularity ref2va pruned v1.3 is covered). Off = LoRA-only. Ignored on a full base."}),
                 "hyperflow_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05, "tooltip": "HyperFlow adapter strength. 1.0 is the released model; the curve refit needs 1.0."}),
                 "hyperflow_lora_mode": (["bypass", "merge"], {"default": "bypass", "tooltip": "HyperFlow LoRA application. bypass (default): computed on top of the model at every step, the reference behaviour. merge: folded into the weights once, so each step costs about the same as the plain model (faster), but merging into quantized (int8) weights can change numerical results. The two small base time projections stay in bypass either way."}),
+                # --- Audio-only refine (ComfyUI-H3-AudioRefine, optional dependency; appended last) ---
+                "audio_refine_steps": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1, "tooltip": "Extra denoising steps on the AUDIO only, run on the finished clip after pass 2 with the video frozen (needs the ComfyUI-H3-AudioRefine pack). Runs on the undistilled base model, without the acceleration LoRA / HyperFlow / PDD heads, so it recovers the audio quality a few-step pass loses. 0 = off. 4-6 typical. The refined audio also feeds the next clip's audio context."}),
+                "audio_refine_denoise": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1.0, "step": 0.01, "tooltip": "How far the audio is re-noised before refining. 0.3-0.6 keeps the pass-2 audio and cleans it up; 1.0 regenerates it against the finished video."}),
+                "audio_refine_cache": ("BOOLEAN", {"default": True, "tooltip": "Use the pack's H3 Frozen Video Cache (hidden / int4, RAM or VRAM, freed after each clip): the first refine step builds it, later steps are ~5x cheaper. Costs about 1 GB of RAM per clip-second at 720p-1344p. Off = exact but every step costs a full model pass."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -669,6 +673,14 @@ class MiniMaxH3MasterExtender:
             kwargs.get("pass2_lora_mode", "stack on engine LoRA"),
             kwargs.get("pass2_steps", 0),
         )
+        audio_refine = _audio_refine_signature(
+            kwargs.get("audio_refine_steps", 0), kwargs.get("audio_refine_denoise", 0.5),
+            kwargs.get("audio_refine_cache", True))
+        engine.configure_audio_refine(
+            kwargs.get("audio_refine_steps", 0),
+            kwargs.get("audio_refine_denoise", 0.5),
+            kwargs.get("audio_refine_cache", True),
+        )
         engine.configure_semantic_bridge(
             kwargs.get("semantic_bridge", "none"),
             kwargs.get("semantic_bridge_alpha", 0.12),
@@ -704,7 +716,7 @@ class MiniMaxH3MasterExtender:
             reuse = False
             if is_on_disk and (is_validated or not rerolls):
                 try:
-                    expected_fp = _clip_fingerprint(previous_fp, clip_cfg, clip_cfg.get("seed", 42))
+                    expected_fp = _clip_fingerprint(previous_fp, clip_cfg, clip_cfg.get("seed", 42), audio_refine)
                 except (TypeError, ValueError):
                     expected_fp = None
                 stored = _stored_fingerprints(data_path, manifest_path)
@@ -784,7 +796,7 @@ class MiniMaxH3MasterExtender:
             elif seed_mode == "decrement":
                 seed_val = max(0, seed_val - 1)
                 clip_cfg["seed"] = seed_val
-            clip_fp = _clip_fingerprint(previous_fp, clip_cfg, seed_val)
+            clip_fp = _clip_fingerprint(previous_fp, clip_cfg, seed_val, audio_refine)
 
             # Render clip through Pure 2-Stage PDD Engine
             sampled_latent, _ = engine.render_clip(

@@ -116,6 +116,16 @@ class MasterProjectTests(unittest.TestCase):
             self.assertNotEqual(key, self.ns["_chain_key"]([dict(base, **change)]))
         self.assertRegex(key, r"^c_[0-9a-f]{16}$")
 
+    def test_audio_refine_only_changes_fingerprints_when_on(self):
+        clip = {"id": 0, "prompt": "a", "duration": 15, "loras": []}
+        fp, sig = self.ns["_clip_fingerprint"], self.ns["_audio_refine_signature"]
+        self.assertIsNone(sig(0, 0.5, True))
+        self.assertEqual(fp(None, clip, 1), fp(None, clip, 1, sig(0, 0.5, True)))
+        on = fp(None, clip, 1, sig(4, 0.5, True))
+        self.assertNotEqual(fp(None, clip, 1), on)
+        self.assertNotEqual(on, fp(None, clip, 1, sig(4, 0.4, True)))
+        self.assertNotEqual(on, fp(None, clip, 1, sig(6, 0.5, True)))
+
     def test_cache_states_follow_fingerprints(self):
         clips = [{"id": i, "prompt": f"clip {i}", "duration": 15, "loras": [], "seed": 10 + i} for i in range(4)]
         fps, previous = [], None

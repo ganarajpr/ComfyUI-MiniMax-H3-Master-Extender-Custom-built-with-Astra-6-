@@ -287,7 +287,7 @@ class PurePDDEngine:
         self.pass1_sigmas = sigmas_p1
         return self.prepared_model, self.pass1_sigmas
 
-    def _finish_model(self, model):
+    def _finish_model(self, model, sparse=True):
         """Dense attention backend, then optional block-sparse attention on top
         (SLA wraps the dense backend as its fall-through, so order matters)."""
         attention_name = {
@@ -306,7 +306,7 @@ class PurePDDEngine:
         model = model.clone()
         model.set_model_optimized_attention(attention_function)
         _LOG.info("PDD sampling attention: %s", self.attention_backend)
-        return self._apply_sla(model)
+        return self._apply_sla(model) if sparse else model
 
     # ------------------------------------------------------------------
     # Pass-2 (refine) LoRA: a different LoRA for the high-res tail only
@@ -325,6 +325,45 @@ class PurePDDEngine:
             self.pass2_lora_mode = "replace"
         self.pass2_steps = int(steps or 0)
         self.pass2_model = None
+
+    def configure_audio_refine(self, steps=0, denoise=0.5, cache=True):
+        """Audio-only refine after pass 2 (ComfyUI-H3-AudioRefine). steps 0 = off."""
+        self.audio_refine_steps = int(steps or 0)
+        self.audio_refine_denoise = float(denoise)
+        self.audio_refine_cache = bool(cache)
+        if self.audio_refine_steps > 0 and nodes.NODE_CLASS_MAPPINGS.get("H3AudioRefineSampler") is None:
+            raise RuntimeError("audio_refine_steps > 0 needs the ComfyUI-H3-AudioRefine node pack "
+                               "(H3AudioRefineSampler) in custom_nodes: "
+                               "git clone https://github.com/Adudeguyman/ComfyUI-H3-AudioRefine.git")
+
+    def _refine_audio(self, latent, positive, seed, clip_index):
+        """Audio-only refine of a finished clip: video frozen (bit-identical), audio re-noised to
+        audio_refine_denoise and sampled for audio_refine_steps on the undistilled model.
+
+        The model is SigmaShift only (self.shifted_model): no PDD heads, turbo LoRA or HyperFlow
+        patch, so HyperFlow is never applied twice and the refine uses the full weights.
+        Attention is the chosen dense backend; block-sparse attention is not applied."""
+        steps = self.audio_refine_steps
+        model = self._finish_model(self.shifted_model, sparse=False)
+        tokens = self._packed_tokens(latent["samples"])
+        model = self._with_ff_chunking(model, tokens)
+        if self.audio_refine_cache:
+            cache_cls = nodes.NODE_CLASS_MAPPINGS.get("H3FrozenVideoCache")
+            if cache_cls is None:
+                raise RuntimeError("audio_refine_cache needs the H3FrozenVideoCache node from ComfyUI-H3-AudioRefine")
+            model = cache_cls().patch(
+                model, enabled=True, cache_contents="hidden", backend="auto", precision="int4",
+                refresh_interval=0, verbose=False, allow_disk=False, free_after_pass=True)[0]
+        _LOG.info("Clip %d: audio-only refine, %d steps at denoise %.2f, %d tokens, frozen cache %s",
+                  clip_index + 1, steps, self.audio_refine_denoise, tokens,
+                  "on (hidden/int4)" if self.audio_refine_cache else "off")
+        self._reclaim_vram(model, tokens=tokens)
+        sampler = nodes.NODE_CLASS_MAPPINGS["H3AudioRefineSampler"]()
+        refined = sampler.refine(model, positive, positive, latent, seed, steps, 1.0,
+                                 "euler", "simple", self.audio_refine_denoise, 0.0)[0]
+        out = dict(latent)
+        out["samples"] = refined["samples"].to(comfy.model_management.intermediate_device())
+        return out
 
     def configure_semantic_bridge(self, adapter="none", alpha=0.12, magnitude_match="per_token"):
         """BUNNY H3 Conditioning Bridge on the conditioning of both passes ("none" = off).
@@ -1033,6 +1072,11 @@ class PurePDDEngine:
                 sigmas=sigmas_p2,
                 seed=seed,
             )
+
+        if getattr(self, "audio_refine_steps", 0) > 0:
+            if progress_cb:
+                progress_cb("audio_refine", f"Clip {clip_index + 1} - Audio-only refine ({self.audio_refine_steps} steps)...", 0.85)
+            final_sampled = self._refine_audio(final_sampled, pos_p2, seed, clip_index)
 
         # The disk renderer extracts the guide from the corrected preview decode.
         return final_sampled, None

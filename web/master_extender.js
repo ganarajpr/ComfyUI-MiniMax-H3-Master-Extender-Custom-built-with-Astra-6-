@@ -189,6 +189,9 @@ const TURBO_ONLY_WIDGETS = ["turbo_lora", "turbo_lora_strength", "turbo_sampler"
 const PDD_ONLY_WIDGETS = ["pdd_file"];
 const HYPERFLOW_ONLY_WIDGETS = ["hyperflow_file", "hyperflow_curve_refit", "hyperflow_strength", "hyperflow_lora_mode"];
 const SLA_ONLY_WIDGETS = ["sla_sparsity"];
+// Widgets appended after master_ui-less workflows were saved: a missing/invalid value is put back to the default.
+const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
+const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS];
 
 function setWidgetVisible(widget, visible) {
     if (!widget) return;
@@ -208,6 +211,7 @@ function setWidgetVisible(widget, visible) {
 // Workflows saved before the HyperFlow inputs existed stored the DOM widget master_ui's empty
 // string in the slot that hyperflow_file now occupies, so it loads as "" and the server rejects
 // it (value_not_in_list). Put any missing/invalid HyperFlow value back to the node-definition default.
+// The same happens one slot later for audio_refine_steps in workflows saved before the audio-refine inputs.
 function hyperflowValueOk(widget, value) {
     if (widget.type === "combo" || widget._origType === "combo") {
         const values = comboValues(widget);
@@ -218,7 +222,7 @@ function hyperflowValueOk(widget, value) {
 }
 
 function repairHyperflowWidgets(node, defaults) {
-    for (const name of HYPERFLOW_ONLY_WIDGETS) {
+    for (const name of REPAIRED_WIDGETS) {
         const w = node.widgets?.find(x => x.name === name);
         if (!w || hyperflowValueOk(w, w.value)) continue;
         let fallback = defaults?.[name];
@@ -455,7 +459,7 @@ app.registerExtension({
         };
 
         const hyperflowDefaults = {};
-        for (const name of HYPERFLOW_ONLY_WIDGETS) {
+        for (const name of REPAIRED_WIDGETS) {
             const spec = nodeData.input?.optional?.[name] ?? nodeData.input?.required?.[name];
             if (spec?.[1]?.default !== undefined) hyperflowDefaults[name] = spec[1].default;
         }
@@ -541,7 +545,10 @@ app.registerExtension({
                     try {
                         const response = await api.fetchApi("/minimax_master/cache_status", {
                             method: "POST", headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ clips: JSON.stringify(clipsState) }),
+                            body: JSON.stringify({
+                                clips: JSON.stringify(clipsState),
+                                audio_refine: [getW("audio_refine_steps", 0), getW("audio_refine_denoise", 0.5), getW("audio_refine_cache", true)],
+                            }),
                         });
                         const result = await response.json();
                         const states = result.states || [], videos = result.videos || [];
@@ -724,7 +731,7 @@ app.registerExtension({
                 const sla = getW("sla_enabled", false) ? `SLA ${Number(getW("sla_sparsity", 0)).toFixed(2)} ${getW("sparse_method", "sla")}` : "SLA off";
                 const cf = Number(getW("pass2_chunk_frames", 0));
                 const chunk = cf > 0 ? `chunk ${cf}/${getW("pass2_chunk_overlap", 0)}` : "no chunking";
-                return `${att} · ${sla} · ${chunk}${getW("smart_offload", true) ? "" : " · offload off"}${getW("async_decode", "off") !== "off" ? ` · async ${getW("async_decode")}` : ""}`;
+                return `${att} · ${sla} · ${chunk}${getW("smart_offload", true) ? "" : " · offload off"}${getW("async_decode", "off") !== "off" ? ` · async ${getW("async_decode")}` : ""}${Number(getW("audio_refine_steps", 0)) > 0 ? ` · audio refine ${getW("audio_refine_steps")}` : ""}`;
             }
             function continuitySummary() {
                 return `motion ${getW("context_length", "22")} f · audio ${getW("audio_context_length", 0)} f · identity ${getW("identity_continuity", true) ? "on" : "off"}`;
@@ -903,6 +910,14 @@ app.registerExtension({
                 if (chunkOn) {
                     wrap.appendChild(uiRow("chunk frames", bindNumber("pass2_chunk_frames"), { indent: true }));
                     wrap.appendChild(uiRow("overlap", bindNumber("pass2_chunk_overlap"), { indent: true }));
+                }
+                if (W("audio_refine_steps")) {
+                    wrap.appendChild(uiRow("audio-only refine steps", bindNumber("audio_refine_steps"),
+                        { hint: "Extra steps on the audio of each finished clip, video frozen (needs ComfyUI-H3-AudioRefine). 0 = off; 4-6 typical." }));
+                    if (Number(getW("audio_refine_steps", 0)) > 0) {
+                        wrap.appendChild(uiRow("audio re-noise depth", bindNumber("audio_refine_denoise"), { indent: true, hint: "0.3-0.6 cleans up the audio; 1.0 regenerates it against the video." }));
+                        wrap.appendChild(uiRow("frozen video cache", bindToggle("audio_refine_cache"), { indent: true, hint: "Faster steps, ~1 GB of RAM per clip-second while it runs." }));
+                    }
                 }
                 wrap.appendChild(uiRow("offload upscaler after use", bindToggle("smart_offload")));
                 wrap.appendChild(uiRow("background decode (experimental)", bindSelect("async_decode")));

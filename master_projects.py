@@ -59,13 +59,29 @@ def _chain_key(clips):
     return "c_" + hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
-def _clip_fingerprint(previous, clip, seed):
-    """Fingerprint of clip i = its inputs + seed + everything before it."""
-    blob = json.dumps([previous or "", _clip_identity(clip), int(seed)], sort_keys=True, default=str)
+def _audio_refine_signature(steps, denoise, cache):
+    """The audio-refine settings as they enter a fingerprint; None (= not part of it) when off."""
+    try:
+        steps = int(steps or 0)
+        if steps <= 0:
+            return None
+        return [steps, round(float(denoise), 4), bool(cache)]
+    except (TypeError, ValueError):
+        return None
+
+
+def _clip_fingerprint(previous, clip, seed, audio_refine=None):
+    """Fingerprint of clip i = its inputs + seed + everything before it. ``audio_refine`` (see
+    _audio_refine_signature) is added only when on, so fingerprints of clips rendered without
+    it are unchanged."""
+    parts = [previous or "", _clip_identity(clip), int(seed)]
+    if audio_refine:
+        parts.append(audio_refine)
+    blob = json.dumps(parts, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
-def clip_cache_states(clips):
+def clip_cache_states(clips, audio_refine=None):
     """Per clip: 'cached' (on disk, rendered from exactly these inputs), 'stale' (on disk,
     inputs changed since), 'unverified' (on disk, cached before fingerprints) or 'none'.
 
@@ -81,7 +97,7 @@ def clip_cache_states(clips):
     states, previous = [], None
     for index, clip in enumerate(clips):
         try:
-            previous = _clip_fingerprint(previous, clip, clip.get("seed", 42))
+            previous = _clip_fingerprint(previous, clip, clip.get("seed", 42), audio_refine)
         except (TypeError, ValueError):
             previous = None
         if index >= count:
@@ -155,7 +171,8 @@ async def cache_status(request):
     clips = json.loads(body.get("clips") or "[]") if isinstance(body, dict) else None
     if not isinstance(clips, list) or not clips or not all(isinstance(c, dict) for c in clips):
         return web.json_response({"states": [], "videos": []})
-    states, videos = clip_cache_states(clips)
+    refine = body.get("audio_refine")
+    states, videos = clip_cache_states(clips, _audio_refine_signature(*refine) if isinstance(refine, list) and len(refine) == 3 else None)
     return web.json_response({"states": states, "videos": videos})
 
 
