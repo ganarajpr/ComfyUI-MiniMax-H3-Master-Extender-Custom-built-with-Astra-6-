@@ -193,6 +193,7 @@ class PurePDDEngine:
         self.hyperflow_file = str(hyperflow_file)
         self.hyperflow_curve_refit = bool(hyperflow_curve_refit)
         self.hyperflow_strength = float(hyperflow_strength)
+        self.hyperflow_pruned_refit = False
         self.turbo_lora = turbo_lora if turbo_lora and turbo_lora != "none" else None
         self.turbo_lora_strength = float(turbo_lora_strength)
         self.sampler_name = sampler_name
@@ -426,6 +427,7 @@ class PurePDDEngine:
                              "(the file without '_pruned') instead.")
         if pruned_base and not self.hyperflow_curve_refit:
             _LOG.warning("HyperFlow: pruned base without curve refit; running LoRA-only (single-time, off-recipe)")
+        self.hyperflow_pruned_refit = pruned_base and self.hyperflow_curve_refit
         _LOG.info("HyperFlow: %s on a %s base, curve refit %s, strength %.2f",
                   self.hyperflow_file, "pruned" if pruned_base else "full",
                   "requested" if self.hyperflow_curve_refit else "off", self.hyperflow_strength)
@@ -504,6 +506,10 @@ class PurePDDEngine:
             tail = hyperflow_tail_sigmas(self.pass1_sigmas, pass2_denoise)
             _LOG.info("HyperFlow: pass 2 uses the tail of HyperFlow's own grid (%d steps): %s",
                       len(tail) - 1, [round(float(x), 4) for x in tail])
+            if self.hyperflow_pruned_refit:
+                _LOG.info("HyperFlow: the curve fit is bound to the full 9-point grid, so this pass-2 tail runs "
+                          "backbone-only (LoRA, single-time); the node logs 'curve refit disabled for an "
+                          "unmatched sampling recipe' for it")
             return tail
         if self._pass2_lora_active() and (self.pass2_steps > 0 or self.pass2_lora_mode == "replace" or self.turbo_mode):
             steps = int(self.pass2_steps or self.pdd_nfe)
