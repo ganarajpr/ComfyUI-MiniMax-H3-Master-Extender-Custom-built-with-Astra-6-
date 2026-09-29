@@ -9,7 +9,6 @@ and clip-by-clip validation.
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 import os
 import secrets
@@ -554,22 +553,26 @@ class MiniMaxH3MasterExtender:
         _LOG.info(f"Disk cache chain: {cache_owner} (keyed by clip 1's prompt, duration and LoRAs)")
         data_path, manifest_path, manifest = _manifest_for_first(cache_owner, FPS)
         draft_path, draft_manifest_path, draft_manifest = _manifest_for_first(draft_owner, FPS)
-        settings = [pass1_resolution, pass2_resolution, pass2_denoise, pdd_nfe,
-                    pdd_file, upscaler_model, context_length, audio_context_length,
-                    identity_continuity, refs_json,
-                    bool(sla_enabled), float(sla_sparsity), str(sparse_method), float(sparse_tau),
-                    int(pass2_chunk_frames), int(pass2_chunk_overlap),
-                    accel_mode, turbo_lora, float(turbo_lora_strength), turbo_sampler, turbo_scheduler,
-                    str(kwargs.get("pass2_lora", "none")), float(kwargs.get("pass2_lora_strength", 1.0)),
-                    str(kwargs.get("pass2_lora_mode", "stack on engine LoRA")), int(kwargs.get("pass2_steps", 0)),
-                    str(kwargs.get("semantic_bridge", "none")), float(kwargs.get("semantic_bridge_alpha", 0.12)),
-                    str(kwargs.get("semantic_bridge_match", "per_token"))]
-        signature = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
-        for dp, mp, state in ((data_path, manifest_path, manifest),
-                               (draft_path, draft_manifest_path, draft_manifest)):
-            if state.get("master_signature") != signature:
+        # Only the latent size makes cached clips unusable: every clip continues from
+        # the previous clip's latents, so the chain must keep one geometry. Every other
+        # setting (LoRAs, turbo/accel, SLA, pass 2, semantic bridge, context lengths,
+        # references) applies to the clips rendered from now on and keeps what is on disk.
+        resolution = [int(w1), int(h1), int(w2), int(h2)]
+        for dp, mp, state, (w, h) in ((data_path, manifest_path, manifest, (w2, h2)),
+                                      (draft_path, draft_manifest_path, draft_manifest, (w1, h1))):
+            stored = state.get("chain_resolution")
+            geom = state.get("geometry") or {}
+            if stored is not None:
+                changed = stored != resolution
+            else:  # chains from before chain_resolution: judge by the latents on disk
+                changed = bool(geom) and not (
+                    int(geom.get("video_w", 0)) in (w // 16, -(-w // 16))
+                    and int(geom.get("video_h", 0)) in (h // 16, -(-h // 16)))
+            if changed:
+                _LOG.info(f"Disk cache chain: resolution changed to {w1}x{h1} -> {w2}x{h2}; re-rendering from clip 1")
                 state = _truncate_chain(dp, mp, state, 0)
-                state["master_signature"] = signature
+            if state.get("chain_resolution") != resolution:
+                state["chain_resolution"] = resolution
                 _write_json_atomic(mp, state)
         manifest = _load_manifest_from_paths(data_path, manifest_path)
         draft_manifest = _load_manifest_from_paths(draft_path, draft_manifest_path)
@@ -659,18 +662,22 @@ class MiniMaxH3MasterExtender:
             existing_count = len(current_manifest.get("segments", [])) if current_manifest else 0
             is_on_disk = i < existing_count
             is_validated = str(clip_cfg.get("validated", False)).lower() == "true"
+            rerolls = str(clip_cfg.get("seed_mode", "fixed")).lower() in ("randomize", "increment", "decrement")
 
-            # A validated clip is only reused when the cached clip was rendered
-            # from the same inputs (prompt, duration, LoRAs, seed and every
-            # earlier clip). Clips cached before fingerprints existed pass.
-            if is_validated and is_on_disk:
+            # A cached clip is reused whenever it was rendered from the same inputs
+            # (prompt, duration, LoRAs, seed and every earlier clip), validated or not.
+            # A seed mode that changes the seed each run is a re-roll, unless the clip
+            # is validated. Validated clips cached before fingerprints existed pass.
+            reuse = False
+            if is_on_disk and (is_validated or not rerolls):
                 try:
                     expected_fp = _clip_fingerprint(previous_fp, clip_cfg, clip_cfg.get("seed", 42))
                 except (TypeError, ValueError):
                     expected_fp = None
                 stored = _stored_fingerprints(data_path, manifest_path)
                 stored_fp = stored[i] if i < len(stored) else None
-                if expected_fp and stored_fp and stored_fp != expected_fp:
+                reuse = bool(expected_fp) and (stored_fp == expected_fp or (is_validated and not stored_fp))
+                if is_validated and not reuse:
                     _LOG.warning(
                         f"Clip {i + 1}: marked validated, but the cached clip was rendered from "
                         f"different inputs (prompt, seed, duration, LoRAs or an earlier clip changed) - re-rendering."
@@ -678,47 +685,47 @@ class MiniMaxH3MasterExtender:
                     clip_cfg["validated"] = False
                     is_validated = False
                     unvalidated_any = True
-                elif expected_fp:
+                elif reuse:
                     fingerprints[i] = expected_fp
                     previous_fp = expected_fp
+            elif is_validated:
+                _LOG.warning(f"Clip {i + 1} marked validated but not on disk; will re-render.")
+                clip_cfg["validated"] = False
+                unvalidated_any = True
 
-            # 1. Reuse existing validated clip from disk cache
-            if is_validated:
+            # 1. Reuse the cached clip
+            if reuse:
                 _finish_background()
-                if not is_on_disk:
-                    _LOG.warning(f"Clip {i + 1} marked validated but not on disk; will re-render.")
-                    clip_cfg["validated"] = False
-                else:
-                    _LOG.info(f"Clip {i + 1}: Validated - reusing disk cache")
-                    result = disk_join.join(
-                        samples=None,
-                        trim_frames=None,
-                        validated=True,
-                        run_mode=str(run_mode),
-                        fps=float(FPS),
-                        previous_cache=previous_handle,
-                        unique_id=cache_owner,
-                    )
-                    previous_handle = result[0]
-                    previous_proxy = result[1]
-                    draft_result = disk_join.join(
-                        samples=None, validated=True, run_mode=str(run_mode),
-                        fps=float(FPS), previous_cache=draft_handle, unique_id=draft_owner,
-                    )
-                    draft_handle, previous_draft = draft_result[:2]
-                    if identity_continuity:
-                        state = _load_manifest_from_paths(data_path, manifest_path)
-                        last_frame_tensor = _load_guide_frame(data_path, state["segments"][i])
-                        if last_frame_tensor is None:
-                            # One-time upgrade for clips saved before guide caching.
-                            decoded, _ = _render_one_final_video_segment(
-                                data_path, state["segments"], i, vae,
-                            )
-                            _cache_guide_frame(data_path, manifest_path, state, i, decoded)
-                            last_frame_tensor = decoded[-1:].clone()
-                            del decoded
-                    validated_count += 1
-                    continue
+                _LOG.info(f"Clip {i + 1}: {'validated, ' if is_validated else ''}unchanged since it was rendered - reusing disk cache")
+                result = disk_join.join(
+                    samples=None,
+                    trim_frames=None,
+                    validated=True,
+                    run_mode=str(run_mode),
+                    fps=float(FPS),
+                    previous_cache=previous_handle,
+                    unique_id=cache_owner,
+                )
+                previous_handle = result[0]
+                previous_proxy = result[1]
+                draft_result = disk_join.join(
+                    samples=None, validated=True, run_mode=str(run_mode),
+                    fps=float(FPS), previous_cache=draft_handle, unique_id=draft_owner,
+                )
+                draft_handle, previous_draft = draft_result[:2]
+                if identity_continuity:
+                    state = _load_manifest_from_paths(data_path, manifest_path)
+                    last_frame_tensor = _load_guide_frame(data_path, state["segments"][i])
+                    if last_frame_tensor is None:
+                        # One-time upgrade for clips saved before guide caching.
+                        decoded, _ = _render_one_final_video_segment(
+                            data_path, state["segments"], i, vae,
+                        )
+                        _cache_guide_frame(data_path, manifest_path, state, i, decoded)
+                        last_frame_tensor = decoded[-1:].clone()
+                        del decoded
+                validated_count += 1
+                continue
 
             # 2. Check if we should render this clip
             # Drop both suffixes before starting so a failed replacement cannot
@@ -835,7 +842,7 @@ class MiniMaxH3MasterExtender:
         _finish_background()
         # Re-apply after any background decode rewrote the manifest.
         _store_fingerprints(data_path, manifest_path, fingerprints)
-        status_msg = f"Completed {rendered_count} clip(s). Validated: {validated_count}/{len(clips)}"
+        status_msg = f"Rendered {rendered_count} clip(s), reused {validated_count}/{len(clips)} from cache"
         if rewrite_notes:
             status_msg += " | " + "; ".join(rewrite_notes)
         _send_clips(owner, clips, fields=["seed", "validated"] if unvalidated_any else ["seed"], chain=chain_key)

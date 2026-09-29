@@ -123,6 +123,8 @@ def _captioner_files(nodes, paths, label: str) -> tuple[str, str]:
         return choice.reference, choice.mmproj
     model = paths.catalog_file(choice.reference, choice.file) or ""
     mmproj = paths.catalog_file(choice.reference, choice.mmproj) or ""
+    if model.lower().endswith(".ninfer") and os.path.isfile(model):
+        return model, ""  # NInfer artifacts carry their own vision tower
     if model and mmproj and os.path.isfile(model) and os.path.isfile(mmproj):
         return model, mmproj
     return "", ""
@@ -227,21 +229,18 @@ def source_of(clip: dict) -> str:
     return prompt
 
 
-def fingerprint(source: str, duration: float, resolution: str, task: str, system_given: str,
-                image_keys: list, writer_file: str, caption_model: str, length: str, previous: str = "") -> str:
-    """What a rewrite depends on. A clip whose stored fingerprint differs is out of date.
+def fingerprint(source: str, duration: float, resolution: str, task: str, previous: str = "") -> str:
+    """What a clip's rewrite depends on. A clip whose stored fingerprint differs is out of date.
 
-    Raw text, duration, aspect, task, the system prompt, every reference picture
-    (by content hash, in slot order), the writer, and the captioner with its
-    caption length. Sampling settings and the thinking budget are left out on
-    purpose: changing those should not throw every clip's text away.
+    Its raw ask, duration, aspect and task, and the raw asks of the clips before
+    it (``previous``, independent of the continuity setting): an earlier ask that
+    changes re-renders this clip anyway. The writer, captioner, system prompt,
+    references and continuity setting are left out on purpose: changing them
+    applies to clips rewritten from now on and keeps the rendered ones.
     """
-    payload = json.dumps([
-        source.strip(), f"{float(duration):.2f}", resolution, task, system_given.strip(),
-        list(image_keys), os.path.basename(writer_file or ""), os.path.basename(caption_model or ""), length,
-        previous.strip(),
-    ], ensure_ascii=False)
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    payload = json.dumps([source.strip(), f"{float(duration):.2f}", resolution, task, previous.strip()],
+                         ensure_ascii=False)
+    return "v2:" + hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
 def continuity_block(clips: list, index: int, continuity: str) -> str:
@@ -388,6 +387,11 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         )
 
     writer_on_server = bool(writer_file) and _same_file(writer_file, model_path)
+    if writer_file.lower().endswith(".ninfer") and not writer_on_server:
+        raise RuntimeError(
+            "rewrite_writer_model: a NInfer model only runs on ninfer-serve, so pick the same entry "
+            "for rewrite_caption_model."
+        )
     if thinking and not writer_on_server:
         say("rewrite", "thinking applies only when writer and caption model are the same GGUF; writing without it")
     reasoning = {"enabled": thinking and writer_on_server, "budget": budget, "message": budget_message}
@@ -397,17 +401,19 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     # ---- what is out of date --------------------------------------------------
     image_keys = [(slot, _image_key(tensor, model_path, length)) for slot, tensor in ordered] if task != "T2VA" else []
     video_keys = [(slot, _video_key(frames, model_path, length)) for slot, frames in ordered_videos] if task != "T2VA" else []
-    audio_marks = ([f"soundtrack:{slot}" for slot, _f in ordered_videos if slot in soundtracks]
-                   + [f"audio:{slot}" for slot, _a in ordered_audios]) if task != "T2VA" else []
     current = {}
     for index, clip in enumerate(clips):
-        if isinstance(clip, dict):
-            current[index] = fingerprint(
-                source_of(clip), float(clip.get("duration", 15) or 15), resolution, task, system_given,
-                [key for _slot, key in image_keys] + [key for _slot, key in video_keys] + audio_marks,
-                writer_file, model_path, length,
-                previous=continuity_block(clips, index, continuity),
-            )
+        if not isinstance(clip, dict):
+            continue
+        duration = float(clip.get("duration", 15) or 15)
+        current[index] = fingerprint(source_of(clip), duration, resolution, task,
+                                     previous=continuity_block(clips, index, "raw asks"))
+        meta = clip.get("rewrite_meta") or {}
+        stored = str(meta.get("fingerprint") or "")
+        # A rewrite stored before v2 fingerprints is kept while its raw ask is unchanged.
+        if clip.get("prompt_rewritten") and stored and not stored.startswith("v2:") \
+                and (clip.get("prompt_raw") or "").strip() == source_of(clip).strip():
+            clip["rewrite_meta"] = dict(meta, fingerprint=current[index])
     todo = pending_indices(clips, mode, current)
     if not todo:
         _LOG.info("Rewriter: nothing to do (every clip prompt is rewritten, up to date, or empty)")
