@@ -413,6 +413,17 @@ class MiniMaxH3MasterExtender:
     OUTPUT_NODE = False
 
     @classmethod
+    def VALIDATE_INPUTS(cls, hyperflow_file=None):
+        # Workflows saved before HyperFlow existed can load with hyperflow_file == "";
+        # treat that as "use the default" instead of failing the combo check.
+        if not hyperflow_file:
+            return True
+        files = _hyperflow_files()
+        if hyperflow_file not in files:
+            return f"hyperflow_file: '{hyperflow_file}' not in {files}"
+        return True
+
+    @classmethod
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
@@ -644,7 +655,7 @@ class MiniMaxH3MasterExtender:
             pass2_chunk_overlap=pass2_chunk_overlap,
             sparse_method=sparse_method,
             sparse_tau=sparse_tau,
-            hyperflow_file=kwargs.get("hyperflow_file", HYPERFLOW_DEFAULT_FILE),
+            hyperflow_file=kwargs.get("hyperflow_file") or HYPERFLOW_DEFAULT_FILE,
             hyperflow_curve_refit=kwargs.get("hyperflow_curve_refit", True),
             hyperflow_strength=kwargs.get("hyperflow_strength", 1.0),
             background_busy=lambda: background["worker"] is not None and background["worker"].busy(),

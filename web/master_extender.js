@@ -205,6 +205,31 @@ function setWidgetVisible(widget, visible) {
     }
 }
 
+// Workflows saved before the HyperFlow inputs existed stored the DOM widget master_ui's empty
+// string in the slot that hyperflow_file now occupies, so it loads as "" and the server rejects
+// it (value_not_in_list). Put any missing/invalid HyperFlow value back to the node-definition default.
+function hyperflowValueOk(widget, value) {
+    if (widget.type === "combo" || widget._origType === "combo") {
+        const values = comboValues(widget);
+        return typeof value === "string" && value !== "" && (!values.length || values.includes(value));
+    }
+    if (widget._origType === "toggle" || widget.type === "toggle") return typeof value === "boolean";
+    return typeof value === "number" && Number.isFinite(value);
+}
+
+function repairHyperflowWidgets(node, defaults) {
+    for (const name of HYPERFLOW_ONLY_WIDGETS) {
+        const w = node.widgets?.find(x => x.name === name);
+        if (!w || hyperflowValueOk(w, w.value)) continue;
+        let fallback = defaults?.[name];
+        if (w.type === "combo" || w._origType === "combo") {
+            const values = comboValues(w);
+            if (values.length && !values.includes(fallback)) fallback = values[0];
+        }
+        if (fallback !== undefined) w.value = fallback;
+    }
+}
+
 function setupModeWidgets(node) {
     const byName = (name) => node.widgets?.find(w => w.name === name);
     const accel = byName("accel_mode");
@@ -429,6 +454,12 @@ app.registerExtension({
             return r;
         };
 
+        const hyperflowDefaults = {};
+        for (const name of HYPERFLOW_ONLY_WIDGETS) {
+            const spec = nodeData.input?.optional?.[name] ?? nodeData.input?.required?.[name];
+            if (spec?.[1]?.default !== undefined) hyperflowDefaults[name] = spec[1].default;
+        }
+
         nodeType.prototype.setupMasterUI = function () {
             const node = this;
             node.setSize([960, 680]);
@@ -574,6 +605,7 @@ app.registerExtension({
             const originalConfigure = node.onConfigure;
             node.onConfigure = function () {
                 const result = originalConfigure?.apply(this, arguments);
+                repairHyperflowWidgets(node, hyperflowDefaults);
                 // Older workflows stored the empty master_ui value in this slot.
                 const attentionWidget = node.widgets?.find(w => w.name === "attention_backend");
                 if (attentionWidget && attentionWidget.value === "") {

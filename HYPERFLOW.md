@@ -37,6 +37,10 @@ The curve fit is bound to the exact checkpoint and the exact recipe, by the node
 - It needs an unmodified MODEL. Any LoRA applied before the extender (for example a combat LoRA in an `LTX_lora_loader` stack) makes the node log `curve refit disabled: requires an unmodified checkpoint`, and that job runs LoRA-only. An empty or all-off stack keeps the fit.
 - It applies only on the full 9-point grid, so the pass-2 tail always runs backbone-only (the node logs `curve refit disabled for an unmatched sampling recipe` once per job). Pass 1 keeps the fit.
 
+## Old workflows
+
+Workflows saved before HyperFlow (UI or API format) load with the three HyperFlow inputs at their defaults. UI workflows that stored the `master_ui` DOM widget's empty string used to push `""` into the `hyperflow_file` slot and fail queueing with "Some input values are not available"; `onConfigure` in `web/master_extender.js` now resets any missing or invalid HyperFlow value to the node-definition default, and the server treats an empty `hyperflow_file` as the default (a non-empty unknown name is still rejected).
+
 ## Cache
 
 The disk cache does not re-render when settings change. Clear the chain (panel "clear cache", or `POST /comfyui/minimax_master/clear_cache`) before comparing engines.
