@@ -30,6 +30,13 @@ HyperFlow must never run on a sigma tail that is not cut from its own grid.
 - No pass-2 LoRA: pass 2 uses the last `round(8 x pass2_denoise)` steps of HyperFlow's 9-point grid (3 points at the default 0.25), on the HyperFlow model.
 - Pass-2 LoRA set: the mode is forced to "replace engine LoRA". Pass 2 runs on the SigmaShift model plus that LoRA, without HyperFlow, on a scheduler tail as in Turbo mode. The log says which case applied.
 
+## Curve-refit limits (measured)
+
+The curve fit is bound to the exact checkpoint and the exact recipe, by the node pack itself:
+
+- It needs an unmodified MODEL. Any LoRA applied before the extender (for example a combat LoRA in an `LTX_lora_loader` stack) makes the node log `curve refit disabled: requires an unmodified checkpoint`, and that job runs LoRA-only. An empty or all-off stack keeps the fit.
+- It applies only on the full 9-point grid, so the pass-2 tail always runs backbone-only (the node logs `curve refit disabled for an unmatched sampling recipe` once per job). Pass 1 keeps the fit.
+
 ## Cache
 
 The disk cache does not re-render when settings change. Clear the chain (panel "clear cache", or `POST /comfyui/minimax_master/clear_cache`) before comparing engines.
