@@ -1288,9 +1288,55 @@ app.registerExtension({
                         clipsState.length = 0;
                         addClip();
                     };
+                    // Bulk validation, so a long chain is not toggled one card at a time.
+                    const bulkStyle = "background: transparent; border: 1px solid #2e6a45; color: #4ade80; padding: 3px 10px; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 11px; white-space: nowrap;";
+                    const validateAllBtn = document.createElement("button");
+                    validateAllBtn.textContent = "Validate all";
+                    validateAllBtn.title = "Mark every clip that is on disk as validated (clips not rendered yet are left alone)";
+                    validateAllBtn.style.cssText = bulkStyle;
+                    validateAllBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        clipsState.forEach((clip, i) => {
+                            const state = cacheStates[i];
+                            if (!cacheStates.length || (state && state !== "none")) clip.validated = true;
+                        });
+                        expandedValidated.clear();
+                        saveState();
+                        renderUI();
+                    };
+                    // Char refs, turbo LoRA and engine settings are not part of a clip's cache
+                    // fingerprint, so un-ticking alone would hand back the old renders. Clear the
+                    // chain on disk too, so the next run re-renders from clip 1 with current settings.
+                    const invalidateAllBtn = document.createElement("button");
+                    invalidateAllBtn.textContent = "Invalidate all";
+                    invalidateAllBtn.title = "Un-validate every clip and clear this chain's disk cache, so the next run re-renders the whole chain with the current references and settings";
+                    invalidateAllBtn.style.cssText = bulkStyle.replace("#2e6a45", "#6a5a2e").replace("#4ade80", "#fbbf24");
+                    invalidateAllBtn.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (!confirm(`Invalidate all ${clipsState.length} clip${clipsState.length === 1 ? "" : "s"}? This deletes the rendered chain from the disk cache; the next run re-renders every clip. Prompts, seeds and settings are kept.`)) return;
+                        try {
+                            const response = await api.fetchApi("/minimax_master/clear_cache", {
+                                method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ clips: [JSON.stringify(clipsState)], final_ids: [] }),
+                            });
+                            if (!response.ok) {
+                                const detail = await response.text().catch(() => "");
+                                throw new Error(response.status === 409 ? "a job is queued or running - wait for it to finish" : `${response.status} ${detail}`);
+                            }
+                        } catch (error) {
+                            alert(`Could not clear the chain cache: ${error.message}. Nothing was invalidated.`);
+                            return;
+                        }
+                        clipsState.forEach((clip) => { clip.validated = false; });
+                        expandedValidated.clear();
+                        cacheStates = [];
+                        cacheVideos = [];
+                        saveState();
+                        renderUI();
+                    };
                     const actions = document.createElement("span");
-                    actions.style.cssText = "display: inline-flex; gap: 6px; align-items: center;";
-                    actions.append(clearBtn, addBtn);
+                    actions.style.cssText = "display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap;";
+                    actions.append(validateAllBtn, invalidateAllBtn, clearBtn, addBtn);
                     container.appendChild(uiSectionHeader("Clips", { summary: `${clipsState.length} clip${clipsState.length === 1 ? "" : "s"} · ${totalSecClips.toFixed(0)} s`, collapsible: false, actions }));
                 }
                 container.appendChild(projectControls.references());
