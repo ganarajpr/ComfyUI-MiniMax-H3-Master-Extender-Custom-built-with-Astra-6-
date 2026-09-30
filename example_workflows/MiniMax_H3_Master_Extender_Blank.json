@@ -1214,6 +1214,16 @@
           },
           "link": null,
           "shape": 7
+        },
+        {
+          "localized_name": "single_text_encode",
+          "name": "single_text_encode",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "single_text_encode"
+          },
+          "link": null,
+          "shape": 7
         }
       ],
       "outputs": [
@@ -1291,8 +1301,8 @@
         "per_token",
         "off",
         "auto",
-        "Swift-Qwen3.8-27B Uncensored (local) \u00b7 ~21 GB with the guide in context \u2014 ajgazin abliterated Swift-Qwen3.8-27B UD-Q5_K_M, already on disk (same file the llama router preset swift-uncensored-27b serves)",
-        "Swift-Qwen3.8-27B Uncensored (local) \u00b7 ~22 GB \u2014 ajgazin abliterated Swift-Qwen3.8-27B UD-Q5_K_M, already on disk (same file the llama router preset swift-uncensored-27b serves) - with its bf16 mmproj (vision only, no audio)",
+        "Swift-Qwen3.8-27B Uncensored (local) · ~21 GB with the guide in context — ajgazin abliterated Swift-Qwen3.8-27B UD-Q5_K_M, already on disk (same file the llama router preset swift-uncensored-27b serves)",
+        "Swift-Qwen3.8-27B Uncensored (local) · ~22 GB — ajgazin abliterated Swift-Qwen3.8-27B UD-Q5_K_M, already on disk (same file the llama router preset swift-uncensored-27b serves) - with its bf16 mmproj (vision only, no audio)",
         "standard",
         true,
         0.7,
@@ -1311,6 +1321,7 @@
         0,
         0.5,
         true,
+        false,
         ""
       ]
     }

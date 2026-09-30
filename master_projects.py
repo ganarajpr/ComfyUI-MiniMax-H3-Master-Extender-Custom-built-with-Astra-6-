@@ -70,18 +70,20 @@ def _audio_refine_signature(steps, denoise, cache):
         return None
 
 
-def _clip_fingerprint(previous, clip, seed, audio_refine=None):
+def _clip_fingerprint(previous, clip, seed, audio_refine=None, single_te=False):
     """Fingerprint of clip i = its inputs + seed + everything before it. ``audio_refine`` (see
     _audio_refine_signature) is added only when on, so fingerprints of clips rendered without
     it are unchanged."""
     parts = [previous or "", _clip_identity(clip), int(seed)]
     if audio_refine:
         parts.append(audio_refine)
+    if single_te:
+        parts.append("single_text_encode")
     blob = json.dumps(parts, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
-def clip_cache_states(clips, audio_refine=None):
+def clip_cache_states(clips, audio_refine=None, single_te=False):
     """Per clip: 'cached' (on disk, rendered from exactly these inputs), 'stale' (on disk,
     inputs changed since), 'unverified' (on disk, cached before fingerprints) or 'none'.
 
@@ -97,7 +99,7 @@ def clip_cache_states(clips, audio_refine=None):
     states, previous = [], None
     for index, clip in enumerate(clips):
         try:
-            previous = _clip_fingerprint(previous, clip, clip.get("seed", 42), audio_refine)
+            previous = _clip_fingerprint(previous, clip, clip.get("seed", 42), audio_refine, single_te)
         except (TypeError, ValueError):
             previous = None
         if index >= count:
@@ -172,7 +174,7 @@ async def cache_status(request):
     if not isinstance(clips, list) or not clips or not all(isinstance(c, dict) for c in clips):
         return web.json_response({"states": [], "videos": []})
     refine = body.get("audio_refine")
-    states, videos = clip_cache_states(clips, _audio_refine_signature(*refine) if isinstance(refine, list) and len(refine) == 3 else None)
+    states, videos = clip_cache_states(clips, _audio_refine_signature(*refine) if isinstance(refine, list) and len(refine) == 3 else None, bool(body.get("single_text_encode")))
     return web.json_response({"states": states, "videos": videos})
 
 

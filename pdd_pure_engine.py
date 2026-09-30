@@ -27,6 +27,8 @@ from comfy_extras.nodes_minimax_h3 import (
     MiniMaxH3ReferenceToVideo,
     MiniMaxH3SigmaShift,
     _empty_av_latent,
+    _resize,
+    CANVAS_MULTIPLE,
 )
 from .motion_context_ram import (
     MiniMaxH3MotionContextRAM,
@@ -371,6 +373,40 @@ class PurePDDEngine:
         self.semantic_bridge = adapter if adapter and str(adapter).lower() != "none" else None
         self.semantic_bridge_alpha = float(alpha)
         self.semantic_bridge_match = str(magnitude_match or "per_token")
+
+    def _pass1_from_pass2(self, out_p2, ref_images, w1, h1, frame_count, clip_index):
+        """Pass-1 conditioning + empty latent from the pass-2 encode: the text embedding is reused,
+        only the image-reference latents are re-encoded at the pass-1 size, with the sizing
+        MiniMaxH3ReferenceToVideo uses for ref_image_size="match". Video / audio reference blocks
+        do not depend on the generation size in core, so they are carried over unchanged.
+        Returns None (caller falls back to the two-encode path) when that cannot be reproduced."""
+        cond = _safe_get_output(out_p2, 0, "positive")
+        try:
+            blocks = list(cond[0][1].get("minimax_refs") or [])
+        except (TypeError, IndexError, AttributeError, KeyError):
+            _LOG.info("Clip %d: single text encode unavailable (no conditioning structure), using two encodes", clip_index + 1)
+            return None
+        images = [img for img in ref_images.values() if img is not None]
+        image_slots = [i for i, b in enumerate(blocks) if b.get("kind") == "image"]
+        if len(image_slots) != len(images) or (images and self.vae is None):
+            _LOG.info("Clip %d: single text encode unavailable (%d image blocks for %d reference images), using two encodes",
+                      clip_index + 1, len(image_slots), len(images))
+            return None
+        for slot, img in zip(image_slots, images):
+            h, w = img.shape[1], img.shape[2]
+            scale = min(1.0, math.sqrt((w1 * h1) / (w * h)))
+            tw = max(CANVAS_MULTIPLE, round(w * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+            th = max(CANVAS_MULTIPLE, round(h * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+            resized = _resize(img[:1], tw, th, "disabled")
+            blocks[slot] = {"kind": "image", "latent_h": th // 16, "latent_w": tw // 16,
+                            "latent": self.vae.encode(resized)}
+        cond_p1 = [[t.clone() if torch.is_tensor(t) else t, dict(d)] for t, d in cond]
+        if blocks:
+            cond_p1 = node_helpers.conditioning_set_values(cond_p1, {"minimax_refs": blocks})
+        latent, _ = _empty_av_latent(w1, h1, frame_count)
+        _LOG.info("Clip %d: single text encode: 1 encoder pass (pass-1 refs re-encoded at %dx%d)",
+                  clip_index + 1, w1, h1)
+        return cond_p1, latent
 
     def _bridge(self, positive, label=""):
         if getattr(self, "semantic_bridge", None) is None:
@@ -939,20 +975,38 @@ class PurePDDEngine:
         )
 
         # Generate Pass 1 conditioning + empty latent
-        out_p1 = MiniMaxH3ReferenceToVideo.execute(
-            clip=self.clip,
-            vae=self.vae,
-            audio_vae=self.audio_vae,
-            prompt=prompt,
-            width=w1,
-            height=h1,
-            length=frame_count,
-            ref_image_size="match",
-            ref_images=ref_images,
-            ref_videos=ref_videos or None,
-            ref_video_audios=ref_video_audios or None,
-            ref_audios=ref_audios or None,
-        )
+        out_p1 = out_p2 = None
+        if getattr(self, "single_text_encode", False):
+            out_p2 = MiniMaxH3ReferenceToVideo.execute(
+                clip=self.clip,
+                vae=self.vae,
+                audio_vae=self.audio_vae,
+                prompt=prompt,
+                width=w2,
+                height=h2,
+                length=frame_count,
+                ref_image_size="match",
+                ref_images=ref_images,
+                ref_videos=ref_videos or None,
+                ref_video_audios=ref_video_audios or None,
+                ref_audios=ref_audios or None,
+            )
+            out_p1 = self._pass1_from_pass2(out_p2, ref_images, w1, h1, frame_count, clip_index)
+        if out_p1 is None:
+            out_p1 = MiniMaxH3ReferenceToVideo.execute(
+                clip=self.clip,
+                vae=self.vae,
+                audio_vae=self.audio_vae,
+                prompt=prompt,
+                width=w1,
+                height=h1,
+                length=frame_count,
+                ref_image_size="match",
+                ref_images=ref_images,
+                ref_videos=ref_videos or None,
+                ref_video_audios=ref_video_audios or None,
+                ref_audios=ref_audios or None,
+            )
         pos_p1 = self._bridge(_safe_get_output(out_p1, 0, "positive"), "pass 1")
         latent_p1 = _safe_get_output(out_p1, 1, "latent")
 
@@ -975,20 +1029,21 @@ class PurePDDEngine:
         # previous clip's final latent, all of which are known here -- so the
         # UNet can stay resident straight through pass 1 -> upscale -> pass 2
         # and the text-encoder/UNet round trip per clip is halved.
-        out_p2 = MiniMaxH3ReferenceToVideo.execute(
-            clip=self.clip,
-            vae=self.vae,
-            audio_vae=self.audio_vae,
-            prompt=prompt,
-            width=w2,
-            height=h2,
-            length=frame_count,
-            ref_image_size="match",
-            ref_images=ref_images,
-            ref_videos=ref_videos or None,
-            ref_video_audios=ref_video_audios or None,
-            ref_audios=ref_audios or None,
-        )
+        if out_p2 is None:
+            out_p2 = MiniMaxH3ReferenceToVideo.execute(
+                clip=self.clip,
+                vae=self.vae,
+                audio_vae=self.audio_vae,
+                prompt=prompt,
+                width=w2,
+                height=h2,
+                length=frame_count,
+                ref_image_size="match",
+                ref_images=ref_images,
+                ref_videos=ref_videos or None,
+                ref_video_audios=ref_video_audios or None,
+                ref_audios=ref_audios or None,
+            )
         pos_p2 = self._bridge(_safe_get_output(out_p2, 0, "positive"), "pass 2")
         latent_p2 = _safe_get_output(out_p2, 1, "latent")
         if clip_index > 0 and previous_latent is not None:

@@ -191,7 +191,8 @@ const HYPERFLOW_ONLY_WIDGETS = ["hyperflow_file", "hyperflow_curve_refit", "hype
 const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 // Widgets appended after master_ui-less workflows were saved: a missing/invalid value is put back to the default.
 const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
-const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS];
+const SINGLE_TE_WIDGETS = ["single_text_encode"];
+const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...SINGLE_TE_WIDGETS];
 
 function setWidgetVisible(widget, visible) {
     if (!widget) return;
@@ -548,6 +549,7 @@ app.registerExtension({
                             body: JSON.stringify({
                                 clips: JSON.stringify(clipsState),
                                 audio_refine: [getW("audio_refine_steps", 0), getW("audio_refine_denoise", 0.5), getW("audio_refine_cache", true)],
+                                single_text_encode: !!getW("single_text_encode", false),
                             }),
                         });
                         const result = await response.json();
@@ -918,6 +920,10 @@ app.registerExtension({
                         wrap.appendChild(uiRow("audio re-noise depth", bindNumber("audio_refine_denoise"), { indent: true, hint: "0.3-0.6 cleans up the audio; 1.0 regenerates it against the video." }));
                         wrap.appendChild(uiRow("frozen video cache", bindToggle("audio_refine_cache"), { indent: true, hint: "Faster steps, ~1 GB of RAM per clip-second while it runs." }));
                     }
+                }
+                if (W("single_text_encode")) {
+                    wrap.appendChild(uiRow("one text-encoder pass per clip", bindToggle("single_text_encode"),
+                        { hint: "Encode the prompt once (at the pass-2 size) and reuse it for pass 1, re-encoding only the reference-image latents. Saves several seconds per clip." }));
                 }
                 wrap.appendChild(uiRow("offload upscaler after use", bindToggle("smart_offload")));
                 wrap.appendChild(uiRow("background decode (experimental)", bindSelect("async_decode")));
