@@ -51,8 +51,9 @@ The included workflow is deliberately blank: one empty prompt, no reference imag
 
 4. Download the models separately and place them as described below. Restart ComfyUI, then refresh the browser.
 5. Open one of the example workflows, select your installed model files, write a prompt, and attach reference pictures if needed:
-   - `example_workflows/MiniMax_H3_Master_Extender_Blank.json` — the original PDD 8-step graph.
-   - `example_workflows/MiniMax_H3_Master_Extender_Turbo_SLA.json` — the faster graph: Turbo LoRA at 5 steps, comfy kitchen attention with SLA 0.9, chunked refine pass, 608x352 draft to 1280x720, one blank 15 s clip. On an RTX 5090 a 15 s clip renders in roughly 85–90 s. Needs a converted Turbo LoRA in `models/loras` (see `turbo_lora`).
+   - `example_workflows/MiniMax_H3_Master_Extender_Blank.json` — the PDD 8-step graph with every input at its default.
+   - `example_workflows/MiniMax_H3_Master_Extender_Turbo_SLA.json` — the faster graph: Turbo LoRA (ref2v turbo 4-step), comfy kitchen attention with SLA 0.9, chunked refine pass, 608x352 draft to 1280x720, one blank 15 s clip. On an RTX 5090 a 15 s clip renders in roughly 85–90 s. Needs a converted Turbo LoRA in `models/loras` (see `turbo_lora`).
+   - `example_workflows/MiniMax_H3_Master_Extender_HyperFlow_Action.json` — the locked action preset: HyperFlow 8-step (pruned file, curve refit on, LoRA mode bypass) with an empty LoRA stack (any LoRA disables the curve fit), SLA 0.9, and the taomate 3-step LoRA replacing the engine LoRA on pass 2. Base model: Singularity v1.3 int8.
 
    Start with `clip_by_clip` and one clip. Inspect the preview and validate a clip before continuing the chain.
 
