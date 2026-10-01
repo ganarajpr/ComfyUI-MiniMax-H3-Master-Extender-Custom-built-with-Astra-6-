@@ -1,0 +1,160 @@
+import ast
+import copy
+import hashlib
+import json
+import logging
+import os
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+import torch
+
+
+SOURCE = Path(__file__).resolve().parents[1] / "motion_context_disk.py"
+FUNCTIONS = {
+    "normalize_full_batch_export_profile", "_full_batch_export_profile_signature",
+    "_profile_is_x2", "_final_decode_record", "_apply_final_decode_record",
+    "set_manifest_final_decode", "require_x2_vae", "_decode_pair_video",
+    "_render_one_final_video_segment", "_ensure_ref2va_final_segment_cache",
+    "_resolve_full_batch_export_profile", "_final_segment_cache_meta_matches",
+    "_tag_ref2va_final_segment_cache",
+}
+CONSTANTS = {"FINAL_DECODE_STANDARD", "FINAL_DECODE_X2", "FULL_BATCH_FINAL_PROFILE_VERSION",
+             "FULL_BATCH_FINAL_CACHE_VERSION"}
+
+
+class X2FinalDecodeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.state = {"segments": [{"index": 0}, {"index": 1, "decoded_seam_shift": -1}]}
+        self.render_calls = []
+        self.x2_vae = object()
+        self.plain_vae = object()
+        self.encoded = []
+        self.ns = {
+            "Path": Path, "os": os, "torch": torch, "time": time, "json": json, "hashlib": hashlib,
+            "_LOG": logging.getLogger("test"),
+            "_load_manifest_from_paths": lambda *a: copy.deepcopy(self.state),
+            "_write_json_atomic": self.write_manifest,
+            "_normalize_color_adjustment": lambda v: v or {},
+            "_color_adjustment_signature": lambda v: "c",
+            "_color_is_neutral": lambda v: True,
+            "_ref2va_final_segment_cache_path": lambda *a: self.root / "final.mp4",
+            "_encode_final_segment_video": self.encode,
+            "_full_batch_export_profile_extension": lambda p: "mp4",
+            "shutil": __import__("shutil"),
+            "uuid": __import__("uuid"),
+            "_x2_decoder_class": lambda: object,
+            "vae_is_x2_capable": lambda vae: vae is self.x2_vae,
+            "decode_video_latent": lambda vae, latent: ("plain", vae, latent),
+            "decode_video_latent_x2": lambda vae, latent: torch.zeros(2, 8, 12, 3),
+            "_load_segment_video": lambda *a: "latent",
+            "_build_pair_video": lambda *a: ("chain", {"decode_frames": 4, "previous_frames": 1,
+                                                       "warmup_frames": 1, "continued_frames": 2}),
+            "_auto_early_seam_shift": lambda *a, **k: self.fail("auto shift must not run when forced"),
+            "_correct_current_segment": lambda prev, cur: cur,
+        }
+        tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+        body = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in FUNCTIONS) or
+                (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in CONSTANTS for t in n.targets))]
+        exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE), "exec"), self.ns)
+
+    def write_manifest(self, path, manifest):
+        self.state = copy.deepcopy(manifest)
+
+    def encode(self, ffmpeg, video, fps, path, token, profile, adjustment=None):
+        self.encoded.append(tuple(video.shape))
+        Path(path).write_bytes(b"video")
+
+    def x2_profile(self, vae="X2.safetensors"):
+        return self.ns["normalize_full_batch_export_profile"](
+            {"codec": "H.264", "crf": 17, "preset": "fast", "final_decode": "X2 detail", "final_vae": vae})
+
+    def test_standard_signature_is_unchanged_and_x2_differs(self):
+        norm = self.ns["normalize_full_batch_export_profile"]
+        sig = self.ns["_full_batch_export_profile_signature"]
+        standard = norm({"codec": "H.264", "crf": 17, "preset": "fast"})
+        self.assertEqual(standard, {"version": 1, "codec": "H.264", "crf": 17, "preset": "fast"})
+        legacy = hashlib.sha256(json.dumps(standard, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(sig(standard), legacy)
+        self.assertNotEqual(sig(self.x2_profile()), legacy)
+        self.assertNotEqual(sig(self.x2_profile("a.safetensors")), sig(self.x2_profile("b.safetensors")))
+        self.assertEqual(norm({"final_decode": "standard"}), norm({}))
+
+    def test_record_forces_profile_mode(self):
+        apply = self.ns["_apply_final_decode_record"]
+        record = self.ns["_final_decode_record"]("X2 detail", "X2.safetensors")
+        self.assertIsNone(self.ns["_final_decode_record"]("standard", "x"))
+        self.assertEqual(apply({"codec": "H.264"}, record), self.x2_profile())
+        self.assertEqual(apply(self.x2_profile(), None), apply({"codec": "H.264"}, None))
+
+    def test_resolve_profile_keeps_recorded_mode_over_stored_checkpoint(self):
+        self.state["final_decode"] = {"mode": "X2 detail", "vae": "X2.safetensors"}
+        self.state["batch_in_progress"] = True
+        self.state["full_batch_export_profile"] = self.ns["normalize_full_batch_export_profile"]({})
+        manifest, profile = self.ns["_resolve_full_batch_export_profile"](
+            self.root / "m.json", copy.deepcopy(self.state), {"codec": "H.264", "crf": 17, "preset": "fast"})
+        self.assertEqual(profile, self.x2_profile())
+
+    def test_require_x2_vae(self):
+        require = self.ns["require_x2_vae"]
+        self.assertIs(require(self.x2_vae, self.plain_vae), self.x2_vae)
+        self.assertIs(require(None, self.x2_vae), self.x2_vae)
+        with self.assertRaisesRegex(RuntimeError, "no X2-capable VAE"):
+            require(None, self.plain_vae)
+        with self.assertRaisesRegex(RuntimeError, "not an X2-capable"):
+            require(self.plain_vae, self.x2_vae)
+
+    def test_x2_sidecar_decodes_with_final_vae_and_ignores_1x_frames(self):
+        def render(data, segments, index, vae, progress=None, decode_fn=None, forced_shift=None):
+            self.render_calls.append((index, vae, forced_shift))
+            return decode_fn(vae, "latent"), 0
+        self.ns["_render_one_final_video_segment"] = render
+        manifest, path, decoded = self.ns["_ensure_ref2va_final_segment_cache"](
+            self.root / "d", self.root / "m.json", copy.deepcopy(self.state), 1, self.plain_vae, 24.0,
+            "ffmpeg", self.x2_profile(), decoded_video=torch.zeros(2, 4, 6, 3),
+            encoded_mp4=self.root / "x.mp4", encoded_settings=("H.264", 17, "fast"),
+            final_vae=self.x2_vae,
+        )
+        self.assertEqual(self.render_calls, [(1, self.x2_vae, -1)])
+        self.assertEqual(self.encoded, [(2, 8, 12, 3)])
+        self.assertTrue(decoded)
+
+    def test_x2_sidecar_without_x2_vae_raises_instead_of_decoding_1x(self):
+        self.ns["_render_one_final_video_segment"] = lambda *a, **k: self.fail("must not decode")
+        with self.assertRaisesRegex(RuntimeError, "no X2-capable VAE"):
+            self.ns["_ensure_ref2va_final_segment_cache"](
+                self.root / "d", self.root / "m.json", copy.deepcopy(self.state), 0, self.plain_vae,
+                24.0, "ffmpeg", self.x2_profile(),
+            )
+
+    def test_standard_sidecar_path_is_unchanged(self):
+        def render(data, segments, index, vae, progress=None):
+            self.render_calls.append((index, vae))
+            return torch.zeros(2, 4, 6, 3), 0
+        self.ns["_render_one_final_video_segment"] = render
+        profile = self.ns["normalize_full_batch_export_profile"]({})
+        self.ns["_ensure_ref2va_final_segment_cache"](
+            self.root / "d", self.root / "m.json", copy.deepcopy(self.state), 0, self.plain_vae,
+            24.0, "ffmpeg", profile, final_vae=self.x2_vae,
+        )
+        self.assertEqual(self.render_calls, [(0, self.plain_vae)])
+        self.assertEqual(self.encoded, [(2, 4, 6, 3)])
+
+    def test_pair_decode_uses_given_decoder_and_forced_shift(self):
+        decoded = torch.zeros(4, 2, 2, 3)
+        self.ns["_decode_pair_video"].__globals__["decode_video_latent"] = lambda *a: self.fail("1x decoder used")
+        _, previous, current, shift = self.ns["_decode_pair_video"](
+            object(), "chain", {"decode_frames": 4, "previous_frames": 1, "warmup_frames": 1,
+                                "continued_frames": 2},
+            decode_fn=lambda vae, chain: decoded, forced_shift=-1,
+        )
+        self.assertEqual((shift, previous.shape[0], current.shape[0]), (-1, 1, 2))
+
+
+if __name__ == "__main__":
+    unittest.main()
