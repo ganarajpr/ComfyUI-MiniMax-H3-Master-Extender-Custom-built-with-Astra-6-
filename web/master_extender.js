@@ -738,7 +738,7 @@ app.registerExtension({
             function qualitySummary() {
                 const { preset, orientation } = currentPreset();
                 const label = preset === "custom" ? "Custom" : QUALITY_PRESETS[preset].label;
-                return `${label} · ${orientation} · draft ${String(getW("pass1_resolution", "")).split(" ")[0]} → refine ${String(getW("pass2_resolution", "")).split(" ")[0]}, denoise ${Number(getW("pass2_denoise", 0)).toFixed(2)}`;
+                return `${label} · ${orientation} · draft ${String(getW("pass1_resolution", "")).split(" ")[0]} → refine ${String(getW("pass2_resolution", "")).split(" ")[0]}, denoise ${Number(getW("pass2_denoise", 0)).toFixed(2)}${getW("final_decode", "standard") !== "standard" ? " · 2x VAE" : ""}`;
             }
             function performanceSummary() {
                 const att = String(getW("attention_backend", "")).replace(" attention", "");
@@ -900,6 +900,12 @@ app.registerExtension({
                 // stays visible in Simple mode too (models/latent_upscale_models).
                 wrap.appendChild(uiRow("upscaler", bindSelect("upscaler_model", { render: shortModelName }),
                     { hint: "3D latent upscaler between the draft and refine passes." }));
+                // Final decode changes the picture (2x output), so it lives with the other quality
+                // choices, not under Performance. Hidden unless a packed 2x VAE is installed.
+                if (comboValues(W("final_decode")).length > 1) {
+                    wrap.appendChild(uiRow("final decode", bindSelect("final_decode", { render: (v) => v === "standard" ? v : shortModelName(v) }),
+                        { hint: "standard = decode with the connected VAE. A 2x VAE decodes the final video at 2x resolution, ~+23 s per 15 s clip; needs ComfyUI-MiniMaxH3_LatentUpscaler. Guide frames and previews stay at the normal resolution." }));
+                }
             }
 
             function buildContinuity(wrap) {
@@ -936,10 +942,6 @@ app.registerExtension({
                 if (W("single_text_encode")) {
                     wrap.appendChild(uiRow("one text-encoder pass per clip", bindToggle("single_text_encode"),
                         { hint: "Encode the prompt once (at the pass-2 size) and reuse it for pass 1, re-encoding only the reference-image latents. Saves several seconds per clip." }));
-                }
-                if (comboValues(W("final_decode")).length > 1) {
-                    wrap.appendChild(uiRow("final decode", bindSelect("final_decode", { render: (v) => v === "standard" ? v : shortModelName(v) }),
-                        { hint: "standard = decode with the connected VAE. A 2x VAE decodes the final video at 2x resolution, ~+23 s per 15 s clip; needs ComfyUI-MiniMaxH3_LatentUpscaler. Guide frames and previews stay at the normal resolution." }));
                 }
                 wrap.appendChild(uiRow("offload upscaler after use", bindToggle("smart_offload")));
                 wrap.appendChild(uiRow("background decode (experimental)", bindSelect("async_decode")));
