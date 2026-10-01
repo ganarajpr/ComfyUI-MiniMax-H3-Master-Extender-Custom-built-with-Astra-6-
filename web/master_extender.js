@@ -745,7 +745,7 @@ app.registerExtension({
                 const sla = getW("sla_enabled", false) ? `SLA ${Number(getW("sla_sparsity", 0)).toFixed(2)} ${getW("sparse_method", "sla")}` : "SLA off";
                 const cf = Number(getW("pass2_chunk_frames", 0));
                 const chunk = cf > 0 ? `chunk ${cf}/${getW("pass2_chunk_overlap", 0)}` : "no chunking";
-                return `${att} · ${sla} · ${chunk}${getW("smart_offload", true) ? "" : " · offload off"}${getW("async_decode", "off") !== "off" ? ` · async ${getW("async_decode")}` : ""}${Number(getW("audio_refine_steps", 0)) > 0 ? ` · audio refine ${getW("audio_refine_steps")}` : ""}`;
+                return `${att} · ${sla} · ${chunk}${getW("smart_offload", true) ? "" : " · offload off"}${getW("async_decode", "off") !== "off" ? ` · async ${getW("async_decode")}` : ""}`;
             }
             function continuitySummary() {
                 return `motion ${getW("context_length", "22")} f · audio ${getW("audio_context_length", 0)} f · identity ${getW("identity_continuity", true) ? "on" : "off"}`;
@@ -931,14 +931,9 @@ app.registerExtension({
                     wrap.appendChild(uiRow("chunk frames", bindNumber("pass2_chunk_frames"), { indent: true }));
                     wrap.appendChild(uiRow("overlap", bindNumber("pass2_chunk_overlap"), { indent: true }));
                 }
-                if (W("audio_refine_steps")) {
-                    wrap.appendChild(uiRow("audio-only refine steps", bindNumber("audio_refine_steps"),
-                        { hint: "Extra steps on the audio of each finished clip, video frozen (needs ComfyUI-H3-AudioRefine). 0 = off; 4-6 typical." }));
-                    if (Number(getW("audio_refine_steps", 0)) > 0) {
-                        wrap.appendChild(uiRow("audio re-noise depth", bindNumber("audio_refine_denoise"), { indent: true, hint: "0.3-0.6 cleans up the audio; 1.0 regenerates it against the video." }));
-                        wrap.appendChild(uiRow("frozen video cache", bindToggle("audio_refine_cache"), { indent: true, hint: "Faster steps, ~1 GB of RAM per clip-second while it runs." }));
-                    }
-                }
+                // Audio-only refine is not offered in the panel (founder, 2026-10-01: "we dont need the
+                // audio refine at all"). Its inputs stay on the node, default 0 = off, because removing
+                // them would shift every later saved widget value (final_decode, master_ui).
                 if (W("single_text_encode")) {
                     wrap.appendChild(uiRow("one text-encoder pass per clip", bindToggle("single_text_encode"),
                         { hint: "Encode the prompt once (at the pass-2 size) and reuse it for pass 1, re-encoding only the reference-image latents. Saves several seconds per clip." }));
