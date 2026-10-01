@@ -1,8 +1,8 @@
 {
   "id": "9b7e5d21-h3-master-extender-blank-example",
   "revision": 0,
-  "last_node_id": 19,
-  "last_link_id": 31,
+  "last_node_id": 17,
+  "last_link_id": 29,
   "nodes": [
     {
       "id": 2,
@@ -222,23 +222,6 @@
             "name": "autoplay"
           },
           "link": null
-        },
-        {
-          "localized_name": "save_output",
-          "name": "save_output",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "save_output"
-          },
-          "link": null,
-          "shape": 7
-        },
-        {
-          "localized_name": "final_vae",
-          "name": "final_vae",
-          "type": "VAE",
-          "link": 31,
-          "shape": 7
         }
       ],
       "outputs": [
@@ -1251,13 +1234,6 @@
           },
           "link": null,
           "shape": 7
-        },
-        {
-          "localized_name": "final_vae",
-          "name": "final_vae",
-          "type": "VAE",
-          "link": 30,
-          "shape": 7
         }
       ],
       "outputs": [
@@ -1359,74 +1335,6 @@
         "standard",
         ""
       ]
-    },
-    {
-      "id": 18,
-      "type": "VAELoader",
-      "pos": [
-        -244.32287905246096,
-        395.9204026161307
-      ],
-      "size": [
-        315,
-        58
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "vae_name",
-          "name": "vae_name",
-          "type": "COMBO",
-          "widget": {
-            "name": "vae_name"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "VAE",
-          "name": "VAE",
-          "type": "VAE",
-          "links": [
-            30,
-            31
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "VAELoader"
-      },
-      "widgets_values": [
-        "MiniMax-H3-X2-Detail-v1.safetensors"
-      ],
-      "widgets_values_named": {
-        "vae_name": "MiniMax-H3-X2-Detail-v1.safetensors"
-      },
-      "title": "X2 Detail VAE (set final_decode = X2 detail to use)"
-    },
-    {
-      "id": 19,
-      "type": "Note",
-      "pos": [
-        -244.32287905246096,
-        485.9204026161307
-      ],
-      "size": [
-        315,
-        110
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {},
-      "widgets_values": [
-        "X2 detail (2x output resolution, ~+20 s per 15 s clip): set final_decode = X2 detail on the Master Extender (Performance section). Needs the X2 Detail VAE wired above and the ComfyUI-MiniMaxH3_LatentUpscaler pack. Leave on standard for the normal decode."
-      ]
     }
   ],
   "links": [
@@ -1501,22 +1409,6 @@
       6,
       0,
       "MODEL"
-    ],
-    [
-      30,
-      18,
-      0,
-      6,
-      84,
-      "VAE"
-    ],
-    [
-      31,
-      18,
-      0,
-      7,
-      12,
-      "VAE"
     ]
   ],
   "groups": [

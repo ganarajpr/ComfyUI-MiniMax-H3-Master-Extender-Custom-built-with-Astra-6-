@@ -41,7 +41,9 @@ from .motion_context_disk import (
     FINAL_DECODE_X2,
     _apply_final_decode_record,
     _final_decode_record,
-    require_x2_vae,
+    final_decode_options,
+    load_final_vae,
+    normalize_final_decode,
     set_manifest_final_decode,
 )
 from .motion_context_ram import _streams_from_latent
@@ -123,24 +125,6 @@ class _DecodeWorker:
         if self.error is not None:
             raise self.error
         return self.result
-
-
-def _final_vae_identity(prompt, owner, final_vae):
-    """Name the X2 VAE for the final-clip cache signature: the VAELoader's
-    file name when the graph wires one, else a probe of the decoder itself."""
-    try:
-        link = ((prompt or {}).get(owner, {}).get("inputs", {}) or {}).get("final_vae")
-        if isinstance(link, list) and link:
-            name = ((prompt or {}).get(str(link[0]), {}).get("inputs", {}) or {}).get("vae_name")
-            if isinstance(name, str) and name:
-                return name
-    except Exception:
-        pass
-    try:
-        decoder = final_vae.first_stage_model.decoder
-        return f"decoder_out{int(decoder.proj_out.weight.shape[0])}"
-    except Exception:
-        return "unknown"
 
 
 def _async_decode_allowed(mode, vae, sampled_latent):
@@ -429,8 +413,7 @@ class MiniMaxH3MasterExtender:
                 # --- One text-encoder pass per clip (appended last) ---
                 "single_text_encode": ("BOOLEAN", {"default": False, "tooltip": "Run the text encoder once per clip instead of twice: the pass-2 encode is reused for pass 1, and only the reference-image latents are re-encoded at the pass-1 size. Saves several seconds per clip; pass 1 then sees the prompt embedding computed with the pass-2-sized reference images. Off = the exact two-encode behaviour."}),
                 # --- X2 detail final decode (appended last) ---
-                "final_decode": (["standard", FINAL_DECODE_X2], {"default": "standard", "tooltip": "standard = the normal VAE decode. X2 detail = decode every FINAL clip through the MiniMax-H3-X2-Detail VAE at 2x output resolution (e.g. 1280x736 -> 2560x1472), about +20 s per 15 s clip on a 5090. Needs the MiniMax-H3-X2-Detail VAE on final_vae and the ComfyUI-MiniMaxH3_LatentUpscaler pack. The continuity guide frame and previews are unaffected and stay at the normal resolution."}),
-                "final_vae": ("VAE", {"tooltip": "MiniMax-H3-X2-Detail VAE (MiniMax-H3-X2-Detail-v1.safetensors). Used only when final_decode is 'X2 detail', and required then. The normal vae input is still used for the guide frame and previews."}),
+                "final_decode": (final_decode_options(), {"default": "standard", "tooltip": "standard = decode with the connected VAE. A 2x VAE (e.g. MiniMax-H3-X2-Detail) decodes the final video at 2x resolution, ~+23 s per 15 s clip; needs ComfyUI-MiniMaxH3_LatentUpscaler."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -446,7 +429,7 @@ class MiniMaxH3MasterExtender:
     OUTPUT_NODE = False
 
     @classmethod
-    def VALIDATE_INPUTS(cls, hyperflow_file=None):
+    def VALIDATE_INPUTS(cls, hyperflow_file=None, final_decode=None):
         # Workflows saved before HyperFlow existed can load with hyperflow_file == "";
         # treat that as "use the default" instead of failing the combo check.
         if not hyperflow_file:
@@ -617,13 +600,12 @@ class MiniMaxH3MasterExtender:
         # X2 detail only changes the final clips. The record lives in the chain
         # manifest so Final Decode and every cache-repair path honour it; standard
         # leaves the manifest (and the final-clip cache signature) untouched.
-        final_decode = kwargs.get("final_decode", "standard")
-        final_vae = kwargs.get("final_vae")
+        final_decode = normalize_final_decode(kwargs.get("final_decode"))
         decode_record = None
-        if final_decode == FINAL_DECODE_X2:
-            require_x2_vae(final_vae, None, context="Master Extender final_decode='X2 detail'")
-            decode_record = _final_decode_record(final_decode, _final_vae_identity(prompt, owner, final_vae))
-            _LOG.info("Final decode: X2 detail (final_vae=%s); guide frames and previews stay at 1x", decode_record["vae"])
+        if final_decode != "standard":
+            load_final_vae(final_decode)
+            decode_record = _final_decode_record(FINAL_DECODE_X2, final_decode)
+            _LOG.info("Final decode: 2x with %s; guide frames and previews stay at 1x", final_decode)
             if export_profile is not None:
                 export_profile = _apply_final_decode_record(export_profile, decode_record)
             if str(async_decode).lower() != "off":
@@ -921,7 +903,6 @@ class MiniMaxH3MasterExtender:
                 state, _ = cache_full_batch_ref2va_segment(
                     data_path, manifest_path, i, vae, audio_vae, FPS,
                     export_profile=export_profile,
-                    final_vae=final_vae if decode_record is not None else None,
                 )
                 last_frame_tensor = _load_guide_frame(data_path, state["segments"][i])
                 progress_hook("done", f"Clip {i + 1} completed!", 1.0)

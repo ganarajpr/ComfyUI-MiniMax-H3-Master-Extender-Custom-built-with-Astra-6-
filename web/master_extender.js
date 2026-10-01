@@ -192,8 +192,7 @@ const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 // Widgets appended after master_ui-less workflows were saved: a missing/invalid value is put back to the default.
 const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
 const SINGLE_TE_WIDGETS = ["single_text_encode"];
-const FINAL_DECODE_WIDGETS = ["final_decode"];
-const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...SINGLE_TE_WIDGETS, ...FINAL_DECODE_WIDGETS];
+const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...SINGLE_TE_WIDGETS];
 
 function setWidgetVisible(widget, visible) {
     if (!widget) return;
@@ -214,7 +213,7 @@ function setWidgetVisible(widget, visible) {
 // string in the slot that hyperflow_file now occupies, so it loads as "" and the server rejects
 // it (value_not_in_list). Put any missing/invalid HyperFlow value back to the node-definition default.
 // The same happens one slot later for audio_refine_steps in workflows saved before the audio-refine inputs,
-// and for final_decode (the last native widget, just before master_ui) in workflows saved before X2.
+// and for final_decode (the last native widget, just before master_ui) in workflows saved before it existed.
 function hyperflowValueOk(widget, value) {
     if (widget.type === "combo" || widget._origType === "combo") {
         const values = comboValues(widget);
@@ -224,7 +223,18 @@ function hyperflowValueOk(widget, value) {
     return typeof value === "number" && Number.isFinite(value);
 }
 
+// final_decode is "standard" or a packed 2x VAE file. "" (the old master_ui slot) -> standard;
+// the first release's "X2 detail" -> the first detected 2x VAE, or standard when none is installed.
+function repairFinalDecode(node) {
+    const w = node.widgets?.find(x => x.name === "final_decode");
+    if (!w) return;
+    const values = comboValues(w);
+    if (typeof w.value !== "string" || w.value === "") w.value = "standard";
+    else if (w.value === "X2 detail") w.value = values.find(v => v !== "standard") ?? "standard";
+}
+
 function repairHyperflowWidgets(node, defaults) {
+    repairFinalDecode(node);
     for (const name of REPAIRED_WIDGETS) {
         const w = node.widgets?.find(x => x.name === name);
         if (!w || hyperflowValueOk(w, w.value)) continue;
@@ -927,9 +937,9 @@ app.registerExtension({
                     wrap.appendChild(uiRow("one text-encoder pass per clip", bindToggle("single_text_encode"),
                         { hint: "Encode the prompt once (at the pass-2 size) and reuse it for pass 1, re-encoding only the reference-image latents. Saves several seconds per clip." }));
                 }
-                if (W("final_decode")) {
-                    wrap.appendChild(uiRow("final decode", bindSelect("final_decode"),
-                        { hint: "X2 detail: 2x output resolution via the MiniMax-H3-X2-Detail VAE on final_vae (about +20 s per 15 s clip; needs ComfyUI-MiniMaxH3_LatentUpscaler). Guide frames and previews stay at the normal resolution." }));
+                if (comboValues(W("final_decode")).length > 1) {
+                    wrap.appendChild(uiRow("final decode", bindSelect("final_decode", { render: (v) => v === "standard" ? v : shortModelName(v) }),
+                        { hint: "standard = decode with the connected VAE. A 2x VAE decodes the final video at 2x resolution, ~+23 s per 15 s clip; needs ComfyUI-MiniMaxH3_LatentUpscaler. Guide frames and previews stay at the normal resolution." }));
                 }
                 wrap.appendChild(uiRow("offload upscaler after use", bindToggle("smart_offload")));
                 wrap.appendChild(uiRow("background decode (experimental)", bindSelect("async_decode")));
