@@ -77,6 +77,29 @@ FULL_BATCH_H264_CACHE_PROFILE = "h264_preview_crf17_fast_v2"
 FULL_BATCH_FINAL_PROFILE_VERSION = 1
 FULL_BATCH_FINAL_CACHE_VERSION = 1
 
+FINAL_DECODE_STANDARD = "standard"
+FINAL_DECODE_X2 = "X2 detail"
+
+# X2 detail decode goes through ComfyUI-MiniMaxH3_LatentUpscaler's
+# MiniMaxH3VAEDecodeFast, found in the node registry at run time. Settings are
+# the ones measured on the 5090 (2026-10-01): gpu output is bit-identical to
+# cpu and 24% faster; larger tiles / tiling off change the picture and were
+# rejected, so none of this is exposed as an input. output_device is picked per
+# call: gpu is the fast path when the clip (plus the PixelShuffle copy) fits in
+# free VRAM, cpu is the validated baseline and the OOM retry target.
+X2_DECODE_NODE_CLASS = "MiniMaxH3VAEDecodeFast"
+X2_DECODE_PACK = "ComfyUI-MiniMaxH3_LatentUpscaler"
+X2_DECODE_SETTINGS = {
+    "tiling": True,
+    "tile_size": 256,
+    "tile_overlap": 64,
+    "output_device": "cpu",
+    "temporal_tiling": False,
+    "temporal_tile_frames": 85,
+    "temporal_context_frames": 39,
+    "seam_warning_threshold": 0.02,
+}
+
 
 def normalize_full_batch_export_profile(profile=None, *, codec="H.264", crf=17, preset="fast"):
     raw = profile if isinstance(profile, dict) else {}
@@ -90,12 +113,58 @@ def normalize_full_batch_export_profile(profile=None, *, codec="H.264", crf=17, 
     wanted_preset = str(raw.get("preset", preset) or preset)
     if wanted_preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"}:
         wanted_preset = "fast"
-    return {
+    normalized = {
         "version": int(FULL_BATCH_FINAL_PROFILE_VERSION),
         "codec": wanted_codec,
         "crf": int(wanted_crf),
         "preset": wanted_preset,
     }
+    # Only present when X2 is on, so the standard signature (and every cache
+    # keyed on it) is exactly what it was before X2 existed.
+    if str(raw.get("final_decode") or "") == FINAL_DECODE_X2:
+        normalized["final_decode"] = FINAL_DECODE_X2
+        normalized["final_vae"] = str(raw.get("final_vae") or "")
+    return normalized
+
+
+def _profile_is_x2(profile):
+    return isinstance(profile, dict) and str(profile.get("final_decode") or "") == FINAL_DECODE_X2
+
+
+def _final_decode_record(final_decode, final_vae_id):
+    if str(final_decode or "") != FINAL_DECODE_X2:
+        return None
+    return {"mode": FINAL_DECODE_X2, "vae": str(final_vae_id or "")}
+
+
+def _apply_final_decode_record(profile, record):
+    """Return ``profile`` with its X2 fields forced to match the chain's recorded
+    final-decode mode (the manifest's ``final_decode``), so every path that
+    builds a profile agrees on what resolution the final sidecars are."""
+    base = {
+        key: value for key, value in normalize_full_batch_export_profile(profile).items()
+        if key not in ("final_decode", "final_vae")
+    }
+    if isinstance(record, dict) and str(record.get("mode") or "") == FINAL_DECODE_X2:
+        base["final_decode"] = FINAL_DECODE_X2
+        base["final_vae"] = str(record.get("vae") or "")
+    return normalize_full_batch_export_profile(base)
+
+
+def set_manifest_final_decode(data_path, manifest_path, record):
+    """Record (or clear) the chain's final-decode mode in the manifest. Only
+    writes when it changes; callers must not have a background decode running."""
+    manifest = _load_manifest_from_paths(data_path, manifest_path)
+    if manifest is None or manifest.get("final_decode") == record:
+        return manifest
+    manifest = dict(manifest)
+    if record is None:
+        manifest.pop("final_decode", None)
+    else:
+        manifest["final_decode"] = dict(record)
+    manifest["updated_at"] = time.time()
+    _write_json_atomic(manifest_path, manifest)
+    return manifest
 
 
 def _full_batch_export_profile_signature(profile):
@@ -1177,8 +1246,113 @@ def decode_guide_frame(vae, video_latent, context_latent_frames=3):
     return frames[-1:].to(device="cpu").clone()
 
 
-def _decode_pair_video(vae, chain, meta):
-    decoded = decode_video_latent(vae, chain)
+def _x2_decoder_class():
+    import nodes
+    cls = nodes.NODE_CLASS_MAPPINGS.get(X2_DECODE_NODE_CLASS)
+    if cls is None:
+        raise RuntimeError(
+            f"H3 final decode 'X2 detail' needs the {X2_DECODE_PACK} node pack "
+            f"(node class {X2_DECODE_NODE_CLASS}), which is not installed/loaded in this ComfyUI."
+        )
+    return cls
+
+
+def _x2_upscale_factor(vae):
+    """PixelShuffle factor of a packed H3 decoder, via the upscaler pack's own
+    channel-packing probe. None when it cannot be determined."""
+    try:
+        import sys
+        module = sys.modules.get(_x2_decoder_class().__module__)
+        probe = getattr(module, "_decoder_channel_packing", None)
+        inner = getattr(vae, "first_stage_model", None)
+        if probe is None or inner is None:
+            return None
+        return int(probe(inner)[1])
+    except Exception:
+        return None
+
+
+def vae_is_x2_capable(vae):
+    return (_x2_upscale_factor(vae) or 0) > 1
+
+
+def require_x2_vae(final_vae, fallback_vae=None, *, context="H3 final decode"):
+    """The VAE an X2 decode must use. Never falls back to a 1x VAE: a chain
+    that mixed resolutions could not be stream-copy concatenated."""
+    _x2_decoder_class()
+    if final_vae is not None:
+        if not vae_is_x2_capable(final_vae):
+            raise RuntimeError(
+                f"{context}: final_vae is not an X2-capable H3 VAE (its decoder does not emit "
+                "packed sub-pixel channels). Load MiniMax-H3-X2-Detail-v1.safetensors."
+            )
+        return final_vae
+    if fallback_vae is not None and vae_is_x2_capable(fallback_vae):
+        return fallback_vae
+    raise RuntimeError(
+        f"{context}: this chain's final decode is 'X2 detail' but no X2-capable VAE is available "
+        "here. Connect the MiniMax-H3-X2-Detail VAE to final_vae; refusing to decode at 1x because "
+        "a chain must not mix resolutions."
+    )
+
+
+# gpu output holds the whole decoded clip and PixelShuffle allocates a second
+# copy of it, so require this multiple of the decoded bytes to be free.
+_X2_GPU_OUTPUT_HEADROOM = 2.5
+
+
+def decode_video_latent_x2(vae, latent, info=None):
+    """X2-decode an H3 video latent into (N, H, W, 3) frames at 2x resolution,
+    on ``vae.output_device`` like ``decode_video_latent``. For FINAL output only;
+    guide frames and previews that feed generation never come through here.
+    ``info`` (a dict) receives ``output_device`` as actually used."""
+    import comfy.model_management as mm
+
+    cls = _x2_decoder_class()
+    device = mm.get_torch_device()
+    factor = _x2_upscale_factor(vae) or 2
+    frames = _frames_from_video_t(int(latent.shape[2]))
+    out_bytes = frames * (int(latent.shape[3]) * 16 * factor) * (int(latent.shape[4]) * 16 * factor) * 3 * 4
+    if DECODE_ALLOW_RECLAIM:
+        try:
+            needed = int(vae.memory_used_decode(tuple(latent.shape), vae.vae_dtype))
+            mm.free_memory(needed + int(_X2_GPU_OUTPUT_HEADROOM * out_bytes) + _DECODE_RECLAIM_MARGIN, device,
+                           keep_loaded=_loaded_entries_for(getattr(vae, "patcher", None)))
+            mm.soft_empty_cache(force=True)
+        except Exception as exc:
+            _LOG.warning("H3 X2 decode: VRAM reclaim skipped (%s)", exc)
+
+    try:
+        free = int(mm.get_free_memory(device))
+    except Exception:
+        free = 0
+    output_device = "gpu" if free >= _X2_GPU_OUTPUT_HEADROOM * out_bytes else "cpu"
+    oom = tuple({torch.cuda.OutOfMemoryError, getattr(mm, "OOM_EXCEPTION", torch.cuda.OutOfMemoryError)})
+    try:
+        (images,) = cls().decode({"samples": latent}, vae, **{**X2_DECODE_SETTINGS, "output_device": output_device})
+    except oom:
+        if output_device != "gpu":
+            raise
+        _LOG.warning("H3 X2 decode: out of memory with gpu output; retrying once with cpu output")
+        mm.soft_empty_cache(force=True)
+        output_device = "cpu"
+        (images,) = cls().decode({"samples": latent}, vae, **{**X2_DECODE_SETTINGS, "output_device": output_device})
+    if info is not None:
+        info["output_device"] = output_device
+    if images.ndim == 5:
+        images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
+    if int(images.shape[1]) <= int(latent.shape[3]) * 16 or int(images.shape[2]) <= int(latent.shape[4]) * 16:
+        raise RuntimeError(
+            f"H3 X2 decode returned {int(images.shape[2])}x{int(images.shape[1])} for a "
+            f"{int(latent.shape[4]) * 16}x{int(latent.shape[3]) * 16} latent: the VAE did not upscale."
+        )
+    images = images.to(vae.output_device)
+    mm.soft_empty_cache()
+    return images
+
+
+def _decode_pair_video(vae, chain, meta, decode_fn=None, forced_shift=None):
+    decoded = (decode_fn or decode_video_latent)(vae, chain)
     if decoded.ndim == 5:
         decoded = decoded.reshape(
             -1, decoded.shape[-3], decoded.shape[-2], decoded.shape[-1]
@@ -1191,12 +1365,15 @@ def _decode_pair_video(vae, chain, meta):
 
     prev_frames = int(meta["previous_frames"])
     warmup = int(meta["warmup_frames"])
-    shift = _auto_early_seam_shift(
-        decoded,
-        previous_frames=prev_frames,
-        warmup_frames=warmup,
-        max_early=2,
-    )
+    if forced_shift is not None:
+        shift = int(forced_shift)
+    else:
+        shift = _auto_early_seam_shift(
+            decoded,
+            previous_frames=prev_frames,
+            warmup_frames=warmup,
+            max_early=2,
+        )
     start = prev_frames + warmup + int(shift)
     end = start + int(meta["continued_frames"])
     if start < 0 or end > int(decoded.shape[0]):
@@ -2611,11 +2788,16 @@ def _ensure_ref2va_final_segment_cache(
     color_adjustment=None,
     encoded_mp4=None,
     encoded_settings=None,
+    final_vae=None,
 ):
     """Ensure exactly one Ref2VA clip has a final-profile sidecar.
 
     Existing matching sidecars are never decoded or re-encoded. A missing/dirty
     sidecar causes VideoVAE work for this clip only.
+
+    With an X2 profile the sidecar is always decoded here from the latent with
+    the X2 VAE (``final_vae``, else ``vae`` when it is X2-capable): a 1x
+    ``decoded_video`` / ``encoded_mp4`` from the caller is never reused.
     """
     profile = normalize_full_batch_export_profile(export_profile)
     segments = [dict(x) for x in manifest.get("segments", [])]
@@ -2630,9 +2812,41 @@ def _ensure_ref2va_final_segment_cache(
     if _final_segment_cache_meta_matches(desc, profile, adjustment, path):
         return manifest, path, False
 
+    x2 = _profile_is_x2(profile)
+    if x2:
+        decoded_video = None
+        encoded_mp4 = None
     own_decode = decoded_video is None
     video = decoded_video
-    if own_decode:
+    if x2:
+        x2_vae = require_x2_vae(
+            final_vae, vae, context=f"H3 final cache (clip {idx + 1})"
+        )
+        x2_timing = {"seconds": 0.0}
+
+        def _timed_x2_decode(decode_vae, latent):
+            started = time.time()
+            frames = decode_video_latent_x2(decode_vae, latent, info=x2_timing)
+            x2_timing["seconds"] += time.time() - started
+            return frames
+
+        _LOG.info(
+            "H3 final cache: X2 detail decode of Ref2VA clip %d", idx + 1
+        )
+        # Reuse the seam shift the 1x preview decode already chose, so video
+        # and the cached audio stay cut at the same frame.
+        stored_shift = desc.get("decoded_seam_shift")
+        video, _ = _render_one_final_video_segment(
+            data_path, segments, idx, x2_vae, progress=progress,
+            decode_fn=_timed_x2_decode,
+            forced_shift=None if idx == 0 or stored_shift is None else int(stored_shift),
+        )
+        _LOG.info(
+            "H3 X2 final decode: clip %d -> %dx%d, decode %.1f s, output_device=%s",
+            idx + 1, int(video.shape[2]), int(video.shape[1]), x2_timing["seconds"],
+            x2_timing.get("output_device", "?"),
+        )
+    elif own_decode:
         _LOG.info(
             "H3 final cache repair: decoding changed Ref2VA clip %d only", idx + 1
         )
@@ -2964,13 +3178,15 @@ def _render_one_final_video_segment(
     index,
     vae,
     progress=None,
+    decode_fn=None,
+    forced_shift=None,
 ):
     i = int(index)
     curr = segments[i]
 
     if i == 0:
         v = _load_segment_video(data_path, curr)
-        video = decode_video_latent(vae, v)
+        video = (decode_fn or decode_video_latent)(vae, v)
         if progress is not None:
             progress.advance()
         if video.ndim == 5:
@@ -2989,7 +3205,7 @@ def _render_one_final_video_segment(
     prev = segments[i - 1]
     chain, meta = _build_pair_video(data_path, prev, curr)
     decoded, previous_raw, current_raw, shift = _decode_pair_video(
-        vae, chain, meta
+        vae, chain, meta, decode_fn=decode_fn, forced_shift=forced_shift
     )
     # The latent seam pair is no longer needed once VAE decode returned.  Drop
     # it before photometric work so latent + large RGB temporaries do not overlap.
@@ -3165,8 +3381,9 @@ def _resolve_full_batch_export_profile(manifest_path, manifest, requested_profil
     of a fresh Full Batch: the manifest adopts the requested profile and exact
     final sidecars are rebuilt clip-by-clip on demand.
     """
-    requested = normalize_full_batch_export_profile(requested_profile)
     manifest = dict(manifest or {})
+    record = manifest.get("final_decode")
+    requested = _apply_final_decode_record(requested_profile, record)
     stored_raw = manifest.get("full_batch_export_profile")
     if not isinstance(stored_raw, dict):
         manifest["full_batch_export_profile"] = requested
@@ -3174,7 +3391,7 @@ def _resolve_full_batch_export_profile(manifest_path, manifest, requested_profil
         _write_json_atomic(manifest_path, manifest)
         return manifest, requested
 
-    stored = normalize_full_batch_export_profile(stored_raw)
+    stored = _apply_final_decode_record(stored_raw, record)
     stored_sig = _full_batch_export_profile_signature(stored)
     requested_sig = _full_batch_export_profile_signature(requested)
     if stored_sig == requested_sig:
@@ -3244,6 +3461,7 @@ def cache_full_batch_ref2va_segment(
     fps,
     export_profile=None,
     color_adjustment=None,
+    final_vae=None,
 ):
     """Decode/cache one Ref2VA Full-Batch clip exactly once.
 
@@ -3288,7 +3506,7 @@ def cache_full_batch_ref2va_segment(
             ffmpeg = _find_ffmpeg()
             manifest, _, _ = _ensure_ref2va_final_segment_cache(
                 data_path, manifest_path, manifest, idx, vae, float(fps), ffmpeg,
-                profile, color_adjustment=adjustment,
+                profile, color_adjustment=adjustment, final_vae=final_vae,
             )
         return manifest, {
             "video_cached": bool(video_ready),
@@ -3366,6 +3584,7 @@ def cache_full_batch_ref2va_segment(
                 color_adjustment=adjustment,
                 encoded_mp4=rendered_mp4,
                 encoded_settings=("H.264", FULL_BATCH_H264_CACHE_CRF, FULL_BATCH_H264_CACHE_PRESET),
+                final_vae=final_vae,
             )
             segments = [dict(x) for x in manifest.get("segments", [])]
             desc = dict(segments[idx])
@@ -4538,6 +4757,9 @@ class MiniMaxH3MotionContextDiskFinalDecode:
                                "output/. Use this when a SaveVideo node downstream does the saving, "
                                "otherwise every render is written twice."}),
             },
+            "optional": {
+                "final_vae": ("VAE", {"tooltip": "MiniMax-H3-X2-Detail VAE. Only used when the chain's final decode is 'X2 detail' (set on the Master Extender): it re-decodes any final clip that needs rebuilding (colour edit, missing or stale cache). Not needed for a standard chain."}),
+            },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
                 "prompt": "PROMPT",
@@ -4568,6 +4790,7 @@ class MiniMaxH3MotionContextDiskFinalDecode:
         prompt=None,
         extra_pnginfo=None,
         save_output=True,
+        final_vae=None,
     ):
         data_path, manifest_path, manifest = _load_manifest(cache)
         # FPS is cache metadata, never a user choice. The compatibility widget
@@ -4624,6 +4847,14 @@ class MiniMaxH3MotionContextDiskFinalDecode:
             clip_by_clip_export_profile = normalize_full_batch_export_profile({
                 "codec": codec, "crf": crf, "preset": preset,
             })
+            if manifest.get("final_decode") is not None:
+                # The live preview is a 1x neutral decode and its sidecar would
+                # be 1x too; skip it so it cannot replace an X2 final clip.
+                _LOG.info(
+                    "H3 Final Decode: clip_by_clip output is the 1x live preview; the X2 detail "
+                    "final clips are only built by a Full Batch Final Decode."
+                )
+                clip_by_clip_export_profile = None
             (
                 preview_path,
                 preview_frames,
@@ -4729,6 +4960,7 @@ class MiniMaxH3MotionContextDiskFinalDecode:
                 ffmpeg,
                 export_profile,
                 progress=progress,
+                final_vae=final_vae,
             )
             exact_segment_paths.append(final_segment_path)
         all_manifest_segments = [dict(x) for x in manifest.get("segments", [])]
