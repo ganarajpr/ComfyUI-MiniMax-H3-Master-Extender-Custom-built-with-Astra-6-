@@ -1457,6 +1457,169 @@ def decode_video_latent_x2(vae, latent, info=None):
     return images
 
 
+class _U8NeedsFloat(Exception):
+    """The 8-bit path cannot reproduce the float path's pixels for this clip."""
+
+
+class _PackedFrameSink:
+    """Stands in for the H3 decoder's float output buffer. ``decode_temporal``
+    only reads ``shape`` and does ``buffer[:, :, a:b].copy_(part)``; each such
+    finalized float chunk (B, packed, f, H, W) is PixelShuffled and quantized
+    straight into a preallocated uint8 (T, H*up, W*up, 3) tensor, so no
+    full-clip float buffer ever exists. ``keep`` frame indices are also kept as
+    float (in the buffer dtype the float path would have stored) for exact
+    seam statistics."""
+
+    def __init__(self, shape, upscale, dtype, device, keep=()):
+        b, channels, frames, height, width = (int(x) for x in shape)
+        if b != 1 or channels != 3 * upscale * upscale:
+            raise _U8NeedsFloat(f"unexpected packed decode shape {tuple(shape)}")
+        self.shape = torch.Size((b, channels, frames, height, width))
+        self.upscale = int(upscale)
+        self.dtype = dtype
+        self.frames = torch.empty((frames, height * upscale, width * upscale, 3), dtype=torch.uint8, device=device)
+        self.keep = set(int(i) for i in keep)
+        self.kept = {}
+
+    def __getitem__(self, index):
+        start, stop, _ = index[2].indices(self.shape[2])
+        return _PackedFrameSinkView(self, start)
+
+    def copy_(self, part):
+        self.write(0, part)
+
+    def write(self, start, part):
+        import torch.nn.functional as F
+        part = part.to(dtype=self.dtype)
+        shuffled = F.pixel_shuffle(part[0].permute(1, 0, 2, 3), upscale_factor=self.upscale).permute(0, 2, 3, 1)
+        count = int(shuffled.shape[0])
+        for i in range(0, count, 8):
+            block = shuffled[i:i + 8]
+            self.frames[start + i:start + i + int(block.shape[0])] = _quantize_frames_u8(block)
+        for index in self.keep:
+            if start <= index < start + count:
+                self.kept[index] = shuffled[index - start].clone()
+
+
+class _PackedFrameSinkView:
+    def __init__(self, sink, start):
+        self.sink = sink
+        self.start = int(start)
+
+    def copy_(self, part):
+        self.sink.write(self.start, part)
+
+
+def decode_video_latent_x2_u8(vae, latent, info=None, keep_frames=()):
+    """X2 decode returning (uint8 frames (T, H, W, 3) on the GPU, {index: float
+    frame}). Same decoder calls, tiling and finalisation as the upscaler pack's
+    float decode, with quantization done per chunk as the chunks are finalized."""
+    import comfy.model_management as mm
+    import sys
+
+    cls = _x2_decoder_class()
+    pack = sys.modules.get(cls.__module__)
+    needed_names = ("_h3_video_vae", "_decoder_channel_packing", "_snap_multiple",
+                    "_effective_overlap", "_expand_rgb_stat", "_H3_VAE_ATTRS")
+    if pack is None or any(not hasattr(pack, name) for name in needed_names):
+        raise _U8NeedsFloat("upscaler pack internals not found")
+    settings = X2_DECODE_SETTINGS
+    if not settings["tiling"] or settings["temporal_tiling"]:
+        raise _U8NeedsFloat("8-bit path only mirrors the tiled, non-temporal-tiled decode")
+
+    inner = pack._h3_video_vae(vae)
+    packed_channels, upscale = pack._decoder_channel_packing(inner)
+    if upscale < 2:
+        raise _U8NeedsFloat("VAE is not packed")
+    tile_size = pack._snap_multiple(settings["tile_size"], 16, 256)
+    overlap = pack._effective_overlap(tile_size, settings["tile_overlap"])
+    device = vae.device
+
+    frames = _frames_from_video_t(int(latent.shape[2]))
+    out_bytes = frames * (int(latent.shape[3]) * 16 * upscale) * (int(latent.shape[4]) * 16 * upscale) * 3
+    if DECODE_ALLOW_RECLAIM:
+        try:
+            needed = int(vae.memory_used_decode(tuple(latent.shape), vae.vae_dtype))
+            mm.free_memory(needed + out_bytes + _DECODE_RECLAIM_MARGIN, mm.get_torch_device(),
+                           keep_loaded=_loaded_entries_for(getattr(vae, "patcher", None)))
+            mm.soft_empty_cache(force=True)
+        except Exception as exc:
+            _LOG.warning("H3 X2 decode: VRAM reclaim skipped (%s)", exc)
+
+    saved = {name: getattr(inner, name) for name in pack._H3_VAE_ATTRS}
+    saved_out_channels = inner.decoder.out_channels
+    saved_pixel_mean, saved_pixel_std = inner.pixel_mean, inner.pixel_std
+    try:
+        inner.decoder.out_channels = packed_channels
+        inner.tiling = True
+        inner.tile_size = tile_size
+        inner.tile_overlap_min = overlap
+        vae.throw_exception_if_invalid()
+        with mm.cuda_device_context(device):
+            memory_used = vae.memory_used_decode(latent.shape, vae.vae_dtype)
+            mm.load_models_gpu([vae.patcher], memory_required=memory_used, force_full_load=vae.disable_offload)
+            # Dynamic loading can restore the checkpoint's 3-channel buffers.
+            inner.pixel_mean = pack._expand_rgb_stat(inner.pixel_mean, int(inner.decoder.out_channels))
+            inner.pixel_std = pack._expand_rgb_stat(inner.pixel_std, int(inner.decoder.out_channels))
+            sink = _PackedFrameSink(inner.decode_output_shape(latent.shape), upscale,
+                                    vae.vae_output_dtype(), device, keep=keep_frames)
+            inner.decode(latent.to(device=device, dtype=vae.vae_dtype), output_buffer=sink)
+    finally:
+        inner.decoder.out_channels = saved_out_channels
+        inner.pixel_mean, inner.pixel_std = saved_pixel_mean, saved_pixel_std
+        for name, value in saved.items():
+            setattr(inner, name, value)
+    if info is not None:
+        info["output_device"] = "gpu-uint8"
+    return sink.frames, sink.kept
+
+
+def _render_final_segment_x2_u8(data_path, segments, index, vae, forced_shift, info=None):
+    """One final clip as uint8 frames on the GPU, equal to quantizing what the
+    float path (decode, seam colour correction) produces. Raises _U8NeedsFloat
+    when that cannot be guaranteed: a clip > 0 without a stored seam shift, or
+    one whose seam correction would actually change pixels (the correction runs
+    on float frames, so those clips stay on the float path)."""
+    i = int(index)
+    curr = segments[i]
+    if i == 0:
+        v = _load_segment_video(data_path, curr)
+        video, _ = decode_video_latent_x2_u8(vae, v, info=info)
+        if int(video.shape[0]) != int(curr["frames"]):
+            raise RuntimeError(
+                f"H3 X2 final decode: clip 1 decoded {video.shape[0]}, expected {curr['frames']}."
+            )
+        return video
+
+    if forced_shift is None:
+        raise _U8NeedsFloat("no stored seam shift")
+    chain, meta = _build_pair_video(data_path, segments[i - 1], curr)
+    prev_frames = int(meta["previous_frames"])
+    start = prev_frames + int(meta["warmup_frames"]) + int(forced_shift)
+    end = start + int(meta["continued_frames"])
+    tail_n = min(4, prev_frames)
+    current_n = end - start
+    keep = list(range(prev_frames - tail_n, prev_frames)) + list(range(start, start + min(4, current_n)))
+    decoded, kept = decode_video_latent_x2_u8(vae, chain, info=info, keep_frames=keep)
+    del chain
+    if int(decoded.shape[0]) != int(meta["decode_frames"]):
+        raise RuntimeError(
+            f"H3 X2 final decode: VAE returned {decoded.shape[0]}, expected {meta['decode_frames']}."
+        )
+    if start < 0 or end > int(decoded.shape[0]):
+        raise RuntimeError("H3 X2 final decode: seam crop lies outside decoded pair.")
+    if tail_n >= 1 and current_n >= 1:
+        # Same decision, on the same float values and device, as the head of
+        # _correct_current_segment.
+        ref = torch.stack([kept[j].cpu() for j in range(prev_frames - tail_n, prev_frames)])
+        src = torch.stack([kept[j].cpu() for j in range(start, start + min(4, current_n))])
+        ref_mean, _, ref_med = _luma_stats(ref)
+        src_mean, _, src_med = _luma_stats(src)
+        if not (abs(ref_mean - src_mean) < 0.008 and abs(ref_med - src_med) < 0.012):
+            raise _U8NeedsFloat("seam colour correction would change this clip")
+    return decoded[start:end].contiguous()
+
+
 def _decode_pair_video(vae, chain, meta, decode_fn=None, forced_shift=None):
     decoded = (decode_fn or decode_video_latent)(vae, chain)
     if decoded.ndim == 5:
@@ -1809,17 +1972,25 @@ def _start_video_encoder(
     return proc, log_f
 
 
+def _quantize_frames_u8(frames):
+    """The one float -> 8-bit conversion every frame takes on its way to ffmpeg:
+    clamp to [0, 1], x255, +0.5, truncate. Frames already quantized with this
+    function (uint8) are passed through by ``_write_image_frames`` unchanged."""
+    return (
+        frames[..., :3].detach().float().clamp(0.0, 1.0)
+        .mul(255.0).add_(0.5).to(torch.uint8)
+    )
+
+
 def _write_image_frames(proc, images, batch_frames=8):
     if proc.stdin is None:
         raise RuntimeError("Disk Final Decode: ffmpeg stdin is closed.")
     n = int(images.shape[0])
     for i in range(0, n, int(batch_frames)):
         part = images[i:i + int(batch_frames), ..., :3]
-        part = (
-            part.detach().float().clamp(0.0, 1.0)
-            .mul(255.0).add_(0.5).to(torch.uint8)
-            .cpu().contiguous()
-        )
+        if part.dtype != torch.uint8:
+            part = _quantize_frames_u8(part)
+        part = part.cpu().contiguous()
         # part is already contiguous uint8. Feed its buffer directly to ffmpeg
         # instead of materialising a second Python bytes object with .tobytes().
         proc.stdin.write(memoryview(part.numpy()).cast("B"))
@@ -2939,13 +3110,34 @@ def _ensure_ref2va_final_segment_cache(
         # Reuse the seam shift the 1x preview decode already chose, so video
         # and the cached audio stay cut at the same frame.
         stored_shift = desc.get("decoded_seam_shift")
-        video, _ = _render_one_final_video_segment(
-            data_path, segments, idx, x2_vae, progress=progress,
-            decode_fn=_timed_x2_decode,
-            forced_shift=None if idx == 0 or stored_shift is None else int(stored_shift),
-        )
+        forced_shift = None if idx == 0 or stored_shift is None else int(stored_shift)
+        video = None
+        started = time.time()
+        try:
+            video = _render_final_segment_x2_u8(
+                data_path, segments, idx, x2_vae, forced_shift, info=x2_timing
+            )
+            x2_timing["seconds"] = time.time() - started
+            if progress is not None:
+                progress.advance()
+        except _U8NeedsFloat as exc:
+            _LOG.info("H3 X2 final decode: clip %d on the float path (%s)", idx + 1, exc)
+        except Exception as exc:
+            _LOG.warning("H3 X2 final decode: 8-bit GPU path failed for clip %d (%s); falling back to the float path", idx + 1, exc)
+        if video is None:
+            x2_timing["seconds"] = 0.0
+            try:
+                import comfy.model_management as _mm
+                _mm.soft_empty_cache(force=True)
+            except Exception:
+                pass
+            video, _ = _render_one_final_video_segment(
+                data_path, segments, idx, x2_vae, progress=progress,
+                decode_fn=_timed_x2_decode, forced_shift=forced_shift,
+            )
+            x2_timing["output_device"] = f"{x2_timing.get('output_device', '?')}-fp32"
         _LOG.info(
-            "H3 X2 final decode: clip %d -> %dx%d, decode %.1f s, output_device=%s",
+            "H3 X2 final decode: clip %d -> %dx%d, decode %.1f s, path=%s",
             idx + 1, int(video.shape[2]), int(video.shape[1]), x2_timing["seconds"],
             x2_timing.get("output_device", "?"),
         )
