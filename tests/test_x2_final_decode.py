@@ -18,7 +18,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "motion_context_disk.py"
 FUNCTIONS = {
     "normalize_full_batch_export_profile", "_full_batch_export_profile_signature",
     "_profile_is_x2", "_final_decode_record", "_apply_final_decode_record",
-    "set_manifest_final_decode", "require_x2_vae", "_decode_pair_video",
+    "set_manifest_final_decode", "_decode_pair_video",
     "_render_one_final_video_segment", "_ensure_ref2va_final_segment_cache",
     "_resolve_full_batch_export_profile", "_final_segment_cache_meta_matches",
     "_tag_ref2va_final_segment_cache", "decode_video_latent_x2",
@@ -34,6 +34,7 @@ class X2FinalDecodeTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.state = {"segments": [{"index": 0}, {"index": 1, "decoded_seam_shift": -1}]}
         self.render_calls = []
+        self.loaded = []
         self.x2_vae = object()
         self.plain_vae = object()
         self.encoded = []
@@ -51,7 +52,7 @@ class X2FinalDecodeTests(unittest.TestCase):
             "shutil": __import__("shutil"),
             "uuid": __import__("uuid"),
             "_x2_decoder_class": lambda: object,
-            "vae_is_x2_capable": lambda vae: vae is self.x2_vae,
+            "load_final_vae": self.load_final_vae,
             "decode_video_latent": lambda vae, latent: ("plain", vae, latent),
             "decode_video_latent_x2": lambda vae, latent: torch.zeros(2, 8, 12, 3),
             "_load_segment_video": lambda *a: "latent",
@@ -65,6 +66,12 @@ class X2FinalDecodeTests(unittest.TestCase):
                 (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in CONSTANTS for t in n.targets))]
         exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE), "exec"), self.ns)
         self.ns["decode_video_latent_x2"] = lambda vae, latent, info=None: torch.zeros(2, 8, 12, 3)
+
+    def load_final_vae(self, name):
+        self.loaded.append(name)
+        if name != "X2.safetensors":
+            raise RuntimeError("that VAE file is not in models/vae any more")
+        return self.x2_vae
 
     def write_manifest(self, path, manifest):
         self.state = copy.deepcopy(manifest)
@@ -103,15 +110,6 @@ class X2FinalDecodeTests(unittest.TestCase):
             self.root / "m.json", copy.deepcopy(self.state), {"codec": "H.264", "crf": 17, "preset": "fast"})
         self.assertEqual(profile, self.x2_profile())
 
-    def test_require_x2_vae(self):
-        require = self.ns["require_x2_vae"]
-        self.assertIs(require(self.x2_vae, self.plain_vae), self.x2_vae)
-        self.assertIs(require(None, self.x2_vae), self.x2_vae)
-        with self.assertRaisesRegex(RuntimeError, "no X2-capable VAE"):
-            require(None, self.plain_vae)
-        with self.assertRaisesRegex(RuntimeError, "not an X2-capable"):
-            require(self.plain_vae, self.x2_vae)
-
     def test_x2_sidecar_decodes_with_final_vae_and_ignores_1x_frames(self):
         def render(data, segments, index, vae, progress=None, decode_fn=None, forced_shift=None):
             self.render_calls.append((index, vae, forced_shift))
@@ -121,18 +119,18 @@ class X2FinalDecodeTests(unittest.TestCase):
             self.root / "d", self.root / "m.json", copy.deepcopy(self.state), 1, self.plain_vae, 24.0,
             "ffmpeg", self.x2_profile(), decoded_video=torch.zeros(2, 4, 6, 3),
             encoded_mp4=self.root / "x.mp4", encoded_settings=("H.264", 17, "fast"),
-            final_vae=self.x2_vae,
         )
+        self.assertEqual(self.loaded, ["X2.safetensors"])
         self.assertEqual(self.render_calls, [(1, self.x2_vae, -1)])
         self.assertEqual(self.encoded, [(2, 8, 12, 3)])
         self.assertTrue(decoded)
 
-    def test_x2_sidecar_without_x2_vae_raises_instead_of_decoding_1x(self):
+    def test_x2_sidecar_with_missing_vae_file_raises_instead_of_decoding_1x(self):
         self.ns["_render_one_final_video_segment"] = lambda *a, **k: self.fail("must not decode")
-        with self.assertRaisesRegex(RuntimeError, "no X2-capable VAE"):
+        with self.assertRaisesRegex(RuntimeError, "not in models/vae"):
             self.ns["_ensure_ref2va_final_segment_cache"](
                 self.root / "d", self.root / "m.json", copy.deepcopy(self.state), 0, self.plain_vae,
-                24.0, "ffmpeg", self.x2_profile(),
+                24.0, "ffmpeg", self.x2_profile("gone.safetensors"),
             )
 
     def test_standard_sidecar_path_is_unchanged(self):
@@ -143,7 +141,7 @@ class X2FinalDecodeTests(unittest.TestCase):
         profile = self.ns["normalize_full_batch_export_profile"]({})
         self.ns["_ensure_ref2va_final_segment_cache"](
             self.root / "d", self.root / "m.json", copy.deepcopy(self.state), 0, self.plain_vae,
-            24.0, "ffmpeg", profile, final_vae=self.x2_vae,
+            24.0, "ffmpeg", profile,
         )
         self.assertEqual(self.render_calls, [(0, self.plain_vae)])
         self.assertEqual(self.encoded, [(2, 4, 6, 3)])
@@ -157,6 +155,70 @@ class X2FinalDecodeTests(unittest.TestCase):
             decode_fn=lambda vae, chain: decoded, forced_shift=-1,
         )
         self.assertEqual((shift, previous.shape[0], current.shape[0]), (-1, 1, 2))
+
+
+def write_safetensors_header(path, tensors):
+    import struct
+    header = {k: {"dtype": "F32", "shape": list(v), "data_offsets": [0, 0]} for k, v in tensors.items()}
+    header["__metadata__"] = {"format": "pt"}
+    raw = json.dumps(header).encode()
+    Path(path).write_bytes(struct.pack("<Q", len(raw)) + raw)
+
+
+class PackedVaeDetectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.logger = logging.getLogger("test")
+        import math
+        import struct
+        self.ns = {"json": json, "math": math, "os": os, "_LOG": self.logger,
+                   "FINAL_DECODE_STANDARD": "standard", "FINAL_DECODE_X2": "X2 detail",
+                   "_PACKED_VAE_CACHE": {}, "_x2_decoder_class": lambda: object}
+        self.folder_paths = types.SimpleNamespace(
+            get_filename_list=lambda kind: sorted(p.name for p in self.root.iterdir()),
+            get_full_path=lambda kind, name: str(self.root / name),
+        )
+        self.ns["folder_paths"] = self.folder_paths
+        names = {"_safetensors_header", "_header_packed_factor", "packed_vae_files",
+                 "final_decode_options", "normalize_final_decode"}
+        consts = {"_H3_DECODER_PATCH_VOLUME"}
+        tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+        body = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in names) or
+                (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in consts for t in n.targets))]
+        exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE), "exec"), self.ns)
+        write_safetensors_header(self.root / "stock.safetensors", {"decoder.proj_out.weight": (3072, 2048), "x": (4,)})
+        write_safetensors_header(self.root / "X2.safetensors", {"decoder.proj_out.weight": (12288, 2048)})
+        write_safetensors_header(self.root / "audio.safetensors", {"decoder.conv.weight": (8, 8)})
+        (self.root / "junk.pt").write_bytes(b"not safetensors")
+
+    def test_only_packed_video_vae_is_listed(self):
+        self.assertEqual(self.ns["packed_vae_files"](), ["X2.safetensors"])
+        self.assertEqual(self.ns["final_decode_options"](), ["standard", "X2.safetensors"])
+
+    def test_no_packed_vae_means_standard_only(self):
+        (self.root / "X2.safetensors").unlink()
+        self.assertEqual(self.ns["final_decode_options"](), ["standard"])
+
+    def test_header_probe_is_cached_by_name_mtime_size(self):
+        self.ns["packed_vae_files"]()
+        calls = []
+        real = self.ns["_safetensors_header"]
+        self.ns["_safetensors_header"] = lambda path: calls.append(path) or real(path)
+        self.ns["packed_vae_files"]()
+        self.assertEqual(calls, [])
+        write_safetensors_header(self.root / "X2.safetensors", {"decoder.proj_out.weight": (3072, 2048)})
+        self.assertEqual(self.ns["packed_vae_files"](), [])
+
+    def test_normalize_final_decode(self):
+        norm = self.ns["normalize_final_decode"]
+        self.assertEqual(norm("X2.safetensors"), "X2.safetensors")
+        for stale in (None, "", "standard", "gone.safetensors", "stock.safetensors"):
+            self.assertEqual(norm(stale), "standard")
+        self.assertEqual(norm("X2 detail"), "X2.safetensors")
+        (self.root / "X2.safetensors").unlink()
+        self.assertEqual(norm("X2 detail"), "standard")
 
 
 class X2DeviceChoiceTests(unittest.TestCase):

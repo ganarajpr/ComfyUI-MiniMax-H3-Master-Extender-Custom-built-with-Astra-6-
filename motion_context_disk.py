@@ -1276,24 +1276,130 @@ def vae_is_x2_capable(vae):
     return (_x2_upscale_factor(vae) or 0) > 1
 
 
-def require_x2_vae(final_vae, fallback_vae=None, *, context="H3 final decode"):
-    """The VAE an X2 decode must use. Never falls back to a 1x VAE: a chain
-    that mixed resolutions could not be stream-copy concatenated."""
+# The H3 decoder's projection has (packed RGB channels) x patch_size^2 x
+# patch_size_t output rows; H3 uses patch 16 spatial / 4 temporal. The stock
+# VAE has 3 packed channels, the X2 VAE 12 (an exact 2x PixelShuffle).
+_H3_DECODER_PATCH_VOLUME = 16 * 16 * 4
+_PACKED_VAE_CACHE = {}
+
+
+def _safetensors_header(path):
+    import struct
+    with open(path, "rb") as f:
+        raw = f.read(8)
+        if len(raw) != 8:
+            return {}
+        (size,) = struct.unpack("<Q", raw)
+        if size <= 0 or size > 64 * 1024 * 1024:
+            return {}
+        return json.loads(f.read(size).decode("utf-8"))
+
+
+def _header_packed_factor(header):
+    """PixelShuffle factor implied by a safetensors header's decoder proj_out
+    weight (same arithmetic as the upscaler pack's _decoder_channel_packing);
+    0 when the file is not a packed H3 video VAE. Reads no tensor data."""
+    keys = [k for k in header if k != "__metadata__" and k.endswith("proj_out.weight") and "decoder" in k]
+    if not keys:
+        return 0
+    keys.sort(key=lambda k: (not k.endswith("decoder.proj_out.weight"), len(k)))
+    shape = header[keys[0]].get("shape") or []
+    if len(shape) < 2:
+        return 0
+    rows = int(shape[0])
+    if rows % _H3_DECODER_PATCH_VOLUME:
+        return 0
+    packed = rows // _H3_DECODER_PATCH_VOLUME
+    if packed % 3:
+        return 0
+    ratio = math.isqrt(packed // 3)
+    return ratio if ratio * ratio == packed // 3 else 0
+
+
+def packed_vae_files():
+    """Files in models/vae that are packed (2x) H3 video VAEs, by header only.
+    Cached per file name + mtime + size."""
+    if folder_paths is None:
+        return []
+    try:
+        names = folder_paths.get_filename_list("vae")
+    except Exception:
+        return []
+    found = []
+    for name in names:
+        try:
+            path = folder_paths.get_full_path("vae", name)
+            stat = os.stat(path)
+            key = (name, stat.st_mtime_ns, stat.st_size)
+            if key not in _PACKED_VAE_CACHE:
+                try:
+                    factor = _header_packed_factor(_safetensors_header(path)) if name.lower().endswith(".safetensors") else 0
+                except Exception as exc:
+                    _LOG.warning("VAE header probe failed for %s: %s", name, exc)
+                    factor = 0
+                _PACKED_VAE_CACHE[key] = factor
+                if factor > 1:
+                    _LOG.info("Final decode: %s is a packed %dx H3 VAE", name, factor)
+            if _PACKED_VAE_CACHE[key] > 1:
+                found.append(name)
+        except Exception:
+            continue
+    return found
+
+
+def final_decode_options():
+    return [FINAL_DECODE_STANDARD] + packed_vae_files()
+
+
+def normalize_final_decode(value):
+    """A final_decode widget value as 'standard' or a packed VAE file name.
+    Old values ('' from the master_ui slot, 'X2 detail') and names that are
+    no longer listed are mapped here instead of failing combo validation."""
+    value = "" if value is None else str(value)
+    if value in ("", FINAL_DECODE_STANDARD):
+        return FINAL_DECODE_STANDARD
+    files = packed_vae_files()
+    if value == FINAL_DECODE_X2:
+        if files:
+            _LOG.warning("final_decode 'X2 detail' is a legacy value; using %s", files[0])
+            return files[0]
+        _LOG.warning("final_decode 'X2 detail' is a legacy value and no packed 2x VAE is installed; using standard")
+        return FINAL_DECODE_STANDARD
+    if value not in files:
+        _LOG.warning("final_decode %r is not an installed packed 2x VAE; using standard", value)
+        return FINAL_DECODE_STANDARD
+    return value
+
+
+_FINAL_VAE_CACHE = {}
+
+
+def load_final_vae(name):
+    """The packed 2x VAE named ``name`` (a models/vae file), loaded like core's
+    VAELoader and kept in-process by file name + mtime. Raises, never falls
+    back to a 1x VAE: a chain must not mix resolutions."""
+    name = str(name or "")
     _x2_decoder_class()
-    if final_vae is not None:
-        if not vae_is_x2_capable(final_vae):
+    path = folder_paths.get_full_path("vae", name) if (folder_paths is not None and name) else None
+    if not path or not os.path.isfile(path):
+        raise RuntimeError(
+            f"H3 final decode: this chain's final clips are 2x ('{name}') but that VAE file is not in "
+            "models/vae any more. Restore it, or re-render the chain with final_decode = standard; "
+            "refusing to decode at 1x because a chain must not mix resolutions."
+        )
+    key = (name, os.stat(path).st_mtime_ns)
+    vae = _FINAL_VAE_CACHE.get(key)
+    if vae is None:
+        import nodes
+        vae = nodes.VAELoader().load_vae(name)[0]
+        if not vae_is_x2_capable(vae):
             raise RuntimeError(
-                f"{context}: final_vae is not an X2-capable H3 VAE (its decoder does not emit "
-                "packed sub-pixel channels). Load MiniMax-H3-X2-Detail-v1.safetensors."
+                f"H3 final decode: '{name}' is not an X2-capable H3 VAE (its decoder does not emit "
+                "packed sub-pixel channels)."
             )
-        return final_vae
-    if fallback_vae is not None and vae_is_x2_capable(fallback_vae):
-        return fallback_vae
-    raise RuntimeError(
-        f"{context}: this chain's final decode is 'X2 detail' but no X2-capable VAE is available "
-        "here. Connect the MiniMax-H3-X2-Detail VAE to final_vae; refusing to decode at 1x because "
-        "a chain must not mix resolutions."
-    )
+        _FINAL_VAE_CACHE.clear()
+        _FINAL_VAE_CACHE[key] = vae
+    return vae
 
 
 # gpu output holds the whole decoded clip and PixelShuffle allocates a second
@@ -2788,7 +2894,6 @@ def _ensure_ref2va_final_segment_cache(
     color_adjustment=None,
     encoded_mp4=None,
     encoded_settings=None,
-    final_vae=None,
 ):
     """Ensure exactly one Ref2VA clip has a final-profile sidecar.
 
@@ -2796,7 +2901,7 @@ def _ensure_ref2va_final_segment_cache(
     sidecar causes VideoVAE work for this clip only.
 
     With an X2 profile the sidecar is always decoded here from the latent with
-    the X2 VAE (``final_vae``, else ``vae`` when it is X2-capable): a 1x
+    the packed VAE file recorded in the profile (``final_vae``): a 1x
     ``decoded_video`` / ``encoded_mp4`` from the caller is never reused.
     """
     profile = normalize_full_batch_export_profile(export_profile)
@@ -2819,9 +2924,7 @@ def _ensure_ref2va_final_segment_cache(
     own_decode = decoded_video is None
     video = decoded_video
     if x2:
-        x2_vae = require_x2_vae(
-            final_vae, vae, context=f"H3 final cache (clip {idx + 1})"
-        )
+        x2_vae = load_final_vae(profile.get("final_vae"))
         x2_timing = {"seconds": 0.0}
 
         def _timed_x2_decode(decode_vae, latent):
@@ -3461,7 +3564,6 @@ def cache_full_batch_ref2va_segment(
     fps,
     export_profile=None,
     color_adjustment=None,
-    final_vae=None,
 ):
     """Decode/cache one Ref2VA Full-Batch clip exactly once.
 
@@ -3506,7 +3608,7 @@ def cache_full_batch_ref2va_segment(
             ffmpeg = _find_ffmpeg()
             manifest, _, _ = _ensure_ref2va_final_segment_cache(
                 data_path, manifest_path, manifest, idx, vae, float(fps), ffmpeg,
-                profile, color_adjustment=adjustment, final_vae=final_vae,
+                profile, color_adjustment=adjustment,
             )
         return manifest, {
             "video_cached": bool(video_ready),
@@ -3584,7 +3686,6 @@ def cache_full_batch_ref2va_segment(
                 color_adjustment=adjustment,
                 encoded_mp4=rendered_mp4,
                 encoded_settings=("H.264", FULL_BATCH_H264_CACHE_CRF, FULL_BATCH_H264_CACHE_PRESET),
-                final_vae=final_vae,
             )
             segments = [dict(x) for x in manifest.get("segments", [])]
             desc = dict(segments[idx])
@@ -4757,9 +4858,6 @@ class MiniMaxH3MotionContextDiskFinalDecode:
                                "output/. Use this when a SaveVideo node downstream does the saving, "
                                "otherwise every render is written twice."}),
             },
-            "optional": {
-                "final_vae": ("VAE", {"tooltip": "MiniMax-H3-X2-Detail VAE. Only used when the chain's final decode is 'X2 detail' (set on the Master Extender): it re-decodes any final clip that needs rebuilding (colour edit, missing or stale cache). Not needed for a standard chain."}),
-            },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
                 "prompt": "PROMPT",
@@ -4790,7 +4888,6 @@ class MiniMaxH3MotionContextDiskFinalDecode:
         prompt=None,
         extra_pnginfo=None,
         save_output=True,
-        final_vae=None,
     ):
         data_path, manifest_path, manifest = _load_manifest(cache)
         # FPS is cache metadata, never a user choice. The compatibility widget
@@ -4960,7 +5057,6 @@ class MiniMaxH3MotionContextDiskFinalDecode:
                 ffmpeg,
                 export_profile,
                 progress=progress,
-                final_vae=final_vae,
             )
             exact_segment_paths.append(final_segment_path)
         all_manifest_segments = [dict(x) for x in manifest.get("segments", [])]
