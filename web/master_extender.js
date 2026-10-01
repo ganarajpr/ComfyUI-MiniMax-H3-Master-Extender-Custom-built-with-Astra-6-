@@ -192,7 +192,8 @@ const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 // Widgets appended after master_ui-less workflows were saved: a missing/invalid value is put back to the default.
 const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
 const SINGLE_TE_WIDGETS = ["single_text_encode"];
-const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...SINGLE_TE_WIDGETS];
+const FINAL_DECODE_WIDGETS = ["final_decode"];
+const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...SINGLE_TE_WIDGETS, ...FINAL_DECODE_WIDGETS];
 
 function setWidgetVisible(widget, visible) {
     if (!widget) return;
@@ -212,7 +213,8 @@ function setWidgetVisible(widget, visible) {
 // Workflows saved before the HyperFlow inputs existed stored the DOM widget master_ui's empty
 // string in the slot that hyperflow_file now occupies, so it loads as "" and the server rejects
 // it (value_not_in_list). Put any missing/invalid HyperFlow value back to the node-definition default.
-// The same happens one slot later for audio_refine_steps in workflows saved before the audio-refine inputs.
+// The same happens one slot later for audio_refine_steps in workflows saved before the audio-refine inputs,
+// and for final_decode (the last native widget, just before master_ui) in workflows saved before X2.
 function hyperflowValueOk(widget, value) {
     if (widget.type === "combo" || widget._origType === "combo") {
         const values = comboValues(widget);
@@ -924,6 +926,10 @@ app.registerExtension({
                 if (W("single_text_encode")) {
                     wrap.appendChild(uiRow("one text-encoder pass per clip", bindToggle("single_text_encode"),
                         { hint: "Encode the prompt once (at the pass-2 size) and reuse it for pass 1, re-encoding only the reference-image latents. Saves several seconds per clip." }));
+                }
+                if (W("final_decode")) {
+                    wrap.appendChild(uiRow("final decode", bindSelect("final_decode"),
+                        { hint: "X2 detail: 2x output resolution via the MiniMax-H3-X2-Detail VAE on final_vae (about +20 s per 15 s clip; needs ComfyUI-MiniMaxH3_LatentUpscaler). Guide frames and previews stay at the normal resolution." }));
                 }
                 wrap.appendChild(uiRow("offload upscaler after use", bindToggle("smart_offload")));
                 wrap.appendChild(uiRow("background decode (experimental)", bindSelect("async_decode")));
