@@ -6,6 +6,8 @@ import logging
 import os
 import tempfile
 import time
+import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -19,9 +21,9 @@ FUNCTIONS = {
     "set_manifest_final_decode", "require_x2_vae", "_decode_pair_video",
     "_render_one_final_video_segment", "_ensure_ref2va_final_segment_cache",
     "_resolve_full_batch_export_profile", "_final_segment_cache_meta_matches",
-    "_tag_ref2va_final_segment_cache",
+    "_tag_ref2va_final_segment_cache", "decode_video_latent_x2",
 }
-CONSTANTS = {"FINAL_DECODE_STANDARD", "FINAL_DECODE_X2", "FULL_BATCH_FINAL_PROFILE_VERSION",
+CONSTANTS = {"X2_DECODE_SETTINGS", "_X2_GPU_OUTPUT_HEADROOM", "_DECODE_RECLAIM_MARGIN", "FINAL_DECODE_STANDARD", "FINAL_DECODE_X2", "FULL_BATCH_FINAL_PROFILE_VERSION",
              "FULL_BATCH_FINAL_CACHE_VERSION"}
 
 
@@ -62,6 +64,7 @@ class X2FinalDecodeTests(unittest.TestCase):
         body = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in FUNCTIONS) or
                 (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in CONSTANTS for t in n.targets))]
         exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE), "exec"), self.ns)
+        self.ns["decode_video_latent_x2"] = lambda vae, latent, info=None: torch.zeros(2, 8, 12, 3)
 
     def write_manifest(self, path, manifest):
         self.state = copy.deepcopy(manifest)
@@ -154,6 +157,71 @@ class X2FinalDecodeTests(unittest.TestCase):
             decode_fn=lambda vae, chain: decoded, forced_shift=-1,
         )
         self.assertEqual((shift, previous.shape[0], current.shape[0]), (-1, 1, 2))
+
+
+class X2DeviceChoiceTests(unittest.TestCase):
+    # latent 1x4x7x4x6 -> 21 frames at (4*16*2) x (6*16*2) = 128 x 192
+    OUT_BYTES = 21 * 128 * 192 * 3 * 4
+
+    def run_decode(self, free, decode):
+        calls = []
+        mm = types.SimpleNamespace(
+            get_torch_device=lambda: "cuda:0", free_memory=lambda *a, **k: None,
+            soft_empty_cache=lambda **k: calls.append("empty"),
+            get_free_memory=lambda device: free,
+        )
+        saved = {k: sys.modules.get(k) for k in ("comfy", "comfy.model_management")}
+        sys.modules["comfy"] = types.ModuleType("comfy")
+        sys.modules["comfy.model_management"] = mm
+        self.addCleanup(lambda: [sys.modules.pop(k, None) if v is None else sys.modules.__setitem__(k, v)
+                                 for k, v in saved.items()])
+
+        devices = []
+
+        class Node:
+            def decode(self, samples, vae, **settings):
+                devices.append(settings["output_device"])
+                return (decode(settings["output_device"], len(devices)),)
+
+        ns = {"torch": torch, "_LOG": logging.getLogger("test"), "DECODE_ALLOW_RECLAIM": True,
+              "_x2_decoder_class": lambda: Node, "_x2_upscale_factor": lambda vae: 2,
+              "_frames_from_video_t": lambda t: 21, "_loaded_entries_for": lambda p: [],
+              "_DECODE_RECLAIM_MARGIN": 0}
+        tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+        body = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == "decode_video_latent_x2") or
+                (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in
+                 {"X2_DECODE_SETTINGS", "_X2_GPU_OUTPUT_HEADROOM"} for t in n.targets))]
+        exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE), "exec"), ns)
+        info = {}
+        vae = types.SimpleNamespace(output_device="cpu", vae_dtype=None, memory_used_decode=lambda *a: 0)
+        out = ns["decode_video_latent_x2"](vae, torch.zeros(1, 4, 7, 4, 6), info=info)
+        return out, devices, info
+
+    @staticmethod
+    def frames(device, call):
+        return torch.zeros(21, 128 + 1, 192 + 1, 3)
+
+    def test_gpu_when_it_fits(self):
+        _, devices, info = self.run_decode(int(2.5 * self.OUT_BYTES), self.frames)
+        self.assertEqual((devices, info["output_device"]), (["gpu"], "gpu"))
+
+    def test_cpu_when_it_does_not_fit(self):
+        _, devices, info = self.run_decode(int(2.5 * self.OUT_BYTES) - 1, self.frames)
+        self.assertEqual((devices, info["output_device"]), (["cpu"], "cpu"))
+
+    def test_gpu_oom_retries_once_on_cpu(self):
+        def decode(device, call):
+            if device == "gpu":
+                raise torch.cuda.OutOfMemoryError("Allocation on device 0 would exceed allowed memory")
+            return self.frames(device, call)
+        _, devices, info = self.run_decode(10 * self.OUT_BYTES, decode)
+        self.assertEqual((devices, info["output_device"]), (["gpu", "cpu"], "cpu"))
+
+    def test_cpu_oom_is_not_retried(self):
+        def decode(device, call):
+            raise torch.cuda.OutOfMemoryError("oom")
+        with self.assertRaises(torch.cuda.OutOfMemoryError):
+            self.run_decode(0, decode)
 
 
 if __name__ == "__main__":

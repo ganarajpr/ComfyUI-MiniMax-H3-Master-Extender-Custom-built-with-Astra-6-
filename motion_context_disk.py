@@ -84,14 +84,16 @@ FINAL_DECODE_X2 = "X2 detail"
 # MiniMaxH3VAEDecodeFast, found in the node registry at run time. Settings are
 # the ones measured on the 5090 (2026-10-01): gpu output is bit-identical to
 # cpu and 24% faster; larger tiles / tiling off change the picture and were
-# rejected, so none of this is exposed as an input.
+# rejected, so none of this is exposed as an input. output_device is picked per
+# call: gpu is the fast path when the clip (plus the PixelShuffle copy) fits in
+# free VRAM, cpu is the validated baseline and the OOM retry target.
 X2_DECODE_NODE_CLASS = "MiniMaxH3VAEDecodeFast"
 X2_DECODE_PACK = "ComfyUI-MiniMaxH3_LatentUpscaler"
 X2_DECODE_SETTINGS = {
     "tiling": True,
     "tile_size": 256,
     "tile_overlap": 64,
-    "output_device": "gpu",
+    "output_device": "cpu",
     "temporal_tiling": False,
     "temporal_tile_frames": 85,
     "temporal_context_frames": 39,
@@ -1294,28 +1296,49 @@ def require_x2_vae(final_vae, fallback_vae=None, *, context="H3 final decode"):
     )
 
 
-def decode_video_latent_x2(vae, latent):
+# gpu output holds the whole decoded clip and PixelShuffle allocates a second
+# copy of it, so require this multiple of the decoded bytes to be free.
+_X2_GPU_OUTPUT_HEADROOM = 2.5
+
+
+def decode_video_latent_x2(vae, latent, info=None):
     """X2-decode an H3 video latent into (N, H, W, 3) frames at 2x resolution,
     on ``vae.output_device`` like ``decode_video_latent``. For FINAL output only;
-    guide frames and previews that feed generation never come through here."""
+    guide frames and previews that feed generation never come through here.
+    ``info`` (a dict) receives ``output_device`` as actually used."""
     import comfy.model_management as mm
 
     cls = _x2_decoder_class()
+    device = mm.get_torch_device()
+    factor = _x2_upscale_factor(vae) or 2
+    frames = _frames_from_video_t(int(latent.shape[2]))
+    out_bytes = frames * (int(latent.shape[3]) * 16 * factor) * (int(latent.shape[4]) * 16 * factor) * 3 * 4
     if DECODE_ALLOW_RECLAIM:
         try:
             needed = int(vae.memory_used_decode(tuple(latent.shape), vae.vae_dtype))
-            factor = _x2_upscale_factor(vae) or 2
-            frames = _frames_from_video_t(int(latent.shape[2]))
-            # gpu output keeps the whole clip resident on the card.
-            out_bytes = frames * (int(latent.shape[3]) * 16 * factor) * (int(latent.shape[4]) * 16 * factor) * 3 * 4
-            device = mm.get_torch_device()
-            mm.free_memory(needed + out_bytes + _DECODE_RECLAIM_MARGIN, device,
+            mm.free_memory(needed + int(_X2_GPU_OUTPUT_HEADROOM * out_bytes) + _DECODE_RECLAIM_MARGIN, device,
                            keep_loaded=_loaded_entries_for(getattr(vae, "patcher", None)))
             mm.soft_empty_cache(force=True)
         except Exception as exc:
             _LOG.warning("H3 X2 decode: VRAM reclaim skipped (%s)", exc)
 
-    (images,) = cls().decode({"samples": latent}, vae, **X2_DECODE_SETTINGS)
+    try:
+        free = int(mm.get_free_memory(device))
+    except Exception:
+        free = 0
+    output_device = "gpu" if free >= _X2_GPU_OUTPUT_HEADROOM * out_bytes else "cpu"
+    oom = tuple({torch.cuda.OutOfMemoryError, getattr(mm, "OOM_EXCEPTION", torch.cuda.OutOfMemoryError)})
+    try:
+        (images,) = cls().decode({"samples": latent}, vae, **{**X2_DECODE_SETTINGS, "output_device": output_device})
+    except oom:
+        if output_device != "gpu":
+            raise
+        _LOG.warning("H3 X2 decode: out of memory with gpu output; retrying once with cpu output")
+        mm.soft_empty_cache(force=True)
+        output_device = "cpu"
+        (images,) = cls().decode({"samples": latent}, vae, **{**X2_DECODE_SETTINGS, "output_device": output_device})
+    if info is not None:
+        info["output_device"] = output_device
     if images.ndim == 5:
         images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
     if int(images.shape[1]) <= int(latent.shape[3]) * 16 or int(images.shape[2]) <= int(latent.shape[4]) * 16:
@@ -2803,7 +2826,7 @@ def _ensure_ref2va_final_segment_cache(
 
         def _timed_x2_decode(decode_vae, latent):
             started = time.time()
-            frames = decode_video_latent_x2(decode_vae, latent)
+            frames = decode_video_latent_x2(decode_vae, latent, info=x2_timing)
             x2_timing["seconds"] += time.time() - started
             return frames
 
@@ -2819,8 +2842,9 @@ def _ensure_ref2va_final_segment_cache(
             forced_shift=None if idx == 0 or stored_shift is None else int(stored_shift),
         )
         _LOG.info(
-            "H3 X2 final decode: clip %d -> %dx%d, decode %.1f s",
+            "H3 X2 final decode: clip %d -> %dx%d, decode %.1f s, output_device=%s",
             idx + 1, int(video.shape[2]), int(video.shape[1]), x2_timing["seconds"],
+            x2_timing.get("output_device", "?"),
         )
     elif own_decode:
         _LOG.info(
