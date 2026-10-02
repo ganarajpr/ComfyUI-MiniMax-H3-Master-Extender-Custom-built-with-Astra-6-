@@ -25,6 +25,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -356,6 +357,21 @@ def continuity_block(clips: list, index: int, continuity: str) -> str:
                          f"this clip starts where its last shot ends):\n{final}")
         return "\n\n".join(parts)
     return "\n".join(_raw_ask_lines(clips, index))
+
+
+def colon_labels(text: str, names) -> str:
+    """Give bare section-label lines the official ``label:`` form.
+
+    The Studio builder prompt lays its six sections out as a label alone on its own line
+    (``subject_definitions``), while the official format and the pack's field parser want
+    ``subject_definitions:``. Only a line that is exactly one of ``names`` (plus markdown
+    decoration) is touched; prose that merely mentions a label is left alone.
+    """
+    if not text or not names:
+        return text
+    pattern = re.compile(r"^([ \t]*[*_#>\-]*[ \t]*)(" + "|".join(re.escape(n) for n in names) + r")([*_ \t]*)$",
+                         re.IGNORECASE | re.MULTILINE)
+    return pattern.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3).rstrip()}:", text)
 
 
 def with_previous(user_prompt: str, previous: str, story: str = "") -> str:
@@ -892,6 +908,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             if not text:
                 notes.append(f"Clip {index + 1}: rewriter returned nothing, prompt left as typed")
                 return
+            text = colon_labels(text, names)
             sections = fields.split_fields(text, names)
             missing = fields.missing(sections, names)
             if missing:

@@ -257,5 +257,21 @@ class OrderingTests(unittest.TestCase):
         self.assertEqual([a for a, _ in log], ["ask3"])
 
 
+class ColonLabelTests(unittest.TestCase):
+    NAMES = ("subject_definitions", "summary", "retention_analysis", "detailed_description",
+             "overall_soundscape", "non_diegetic_music")
+
+    def test_bare_labels_get_a_colon_and_prose_is_untouched(self):
+        text = ("subject_definitions\n  <Subject 1> is Meera.\n\n**summary**\n  mentions subject_definitions inline.\n\n"
+                "retention_analysis:\n  kept\nnon_diegetic_music\n  N/A")
+        out = pr.colon_labels(text, self.NAMES)
+        self.assertIn("subject_definitions:\n", out)
+        self.assertIn("**summary**:\n", out)
+        self.assertIn("mentions subject_definitions inline.", out)
+        self.assertIn("retention_analysis:\n  kept", out)
+        self.assertNotIn("retention_analysis::", out)
+        self.assertIn("non_diegetic_music:\n  N/A", out)
+
+
 if __name__ == "__main__":
     unittest.main()
