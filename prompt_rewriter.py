@@ -655,19 +655,19 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                       "different GGUFs); the planner gets the captions only")
     # Each picture costs min(768, (w//28)*(h//28)) tokens on the server path (the pack's per-picture ceiling).
     plan_image_tokens = sum(story_planner.image_tokens(t) for _slot, t in ordered) if plan_refs_mode == "images" else 0
-    plan_ctx = 0
+    plan_ctx_tokens = 0
     if planning and writer_on_server:
         stand = None
         if plan_refs_mode != "off":
             stand = {"pictures": [{"label": f"Picture {slot + 1}", "caption": "x" * 1600, "image": None} for slot, _t in ordered],
                      "videos": [{"label": f"Video {k}", "caption": "x" * 1600} for k, _v in enumerate(ordered_videos, start=1)]}
-        plan_ctx = guide_prompt.context_needed(
+        plan_ctx_tokens = guide_prompt.context_needed(
             [{"role": "user", "content": story_planner.build_user_content(story, plan_n, stand, plan_ctx)}],
             plan_budget + plan_image_tokens)
     caption_jobs = len(to_describe) + len(videos_to_describe)
     caption_slots = max(1, min(caption_jobs, slots)) if caption_jobs else 1
     server_slots = max(caption_slots, writers_at_once)
-    pool_ctx = max(pool_ctx, plan_ctx * server_slots)
+    pool_ctx = max(pool_ctx, plan_ctx_tokens * server_slots)
 
     started = time.time()
     notes: list[str] = []
