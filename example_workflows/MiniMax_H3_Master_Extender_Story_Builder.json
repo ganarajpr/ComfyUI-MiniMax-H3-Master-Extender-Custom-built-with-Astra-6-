@@ -1244,6 +1244,16 @@
           },
           "link": null,
           "shape": 7
+        },
+        {
+          "localized_name": "auto_clips",
+          "name": "auto_clips",
+          "type": "INT",
+          "widget": {
+            "name": "auto_clips"
+          },
+          "link": null,
+          "shape": 7
         }
       ],
       "outputs": [
@@ -1344,6 +1354,7 @@
         false,
         "standard",
         "Ana, a night-shift nurse, leaves her flat in the rain, crosses the city on foot to the central station and takes the last train to her sister's coast town. She arrives at dawn, they meet on the empty platform and say nothing for a long time, then walk to the sea together.",
+        0,
         ""
       ]
     }

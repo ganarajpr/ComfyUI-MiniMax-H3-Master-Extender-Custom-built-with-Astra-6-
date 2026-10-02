@@ -57,6 +57,7 @@ _LOG = logging.getLogger("minimax_h3_master_extender")
 EVENT_PROGRESS = "master_extender_progress"
 EVENT_CLIPS = "master_extender_clips"
 EVENT_REWRITE = "master_extender_rewrite"
+EVENT_PLAN = "master_extender_plan"
 
 
 def _default_clips():
@@ -228,6 +229,17 @@ def _store_fingerprints(data_path, manifest_path, fingerprints):
     if merged != state.get("clip_fingerprints"):
         state["clip_fingerprints"] = merged
         _write_json_atomic(manifest_path, state)
+
+
+def _send_plan(owner, clips, positions):
+    """Hand the clips a story plan wrote (position + the whole clip) to the panel."""
+    try:
+        _send_to_queuer(
+            EVENT_PLAN,
+            {"owner": str(owner), "planned": [{"index": int(i), "clip": clips[i]} for i in positions if 0 <= i < len(clips)]},
+        )
+    except Exception:
+        pass
 
 
 def _send_rewrite(owner, index, clip_id, phase, text, source=""):
@@ -416,6 +428,8 @@ class MiniMaxH3MasterExtender:
                 "final_decode": (final_decode_options(), {"default": "standard", "tooltip": "standard = decode with the connected VAE. A 2x VAE (e.g. MiniMax-H3-X2-Detail) decodes the final video at 2x resolution, ~+23 s per 15 s clip; needs ComfyUI-MiniMaxH3_LatentUpscaler."}),
                 # --- Film story for the rewriter (appended last; old workflows' trailing master_ui '' lands here = empty) ---
                 "rewrite_story": ("STRING", {"default": "", "multiline": True, "tooltip": "The whole film's story, start to end (optional). When filled, every clip's writer gets it as a 'story:' block and is told to use it only to pick what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat), not later events, not the whole story squeezed in, not its wording unless the clip's ask calls for it. The clip's own ask wins over the story. Works with every continuity mode. Changing it does not mark already rewritten clips stale; it applies to clips rewritten from then on."}),
+                # --- Story planner (appended last) ---
+                "auto_clips": ("INT", {"default": 0, "min": 0, "max": 40, "step": 1, "tooltip": "0 = off. With rewrite_mode on and a rewrite_story set, plan the story ONCE into exactly this many 15 s clips before rewriting (the Studio's one-call chapter-breakdown planner, run on the writer GGUF): each planned clip's shot list is written into the clip list as its raw ask, flagged 'planned', and editable in the panel; then the normal rewrite runs. Empty clips are filled; clips you typed are never overwritten; changing the story or this number later never replans (it would throw away rendered takes). To plan again use 'Replan from story' in the Prompt Rewriter section."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -587,6 +601,7 @@ class MiniMaxH3MasterExtender:
                 clips, refs, kwargs, aspect_text=str(pass2_resolution),
                 progress_cb=rewrite_progress, stream_cb=rewrite_stream,
                 videos=ref_videos, video_audios=ref_video_audios, audios=ref_audios,
+                plan_cb=lambda planned_clips, positions: _send_plan(owner, planned_clips, positions),
             )
             for note in rewrite_notes:
                 _LOG.info("Rewriter: %s", note)

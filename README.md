@@ -55,12 +55,24 @@ The included workflow is deliberately blank: one empty prompt, no reference imag
    - `example_workflows/MiniMax_H3_Master_Extender_Turbo_SLA.json` — the faster graph: Turbo LoRA (ref2v turbo 4-step), comfy kitchen attention with SLA 0.9, chunked refine pass, 608x352 draft to 1280x720, one blank 15 s clip. On an RTX 5090 a 15 s clip renders in roughly 85–90 s. Needs a converted Turbo LoRA in `models/loras` (see `turbo_lora`).
    - `example_workflows/MiniMax_H3_Master_Extender_HyperFlow_Action.json` — the locked action preset: HyperFlow 8-step (pruned file, curve refit on, LoRA mode bypass) with an empty LoRA stack (any LoRA disables the curve fit), SLA 0.9, and the taomate 3-step LoRA replacing the engine LoRA on pass 2. Base model: Singularity v1.3 int8.
    - `example_workflows/MiniMax_H3_Master_Extender_Story_Builder.json` — the HyperFlow action preset set up for building a story clip by clip: built-in rewriter on `pending clips`, continuity `final prompts` (clip N continues from clip N-1's final rewritten prompt, written one after another) and a sample `rewrite_story` (the whole film's story; each clip's writer uses it only to pick that clip's beat). Two clips, the second saying "Continue the story from previous."
+   - `example_workflows/MiniMax_H3_Master_Extender_Story_Auto.json` — the Story Builder preset with one empty clip, a five-sentence sample `rewrite_story` and `auto_clips` = 4: the first run plans the story into four clips, then rewrites them one after another.
 
    Start with `clip_by_clip` and one clip. Inspect the preview and validate a clip before continuing the chain.
 
 The PDD Apply and Scheduler nodes must be installed even though they are called internally and do not appear as boxes in the example workflow. H3 Turbo is not a dependency of this workflow. Avoid duplicate installations of the same node classes. The standalone Motion Context pack is not required: the adapted motion-context implementation is included here.
 
    **Optional: semantic bridge.** The Master node has `semantic_bridge` / `semantic_bridge_alpha` / `semantic_bridge_match` widgets that run the [BUNNY H3 Conditioning Bridge](https://github.com/aa335615543-ux/BUNNY_H3_Conditioning_Bridge) on the conditioning of both passes (model: [JOKER141/BUNNY_H3_Conditioning_Bridge](https://huggingface.co/JOKER141/BUNNY_H3_Conditioning_Bridge)). Install that node and put the adapter in its `models/` folder or in `models/semantic_bridge`; leave `semantic_bridge` at `none` when it is not installed.
+
+## Built-in prompt rewriter: system prompt, continuity, story planner
+
+Turn on `rewrite_mode` and each clip's text is rewritten into an H3 prompt on a local GGUF (needs the MiniMax-H3-Prompt-Rewriter-ComfyUI pack).
+
+- **System prompt.** `rewrite_system_prompt_in` (socket) wins, then the `rewrite_system_prompt` widget. **When both are empty the default is now the H3 Prompt Studio's builder, `prompts/builder.md`, for Ref2VA** (reference pictures connected). It is written for ref2va (`<Subject N>` / `<Picture N>`, six sections), so a T2VA run (no references) keeps MiniMax's official guide. To get the official guide in every case, type `@official` in the widget (a value in the existing text widget, so saved widget positions do not move). **Workflows saved with an empty system prompt now get the builder from their next rewrite; clips already rewritten are not redone** (the system prompt is not part of a clip's fingerprint).
+- **Continuity for clip N** (`rewrite_previous_clips`): `off`; `raw asks` (default: clips 1..N-1 as you typed them, clips written in parallel); `final prompts` (the full final prompt of clip N-1 plus the raw asks of clips 1..N-2; clips are written one after another, and clip N is rewritten again when N-1's final prompt changes).
+- **Film story** (`rewrite_story`): the whole story, given to every clip's writer as a `story:` block so it covers only its own beat. Does not mark rewritten clips stale.
+- **Story planner** (`auto_clips`, default 0 = off). With a story set and `auto_clips` = N, the first run plans the story once into exactly N 15 s clips (the Studio's one-call chapter-breakdown planner, `prompts/planner.md`, on the writer GGUF), writes each clip's shot list into the empty clips as its raw ask (flagged *planned*, editable in the panel), then rewrites them. Typed clips are never overwritten. Changing the story or N never plans again (that would discard rendered takes); use **Replan from story** in the Prompt Rewriter section. A run queued from the API without the panel does not store the plan, so it plans again next time.
+
+`prompts/builder.md` and `prompts/planner.md` are copies of the Studio's `DEFAULT_REWRITE_SYSTEM_PROMPT` and `CHAPTER_BREAKDOWN_TEMPLATE`; the canonical copy lives here, and the Studio has a test that fails when they drift.
 
 ## HyperFlow 8-step mode
 

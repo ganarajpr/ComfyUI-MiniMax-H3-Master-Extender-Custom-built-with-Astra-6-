@@ -6,6 +6,7 @@ const TARGET_NODE = "MiniMaxH3MasterExtender";
 const EVENT_PROGRESS = "master_extender_progress";
 const EVENT_CLIPS = "master_extender_clips";
 const EVENT_REWRITE = "master_extender_rewrite";
+const EVENT_PLAN = "master_extender_plan";
 
 function alignH3Frames(sec) {
     let frames = Math.max(5, Math.round(Number(sec) * 24.0));
@@ -192,7 +193,9 @@ const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 // Widgets appended after master_ui-less workflows were saved: a missing/invalid value is put back to the default.
 const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
 const SINGLE_TE_WIDGETS = ["single_text_encode"];
-const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...SINGLE_TE_WIDGETS];
+// auto_clips is appended after rewrite_story; a workflow saved before it carries the empty master_ui value there.
+const AUTO_CLIPS_WIDGETS = ["auto_clips"];
+const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...SINGLE_TE_WIDGETS, ...AUTO_CLIPS_WIDGETS];
 
 function setWidgetVisible(widget, visible) {
     if (!widget) return;
@@ -794,6 +797,17 @@ app.registerExtension({
                     storyBox.style.cssText = "margin-left: 14px;";
                     storyBox.appendChild(uiTextarea(getW("rewrite_story", ""), (v) => setW("rewrite_story", v, { rerender: false }), { rows: 4, placeholder: "The whole film in a few lines: who, where, how it begins, turns and ends. Each clip then covers only its own beat." }));
                     wrap.appendChild(storyBox);
+                    if (W("auto_clips")) {
+                        wrap.appendChild(uiRow("plan story into N clips", bindNumber("auto_clips"), { hint: "0 = off. With a film story set, the first run plans it ONCE into exactly N 15 s clips (shot lists written into the empty clips, flagged planned, editable), then rewrites them. Typed clips are never overwritten; changing the story or N never replans on its own." }));
+                        if (Number(getW("auto_clips", 0)) > 0) {
+                            const replan = document.createElement("button");
+                            replan.textContent = "Replan from story";
+                            replan.title = "Clear the untouched planned asks (and their rewrites) so the next run plans the story again. Clips you edited or typed stay.";
+                            replan.style.cssText = "background: #2a2438; color: #c4b5fd; border: 1px solid #3c3c56; border-radius: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer;";
+                            replan.onclick = () => replanFromStory();
+                            wrap.appendChild(uiRow("", replan, { indent: true }));
+                        }
+                    }
                 }
                 wrap.appendChild(uiRow("greedy decoding", bindToggle("rewrite_greedy")));
                 if (!getW("rewrite_greedy", true)) wrap.appendChild(uiRow("temperature", bindNumber("rewrite_temperature"), { indent: true }));
@@ -805,9 +819,9 @@ app.registerExtension({
                 const sysWired = Boolean(node.inputs?.find((i) => i.name === "rewrite_system_prompt_in" && i.link != null));
                 const sysLabel = document.createElement("div");
                 sysLabel.style.cssText = "font-size: 10.5px; color: #8888a4; padding: 2px 4px 0;";
-                sysLabel.textContent = sysWired ? "system prompt: fed from the rewrite_system_prompt_in input (text below ignored)" : "system prompt (empty = MiniMax's official writing guide)";
+                sysLabel.textContent = sysWired ? "system prompt: fed from the rewrite_system_prompt_in input (text below ignored)" : "system prompt (empty = the Studio builder for Ref2VA, MiniMax's official guide for T2VA; @official = always the official guide)";
                 wrap.appendChild(sysLabel);
-                const sys = uiTextarea(getW("rewrite_system_prompt", ""), (v) => setW("rewrite_system_prompt", v, { rerender: false }), { rows: 3, placeholder: "Leave empty for the official H3 guide, or paste your own house style." });
+                const sys = uiTextarea(getW("rewrite_system_prompt", ""), (v) => setW("rewrite_system_prompt", v, { rerender: false }), { rows: 3, placeholder: "Leave empty for the default (Studio builder for Ref2VA), type @official for MiniMax's official guide, or paste your own house style." });
                 if (sysWired) sys.style.opacity = "0.5";
                 wrap.appendChild(sys);
                 wrap.appendChild(uiHint("Rewritten clips show a ✎ badge. They are rewritten again automatically when their raw text, duration, aspect, reference pictures, models or system prompt change; otherwise they are left alone. 'Rewrite again' in a clip's prompt panel forces it."));
@@ -982,6 +996,27 @@ app.registerExtension({
                 clip.validated = false;
                 return true;
             }
+            // The one explicit way to plan again: drop the plan's untouched asks (they were never typed by hand) and
+            // every planned flag, so the next run's planner sees empty slots. Edited planned clips become hand clips.
+            function replanFromStory() {
+                const untouched = clipsState.filter((c) => c.planned === true);
+                if (!clipsState.some((c) => "planned" in c)) { alert("Nothing was planned yet; the next run plans the story."); return; }
+                if (!confirm(`Replan from the story? ${untouched.length} untouched planned clip(s) are emptied (their rewrites and renders are dropped); clips you edited or typed stay. Then queue the workflow to plan again.`)) return;
+                for (const clip of clipsState) {
+                    if (clip.planned === true) {
+                        clip.prompt = "";
+                        delete clip.prompt_raw;
+                        clip.prompt_rewritten = false;
+                        delete clip.rewrite_text;
+                        delete clip.rewrite_meta;
+                        liveRewrite.delete(clip.id);
+                        clip.validated = false;
+                    }
+                    delete clip.planned;
+                }
+                saveState();
+                renderUI();
+            }
             function wipeRewrites(clip) {
                 let dropped = wipeRewrite(clip);
                 const continuity = node.widgets?.find((w) => w.name === "rewrite_previous_clips")?.value;
@@ -1079,6 +1114,7 @@ app.registerExtension({
                         // wiped so it can never be rendered for the new text.
                         clip.prompt_raw = value;
                         clip.prompt = value;
+                        if (clip.planned === true) clip.planned = false;
                         if (wipeRewrites(clip)) renderUI();
                     } else {
                         // Editing the rewritten text: used as is, not rewritten again.
@@ -1455,6 +1491,7 @@ app.registerExtension({
                                 <span style="background: #111118; color: #9c9cb8; padding: 1px 5px; border-radius: 3px; font-size: 10px;">${clip.duration}s (${frames}f)</span>
                                 ${index > 0 ? `<span style="background: #2b2866; color: #c7d2fe; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">🔗 Linked</span>` : ''}
                                 ${externalPromptWired(index) ? `<span title="Prompt comes from the clip_prompt_${index + 1} input; the text below is ignored while it is connected." style="background: #1f3a2a; color: #86efac; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">⇐ input</span>` : ''}
+                                ${clip.planned === true ? `<span title="Planned from the film story by the story planner (auto_clips). Edit the text to make it yours; 'Replan from story' in the Prompt Rewriter section plans again." style="background: #1f2d3a; color: #7dd3fc; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">✦ planned</span>` : ''}
                                 ${!clip.prompt_rewritten && rewrittenTextOf(clip) ? `<span title="The original was edited after the last rewrite; the clip renders from the original until the next run rewrites it. The old rewrite is still readable in the prompt panel." style="background: #2a2438; color: #c4b5fd; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">✎ pending</span>` : ''}
                                 ${clip.prompt_rewritten ? `<span title="Rewritten by the built-in prompt rewriter${clip.rewrite_meta ? ` (${clip.rewrite_meta.model || ""}, ${clip.rewrite_meta.task || ""}${clip.rewrite_meta.thinking ? ", thinking" : ""}, ${clip.rewrite_meta.seconds || 0}s)` : ""}. It is not rewritten again; use 'Restore raw' in the prompt panel to redo it." style="background: #3a2e14; color: #fcd34d; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 500;">✎ rewritten</span>` : ''}
                             </div>
@@ -1728,6 +1765,32 @@ app.registerExtension({
             };
             api.addEventListener(EVENT_CLIPS, clipsHandler);
 
+            // A story plan written into the clip list on the server: show it in the empty slots (never over a
+            // clip that has text or already carries a planned flag) and add the clips past the end.
+            const planHandler = (event) => {
+                const data = event.detail;
+                if (!data || String(data.owner) !== String(node.id) || !Array.isArray(data.planned)) return;
+                let changed = false;
+                for (const item of data.planned) {
+                    const incoming = item?.clip;
+                    if (!incoming || typeof incoming !== "object") continue;
+                    const local = clipsState[item.index];
+                    if (!local) {
+                        if (item.index === clipsState.length) { clipsState.push(incoming); changed = true; }
+                        continue;
+                    }
+                    if (rawTextOf(local).trim() || "planned" in local) continue;
+                    Object.assign(local, { prompt: incoming.prompt, planned: true, duration: incoming.duration, prompt_rewritten: false, validated: false });
+                    delete local.prompt_raw; delete local.rewrite_text; delete local.rewrite_meta;
+                    changed = true;
+                }
+                if (!changed) return;
+                ensureClipIds(clipsState);
+                saveState();
+                renderUI();
+            };
+            api.addEventListener(EVENT_PLAN, planHandler);
+
             // A clip's rewrite as it is being written: thinking, then the answer, then done.
             const rewriteHandler = (event) => {
                 const data = event.detail;
@@ -1771,6 +1834,7 @@ app.registerExtension({
             node.onRemoved = function () {
                 api.removeEventListener(EVENT_PROGRESS, progressHandler);
                 api.removeEventListener(EVENT_CLIPS, clipsHandler);
+                api.removeEventListener(EVENT_PLAN, planHandler);
                 api.removeEventListener(EVENT_REWRITE, rewriteHandler);
                 return onRemoved?.apply(this, arguments);
             };
