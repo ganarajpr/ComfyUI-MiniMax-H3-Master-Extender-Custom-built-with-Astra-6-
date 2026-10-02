@@ -180,6 +180,72 @@ class PlanStoryTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class FakeTensor:
+    def __init__(self, h, w):
+        self.shape = (1, h, w, 3)
+
+
+class RefsTests(unittest.TestCase):
+    REFS = {"pictures": [{"label": "Picture 1", "caption": "a woman in a maroon saree", "image": "data:image/png;base64,AAA"},
+                         {"label": "Picture 2", "caption": "a brass lamp on a carved table", "image": "data:image/png;base64,BBB"}],
+            "videos": [{"label": "Video 1", "caption": "a slow pan across a courtyard"}]}
+
+    def test_rule_lives_outside_planner_md_and_only_with_refs(self):
+        self.assertNotIn("only characters, props and locations", sp.load_prompt("planner"))
+        self.assertNotIn("REFERENCE RULE", sp.build_user_content("story", 3))
+        self.assertEqual(sp.build_user_content("story", 3), sp.build_user_message("story", 3))
+        self.assertIn("Name a subject by its Picture number the first time it appears", sp.REFS_RULE)
+
+    def test_images_mode_parts_in_slot_order(self):
+        parts = sp.build_user_content("story", 3, self.REFS)
+        kinds = [p["type"] for p in parts]
+        self.assertEqual(kinds, ["text", "text", "image_url", "text", "text", "image_url", "text", "text", "text"])
+        self.assertEqual(parts[1]["text"], "Picture 1:")
+        self.assertEqual(parts[2]["image_url"]["url"], "data:image/png;base64,AAA")
+        self.assertEqual(parts[3]["text"], "a woman in a maroon saree")
+        self.assertEqual(parts[4]["text"], "Picture 2:")
+        self.assertEqual(parts[7]["text"], "Video 1: a slow pan across a courtyard")
+        self.assertTrue(parts[8]["text"].lstrip().startswith("REFERENCE RULE"))
+        self.assertIn("CHAPTER:\nstory", parts[8]["text"])
+
+    def test_captions_mode_is_one_string_and_videos_are_captions_in_both(self):
+        refs = {"pictures": [dict(p, image=None) for p in self.REFS["pictures"]], "videos": self.REFS["videos"]}
+        text = sp.build_user_content("story", 3, refs)
+        self.assertIsInstance(text, str)
+        head = text.split("\n\n")[0].split("\n")
+        self.assertEqual(head[1:], ["Picture 1: a woman in a maroon saree", "Picture 2: a brass lamp on a carved table",
+                                    "Video 1: a slow pan across a courtyard"])
+        self.assertIn("REFERENCE RULE", text)
+
+    def test_image_token_estimate(self):
+        self.assertEqual(sp.image_tokens(FakeTensor(280, 280)), 100)
+        self.assertEqual(sp.image_tokens(FakeTensor(1024, 1024)), 768)
+        self.assertEqual(sp.image_tokens(FakeTensor(10, 10)), 1)
+
+    def test_retry_complaint_goes_on_the_last_text_part_keeping_images(self):
+        seen = []
+        replies = ["nope", plan_json(1)]
+
+        def chat(messages):
+            seen.append(messages[0]["content"])
+            return replies[len(seen) - 1]
+
+        sp.plan_story(chat, "s", 1, refs=self.REFS)
+        self.assertEqual([p["type"] for p in seen[0]], [p["type"] for p in seen[1]])
+        self.assertNotIn("PREVIOUS REPLY FAILED", seen[0][-1]["text"])
+        self.assertIn("PREVIOUS REPLY FAILED", seen[1][-1]["text"])
+
+    def test_picture_mentions_do_not_trouble_format_or_checks(self):
+        c = clip_json(1, shots=[shot(1, 5, "wide_establishing", "Mira (Picture 1)", "stands in the courtyard of Picture 2"),
+                                shot(2, 5, "medium", "The brass lamp (Picture 2)", "flickers"),
+                                shot(3, 5, "close_up", "Mira (Picture 1)", "smiles", True, "Look.", "Mira")])
+        b = sp.parse_breakdown(json.dumps({"chapter": "c", "ledger": {"entities": []}, "clips": [c]}))
+        self.assertEqual(sp.check_breakdown(b), [])
+        ask = sp.format_clip_raw_ask(b["clips"][0])
+        self.assertIn("Shot 1 \u2013 Wide as Mira (Picture 1) stands in the courtyard of Picture 2. (5s)", ask)
+        self.assertIn("Shot 2 \u2013 Medium as The brass lamp (Picture 2) flickers. (5s)", ask)
+
+
 class PlanSlotsTests(unittest.TestCase):
     def clips(self, *prompts):
         return [{"id": i, "title": f"Clip {i + 1}", "prompt": p, "duration": 15, "seed": 1, "seed_mode": "fixed"}
@@ -324,6 +390,118 @@ class RewriteIntegrationTests(unittest.TestCase):
         clips = [{"id": 0, "prompt": "ask", "duration": 15}]
         self.run_rewrite(clips, {"auto_clips": 0}, [])
         self.assertTrue(all(s == "" for s in self.systems))
+
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+
+@unittest.skipUnless(torch, "needs torch (the box has it)")
+class RewriteRefsTests(unittest.TestCase):
+    def run_it(self, planner_refs, mmproj="mm.gguf", same_file=True):
+        import contextlib
+        import tempfile
+        import types
+        gguf = tempfile.NamedTemporaryFile(suffix=".gguf", delete=False)
+        gguf.close()
+        self.addCleanup(os.unlink, gguf.name)
+        writer = gguf.name
+        cap = gguf.name if same_file else gguf.name + ".other"
+        sent = []
+        choice_w = types.SimpleNamespace(local=True, reference=writer, mmproj="")
+        choice_c = types.SimpleNamespace(local=True, reference=cap, mmproj=mmproj)
+        nodes = types.SimpleNamespace(_resolve_writer_choice=lambda l: choice_w, _resolve_captioner_choice=lambda l: choice_c,
+                                      DEFAULT_OPTIONS={}, caption_question=lambda *a: "?")
+
+        class Server:
+            def chat(self, messages, **kw):
+                sent.append(messages)
+                content = messages[0]["content"]
+                text = content if isinstance(content, str) else " ".join(p.get("text", "") for p in content)
+                if "Break the chapter below" in text:
+                    return plan_json(2)
+                return "FINAL"
+
+        @contextlib.contextmanager
+        def session(*a, **kw):
+            self.pool_ctx = kw["pool_ctx"]
+            yield Server()
+
+        class Media:
+            PATCH = 28
+
+            class Workspace:
+                def __enter__(self):
+                    self.dir = tempfile.mkdtemp()
+                    return self
+
+                def __exit__(self, *a):
+                    pass
+
+                def file(self, n):
+                    return os.path.join(self.dir, n)
+
+            @staticmethod
+            def image_files(image, ws, n, prefix="", max_pixels=0):
+                path = ws.file(prefix + ".png")
+                open(path, "wb").write(b"PNG")
+                return [path]
+
+        def build(guide, task, prompt, resolution, duration, refs, system=""):
+            return [{"role": "system", "content": "S"}, {"role": "user", "content": f"original_prompt: {prompt}"}]
+
+        mods = {
+            "nodes": nodes, "paths": types.SimpleNamespace(), "guides": types.SimpleNamespace(text=lambda *a: "G"),
+            "guide_prompt": types.SimpleNamespace(GUIDE_FOR_MODE={"Ref2VA": 1}, FIELDS_FOR_MODE={"Ref2VA": ["a"]},
+                                                  build_messages=build, context_needed=lambda m, b: b),
+            "fields": types.SimpleNamespace(split_fields=lambda t, n: {"a": t}, missing=lambda s, n: []),
+            "checks": types.SimpleNamespace(looping=lambda t: False),
+            "mtmd_engine": types.SimpleNamespace(
+                session=session, describe=lambda **kw: "a caption", clip_note=lambda *a: ""),
+            "aspect": types.SimpleNamespace(resolve=lambda a, d: "16:9"),
+            "constants": types.SimpleNamespace(answer_only=lambda t: t),
+            "media": Media,
+        }
+        saved = (pr._mod, pr.available, pr._load_cache, pr._save_cache)
+        pr._mod = lambda name: mods[name]
+        pr.available = lambda: True
+        pr._load_cache = lambda: {}
+        pr._save_cache = lambda c: None
+        try:
+            clips = [{"id": 0, "prompt": "", "duration": 15}]
+            settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": "w", "rewrite_caption_model": "c",
+                        "rewrite_task": "Ref2VA", "rewrite_parallel": 1, "rewrite_previous_clips": "raw asks",
+                        "rewrite_max_new_tokens": 100, "rewrite_story": "A story.", "auto_clips": 2,
+                        "planner_refs": planner_refs}
+            refs = {"ref_image_0": torch.zeros(1, 280, 560, 3), "ref_image_1": torch.zeros(1, 2000, 2000, 3)}
+            pr.rewrite_clips(clips, refs, settings, aspect_text="1280x720")
+        finally:
+            pr._mod, pr.available, pr._load_cache, pr._save_cache = saved
+        return [m for m in sent if "Break the chapter below" in json.dumps(m[0]["content"])][0][0]["content"]
+
+    def test_images_mode_sends_image_parts_and_sizes_context(self):
+        content = self.run_it("images")
+        self.assertEqual([p["type"] for p in content].count("image_url"), 2)
+        texts = [p["text"] for p in content if p["type"] == "text"]
+        self.assertIn("Picture 1:", texts)
+        self.assertIn("Picture 2:", texts)
+        self.assertIn("a caption", texts)
+        self.assertGreaterEqual(self.pool_ctx, 140 * 4 + 768)  # 2 pictures: 560x280 -> 200 tokens, 2000x2000 -> capped 768
+
+    def test_captions_mode_and_fallback_without_vision(self):
+        for mode, kw in (("captions", {}), ("images", {"mmproj": ""})):
+            content = self.run_it(mode, **kw)
+            self.assertIsInstance(content, str, mode)
+            self.assertIn("Picture 1: a caption", content)
+            self.assertIn("REFERENCE RULE", content)
+
+    def test_off_sends_the_story_text_only(self):
+        content = self.run_it("off")
+        self.assertIsInstance(content, str)
+        self.assertNotIn("Picture 1", content)
+        self.assertNotIn("REFERENCE RULE", content)
 
 
 if __name__ == "__main__":
