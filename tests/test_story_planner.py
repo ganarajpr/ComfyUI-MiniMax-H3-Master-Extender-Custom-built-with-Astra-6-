@@ -1,6 +1,9 @@
 import copy
+import io
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -289,6 +292,9 @@ class PlanSlotsTests(unittest.TestCase):
         self.assertEqual(sp.plan_slots(self.clips(""), 0), [])
 
 
+PLAN_REPLY = lambda k: plan_json(k)  # noqa: E731
+
+
 class FakeServer:
     def __init__(self, log):
         self.log = log
@@ -297,7 +303,7 @@ class FakeServer:
         user = messages[0]["content"] if messages[0]["role"] == "user" else messages[1]["content"]
         self.log.append(user)
         if "Break the chapter below" in user:
-            return plan_json(3)
+            return PLAN_REPLY(int(re.search(r"EXACTLY (\d+) clip", user).group(1)))
         return "FINAL[" + user.rsplit("original_prompt:", 1)[1].strip()[:12] + "]"
 
 
@@ -362,12 +368,88 @@ class RewriteIntegrationTests(unittest.TestCase):
         self.assertTrue(clips[0]["prompt_raw"].startswith("Clip 1:\n\nShot 1"))
         self.assertTrue(clips[1]["prompt"].startswith("FINAL["))
         self.assertEqual(self.session_kw["pool_ctx"], 4096)
-        log2 = []
-        notes2, calls2 = self.run_rewrite(clips, {"auto_clips": 5, "rewrite_story": "A different story entirely."}, log2)
-        self.assertEqual(log2, [])
-        self.assertEqual(calls2, [])
-        self.assertEqual(notes2, ["rewriter: nothing pending"])
-        self.assertEqual(len(clips), 3)
+        for extra in ({"rewrite_story": "A different story entirely."}, {"auto_clips": 2},
+                      {"auto_clips": 1, "rewrite_story": "Another story."}):
+            log2 = []
+            notes2, calls2 = self.run_rewrite(clips, extra, log2)
+            self.assertEqual(log2, [], extra)
+            self.assertEqual(calls2, [], extra)
+            self.assertEqual(notes2, ["rewriter: nothing pending"], extra)
+            self.assertEqual(len(clips), 3)
+
+    def test_raise_plans_only_the_new_clips_after_the_existing_ones(self):
+        global PLAN_REPLY
+        saved = PLAN_REPLY
+        PLAN_REPLY = ledger_plan
+        try:
+            clips = [{"id": 0, "title": "Clip 1", "prompt": "", "duration": 15, "seed": 1, "seed_mode": "fixed"}]
+            self.run_rewrite(clips, {}, [])
+            self.assertEqual(len(clips), 3)
+            self.assertEqual(clips[2]["plan_end_state"]["ana"]["axes"]["coat"], "soaked")
+            clips[1]["prompt_raw"] = "MY EDIT OF CLIP TWO"  # a user edit of a planned clip
+            clips[1]["prompt"] = "MY EDIT OF CLIP TWO"
+            clips[1]["prompt_rewritten"] = False
+            clips[1]["planned"] = False
+            for key in ("rewrite_text", "rewrite_meta"):
+                clips[1].pop(key, None)
+            before = copy.deepcopy(clips)
+            log = []
+            notes, calls = self.run_rewrite(clips, {"auto_clips": 5, "rewrite_story": "The full story, longer now."}, log)
+            planner = [m for m in log if "Break the chapter below" in m]
+            self.assertEqual(len(planner), 1)
+            msg = planner[0]
+            self.assertIn("EXACTLY 2 clips", msg)
+            self.assertIn("numbered 4-5", msg)
+            self.assertIn("--- Clip 2 ---\nMY EDIT OF CLIP TWO", msg)
+            self.assertIn("ana | Ana (character): coat=soaked", msg)
+            self.assertIn("CHAPTER:\nThe full story, longer now.", msg)
+            self.assertEqual(calls, [[3, 4]])
+            self.assertEqual(len(clips), 5)
+            for i in range(3):
+                for key in ("prompt_raw", "planned", "plan_end_state"):
+                    self.assertEqual(clips[i].get(key), before[i].get(key), (i, key))
+            self.assertTrue(all(c["planned"] is True and c["prompt_rewritten"] is True for c in clips[3:]))
+            self.assertTrue(clips[3]["prompt_raw"].startswith("STATE AT THE START OF THIS CLIP:\nAna (character): coat=soaked\n\nClip 4:"))
+            self.assertIn("Clip 5:", clips[4]["prompt_raw"])
+            # final prompts: clip 4 was written from clip 3's final prompt, and only the new clips were rewritten
+            writer = [m for m in log if "original_prompt" in m]
+            self.assertEqual(len(writer), 4)  # clip 2 (user edit, pending), 3 (its predecessor changed), 4, 5 -- in order
+            self.assertIn("Previous clip, final prompt (clip 3", writer[2])
+            self.assertIn(clips[2]["prompt"], writer[2])
+            # raising again continues from the new end; lowering after that does nothing
+            log3 = []
+            _, calls3 = self.run_rewrite(clips, {"auto_clips": 6}, log3)
+            self.assertEqual(calls3, [[5]])
+            self.assertEqual(len(clips), 6)
+            _, calls4 = self.run_rewrite(clips, {"auto_clips": 3}, [])
+            self.assertEqual(calls4, [])
+        finally:
+            PLAN_REPLY = saved
+
+    def test_hand_clip_counts_as_existing_film_when_raising(self):
+        clips = [{"id": 0, "prompt": "", "duration": 15, "seed": 1, "seed_mode": "fixed"}]
+        self.run_rewrite(clips, {"auto_clips": 3}, [])
+        clips.append({"id": 9, "title": "Clip 4", "prompt": "I typed clip four", "duration": 15})
+        log = []
+        _, calls = self.run_rewrite(clips, {"auto_clips": 6}, log)
+        self.assertEqual(calls, [[4, 5]])
+        self.assertEqual(clips[3]["prompt_raw"], "I typed clip four")
+        self.assertNotIn("planned", clips[3])
+        self.assertIn("numbered 5-6", [m for m in log if "Break the chapter below" in m][0])
+
+    def test_replan_still_works_after_plan_more(self):
+        clips = [{"id": 0, "prompt": "", "duration": 15, "seed": 1, "seed_mode": "fixed"}]
+        self.run_rewrite(clips, {"auto_clips": 2}, [])
+        for c in clips:  # what the panel's "Replan from story" does to untouched planned clips
+            c["prompt"] = ""
+            for key in ("prompt_raw", "rewrite_text", "rewrite_meta", "planned", "plan_end_state"):
+                c.pop(key, None)
+            c["prompt_rewritten"] = False
+        log = []
+        _, calls = self.run_rewrite(clips, {"auto_clips": 2}, log)
+        self.assertEqual(calls, [[0, 1]])
+        self.assertIn("EXACTLY 2 clips", [m for m in log if "Break the chapter below" in m][0])
+        self.assertNotIn("ALREADY IN THE FILM", [m for m in log if "Break the chapter below" in m][0])
 
     def test_hand_clip_survives_a_plan(self):
         clips = [{"id": 0, "title": "Clip 1", "prompt": "I wrote this myself", "duration": 15},
@@ -390,6 +472,153 @@ class RewriteIntegrationTests(unittest.TestCase):
         clips = [{"id": 0, "prompt": "ask", "duration": 15}]
         self.run_rewrite(clips, {"auto_clips": 0}, [])
         self.assertTrue(all(s == "" for s in self.systems))
+
+
+def ledger_plan(k):
+    ledger = {"entities": [{"id": "ana", "name": "Ana", "kind": "character", "clip_ids": list(range(1, k + 1)),
+                            "axes": [{"axis": "coat", "options": ["dry", "wet", "soaked"], "progressive": True, "plate_visible": True}],
+                            "initial": [{"axis": "coat", "value": "dry"}]}]}
+    clips = [clip_json(i + 1, f"beat {i + 1}") for i in range(k)]
+    clips[-1]["state_changes"] = [{"entity": "ana", "axis": "coat", "to": "soaked", "shot": 2}]
+    return json.dumps({"chapter": "c", "ledger": ledger, "clips": clips})
+
+
+class ConsoleSafeLoggingTests(unittest.TestCase):
+    ASK = "Shot 1 \u2013 Wide as \u201cMira\u201d \u2014 \u0924\u0941\u092e \u0915\u0948\u0938\u0947 \u0939\u094b? \u2026"
+
+    def test_cp1252_console_does_not_raise_and_text_is_untouched(self):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict", write_through=True)
+        errors = []
+
+        class Handler(logging.StreamHandler):
+            def handleError(self, record):
+                errors.append(record)
+
+        handler = Handler(stream)
+        saved_encoding = pr._console_encoding
+        pr._console_encoding = lambda: "cp1252"
+        pr._LOG.addHandler(handler)
+        old_level, old_prop = pr._LOG.level, pr._LOG.propagate
+        pr._LOG.setLevel(logging.INFO)
+        pr._LOG.propagate = False
+        try:
+            ask = self.ASK
+            pr._LOG.info("Rewriter plan clip %d:\n%s", 1, ask)
+            pr._LOG.info(f"fstring {ask}")
+            pr._LOG.info("percent-free %s", "100%")
+        finally:
+            pr._LOG.removeHandler(handler)
+            pr._LOG.setLevel(old_level)
+            pr._LOG.propagate = old_prop
+            pr._console_encoding = saved_encoding
+        self.assertEqual(errors, [])
+        out = raw.getvalue().decode("cp1252")
+        self.assertIn('Shot 1 - Wide as "Mira" - ', out)
+        self.assertIn("\\u0924", out)
+        self.assertEqual(ask, self.ASK)
+        self.assertIn("\u2013", ask)
+
+    def test_helper_is_ascii_for_a_narrow_console(self):
+        saved = pr._console_encoding
+        pr._console_encoding = lambda: "ascii"
+        try:
+            self.assertEqual(pr._console_safe("a\u2013b \u0939"), "a-b \\u0939")
+        finally:
+            pr._console_encoding = saved
+
+    def test_master_node_logger_carries_the_filter(self):
+        src = (Path(__file__).resolve().parents[1] / "master_node.py").read_text(encoding="utf-8")
+        self.assertIn("_LOG.addFilter(prompt_rewriter.ConsoleSafeFilter())", src)
+
+
+class PlanMoreUnitTests(unittest.TestCase):
+    def film(self):
+        end1 = {"ana": {"name": "Ana", "kind": "character", "axes": {"coat": "wet"}}}
+        end3 = {"ana": {"name": "Ana", "kind": "character", "axes": {"coat": "soaked"}}}
+        return [{"id": 0, "prompt": "Clip 1:\n\nShot 1 planned one", "planned": True, "plan_end_state": end1, "duration": 15},
+                {"id": 1, "prompt": "Clip 2:\n\nShot 1 planned two", "planned": True, "duration": 15},
+                {"id": 2, "prompt": "I rewrote clip three myself", "planned": False, "plan_end_state": end3, "duration": 15}]
+
+    def test_fires_only_on_a_raise_past_the_existing_film(self):
+        clips = self.film()
+        self.assertIsNone(sp.plan_more(clips, 3))
+        self.assertIsNone(sp.plan_more(clips, 2))
+        self.assertIsNone(sp.plan_more(clips, 0))
+        more = sp.plan_more(clips, 5)
+        self.assertEqual((more["start"], more["count"]), (4, 2))
+
+    def test_never_without_a_planned_flag(self):
+        clips = [{"id": 0, "prompt": "typed", "duration": 15}]
+        self.assertIsNone(sp.plan_more(clips, 5))
+
+    def test_hand_clips_count_as_existing_film(self):
+        clips = self.film() + [{"id": 3, "prompt": "I typed clip four", "duration": 15}]
+        more = sp.plan_more(clips, 7)
+        self.assertEqual((more["start"], more["count"]), (5, 3))
+        self.assertEqual(more["existing"][3], (4, "I typed clip four"))
+
+    def test_carried_state_is_the_latest_known_one(self):
+        clips = self.film() + [{"id": 3, "prompt": "typed, no ledger", "duration": 15}]
+        self.assertEqual(sp.plan_more(clips, 6)["carried"]["ana"]["axes"]["coat"], "soaked")
+
+    def test_empty_slot_inside_the_range_is_kept_and_listed_empty(self):
+        clips = self.film()
+        clips[1]["prompt"] = ""
+        more = sp.plan_more(clips, 4)
+        self.assertEqual((more["start"], more["count"]), (4, 1))
+        msg = sp.build_user_content("S", 1, None, more)
+        self.assertIn("--- Clip 2 ---\n(empty", msg)
+        sp.apply_plan(clips, [""] * 3 + ["NEW"], [3])
+        self.assertEqual(clips[1]["prompt"], "")
+        self.assertEqual(len(clips), 4)
+
+    def test_edited_planned_clip_text_is_what_block_b_shows(self):
+        clips = self.film()
+        clips[0]["prompt"] = "MY EDITED CLIP ONE"
+        clips[0]["planned"] = False
+        msg = sp.build_user_content("The story.", 2, None, sp.plan_more(clips, 5))
+        self.assertIn("--- Clip 1 ---\nMY EDITED CLIP ONE", msg)
+        self.assertNotIn("planned one", msg)
+
+    def test_message_layout_outside_planner_md(self):
+        more = sp.plan_more(self.film(), 5)
+        msg = sp.build_user_content("The whole story.", 2, None, more)
+        self.assertLess(msg.index("ALREADY IN THE FILM"), msg.index("STATE CARRIED INTO CLIPS 4-5"))
+        self.assertLess(msg.index("STATE CARRIED"), msg.index("CONTINUATION"))
+        self.assertLess(msg.index("CONTINUATION"), msg.index("Break the chapter below"))
+        self.assertIn("ana | Ana (character): coat=soaked", msg)
+        self.assertIn("Plan exactly 2 more clips, numbered 4-5. Begin where clip 3 ends and carry the story forward from there; cover what the story has not yet covered.", msg)
+        self.assertIn("EXACTLY 2 clips of 15 seconds each (30s total)", msg)
+        self.assertIn('{"clip": 4,', msg)
+        self.assertIn("CHAPTER:\nThe whole story.", msg)
+        for text in ("ALREADY IN THE FILM", "CONTINUATION"):
+            self.assertNotIn(text, sp.load_prompt("planner"))
+
+    def test_plan_story_numbers_from_x_and_states_start_from_the_carried_state(self):
+        more = sp.plan_more(self.film(), 5)
+        states = []
+        asks = sp.plan_story(lambda m: ledger_plan(2), "S", 2, more=more, states_out=states)
+        self.assertEqual(len(asks), 2)
+        self.assertIn("Clip 4:", asks[0])
+        self.assertIn("Clip 5:", asks[1])
+        self.assertIn("STATE AT THE START OF THIS CLIP:\nAna (character): coat=soaked", asks[0])
+        self.assertNotIn("coat=dry", asks[0])
+        self.assertEqual(states[-1]["ana"]["axes"]["coat"], "soaked")
+        self.assertEqual(len(states), 2)
+
+    def test_plan_story_accepts_a_reply_already_numbered_from_x(self):
+        more = sp.plan_more(self.film(), 5)
+        reply = json.loads(plan_json(2))
+        for i, c in enumerate(reply["clips"]):
+            c["clip"] = 4 + i
+        asks = sp.plan_story(lambda m: json.dumps(reply), "S", 2, more=more)
+        self.assertTrue(asks[0].startswith("Clip 4:") or "Clip 4:" in asks[0])
+
+    def test_count_check_uses_k(self):
+        more = sp.plan_more(self.film(), 5)
+        with self.assertRaises(sp.PlanError):
+            sp.plan_story(lambda m: plan_json(3), "S", 2, more=more)
 
 
 try:

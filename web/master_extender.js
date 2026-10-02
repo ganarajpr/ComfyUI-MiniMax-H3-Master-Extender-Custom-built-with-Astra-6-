@@ -798,8 +798,9 @@ app.registerExtension({
                     storyBox.appendChild(uiTextarea(getW("rewrite_story", ""), (v) => setW("rewrite_story", v, { rerender: false }), { rows: 4, placeholder: "The whole film in a few lines: who, where, how it begins, turns and ends. Each clip then covers only its own beat." }));
                     wrap.appendChild(storyBox);
                     if (W("auto_clips")) {
-                        wrap.appendChild(uiRow("plan story into N clips", bindNumber("auto_clips"), { hint: "0 = off. With a film story set, the first run plans it ONCE into exactly N 15 s clips (shot lists written into the empty clips, flagged planned, editable), then rewrites them. Typed clips are never overwritten; changing the story or N never replans on its own." }));
+                        wrap.appendChild(uiRow("plan story into N clips", bindNumber("auto_clips"), { hint: "0 = off. With a film story set, the first run plans it ONCE into exactly N 15 s clips (shot lists written into the empty clips, flagged planned, editable), then rewrites them. Typed clips are never overwritten; changing the story never replans. Raise to plan more clips after the existing ones (only the new ones are planned, continuing from the last clip); lowering does nothing." }));
                         if (Number(getW("auto_clips", 0)) > 0) {
+                            wrap.appendChild(uiHint("Raise the number to plan more clips after the existing ones (only the new clips are planned)."));
                             if (W("planner_refs")) wrap.appendChild(uiRow("planner sees references as", bindSelect("planner_refs"), { indent: true, hint: "images: the reference pictures themselves plus their captions (needs the writer GGUF to also be the caption model); captions: caption lines only; off: the story text alone." }));
                             const replan = document.createElement("button");
                             replan.textContent = "Replan from story";
@@ -1014,6 +1015,7 @@ app.registerExtension({
                         clip.validated = false;
                     }
                     delete clip.planned;
+                    if (clip.prompt === "") delete clip.plan_end_state;
                 }
                 saveState();
                 renderUI();
@@ -1781,7 +1783,7 @@ app.registerExtension({
                         continue;
                     }
                     if (rawTextOf(local).trim() || "planned" in local) continue;
-                    Object.assign(local, { prompt: incoming.prompt, planned: true, duration: incoming.duration, prompt_rewritten: false, validated: false });
+                    Object.assign(local, { prompt: incoming.prompt, planned: true, duration: incoming.duration, prompt_rewritten: false, validated: false, plan_end_state: incoming.plan_end_state });
                     delete local.prompt_raw; delete local.rewrite_text; delete local.rewrite_meta;
                     changed = true;
                 }
