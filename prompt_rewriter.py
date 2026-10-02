@@ -38,6 +38,44 @@ except ImportError:  # imported as a top-level module (tests)
 
 _LOG = logging.getLogger("minimax_h3_master_extender.rewriter")
 
+_PUNCT = str.maketrans({"\u2013": "-", "\u2014": "-", "\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
+                        "\u2026": "...", "\u00a0": " ", "\u2022": "*", "\u00d7": "x", "\u2192": "->"})
+
+
+def _console_encoding() -> str:
+    return getattr(sys.stdout, "encoding", None) or "utf-8"
+
+
+def _console_safe(text) -> str:
+    """Text the console can print: common typographic punctuation to ASCII, the rest as \\uXXXX escapes.
+
+    ComfyUI's logger writes to a cp1252 console on Windows, where a model's en dash or any Devanagari line raises
+    UnicodeEncodeError inside the logging call. Only what goes to the logger is changed; the text sent to the
+    panel and stored in the clips is left as it is.
+    """
+    out = str(text).translate(_PUNCT)
+    encoding = _console_encoding()
+    try:
+        return out.encode(encoding, "backslashreplace").decode(encoding)
+    except (LookupError, UnicodeError):
+        return out.encode("ascii", "backslashreplace").decode("ascii")
+
+
+class ConsoleSafeFilter(logging.Filter):
+    """Makes every record of the logger it is attached to printable on the console (model and user text included)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        record.msg = _console_safe(message)
+        record.args = None
+        return True
+
+
+_LOG.addFilter(ConsoleSafeFilter())
+
 PACK_MODULE = "MiniMax-H3-Prompt-Rewriter-ComfyUI"
 PACK_SUB = "minimax_h3_rewriter"
 MISSING = "(install MiniMax-H3-Prompt-Rewriter-ComfyUI for the built-in rewriter)"
@@ -505,9 +543,16 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     image_keys = [(slot, _image_key(tensor, model_path, length)) for slot, tensor in ordered] if task != "T2VA" else []
     video_keys = [(slot, _video_key(frames, model_path, length)) for slot, frames in ordered_videos] if task != "T2VA" else []
     plan_slots = story_planner.plan_slots(clips, auto_clips) if (auto_clips and story) else []
-    planning = bool(plan_slots)
+    # Raising auto_clips past a film that was planned once plans only the new clips, after the existing ones.
+    plan_more = story_planner.plan_more(clips, auto_clips) if (auto_clips and story and not plan_slots) else None
+    planning = bool(plan_slots) or bool(plan_more)
+    plan_n = plan_more["count"] if plan_more else auto_clips
     sizing_clips = clips
-    if planning:
+    if planning and plan_more:
+        sizing_clips = copy.deepcopy(clips)
+        before = plan_more["start"] - 1
+        story_planner.apply_plan(sizing_clips, [""] * before + ["x" * 1500] * plan_n, list(range(before, auto_clips)))
+    elif planning:
         sizing_clips = copy.deepcopy(clips)
         story_planner.apply_plan(sizing_clips, ["x" * 1500] * auto_clips, plan_slots)
 
@@ -594,7 +639,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     writer_ctx = guide_prompt.context_needed(rough, writer_budget)
     writers_at_once = min(len(todo), slots) if writer_on_server and not chained else 1
     pool_ctx = writer_ctx * writers_at_once if writer_on_server else 0
-    plan_tokens = max(max_new_tokens, 900 * auto_clips + 1500) if planning else 0
+    plan_tokens = max(max_new_tokens, 900 * plan_n + 1500) if planning else 0
     plan_budget = plan_tokens + (max(budget, 0) if reasoning["enabled"] else 0)
     # What the planner is shown of the references. images = the pictures themselves (needs the writer GGUF to be
     # the captioner, i.e. the server has the mmproj) plus their captions; captions = labelled caption lines.
@@ -613,7 +658,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             stand = {"pictures": [{"label": f"Picture {slot + 1}", "caption": "x" * 1600, "image": None} for slot, _t in ordered],
                      "videos": [{"label": f"Video {k}", "caption": "x" * 1600} for k, _v in enumerate(ordered_videos, start=1)]}
         plan_ctx = guide_prompt.context_needed(
-            [{"role": "user", "content": story_planner.build_user_content(story, auto_clips, stand)}],
+            [{"role": "user", "content": story_planner.build_user_content(story, plan_n, stand, plan_more)}],
             plan_budget + plan_image_tokens)
     caption_jobs = len(to_describe) + len(videos_to_describe)
     caption_slots = max(1, min(caption_jobs, slots)) if caption_jobs else 1
@@ -717,7 +762,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
         # ---- planning: the film story into the clip list, once ----------------
         if planning:
-            say("rewrite", f"planning the story into {auto_clips} clip(s) of 15 s"
+            say("rewrite", (f"planning {plan_n} more clip(s), {plan_more['start']}-{plan_more['start'] + plan_n - 1}, after the existing {plan_more['start'] - 1}" if plan_more else f"planning the story into {auto_clips} clip(s) of 15 s")
                 + (f" with thinking (budget {budget})" if reasoning["enabled"] else ""), 0.2)
 
             def plan_chat(messages):
@@ -753,12 +798,19 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                 _LOG.info("Rewriter: planner sees the references as %s (%d picture(s), %d video caption(s), ~%d image tokens)",
                           plan_refs_mode, len(ordered), len(ordered_videos), plan_image_tokens)
             t_plan = time.time()
-            asks = story_planner.plan_story(plan_chat, story, auto_clips, refs=plan_refs,
+            plan_states: list = []
+            asks = story_planner.plan_story(plan_chat, story, plan_n, refs=plan_refs, more=plan_more, states_out=plan_states,
                                             log=lambda m: _LOG.info("Rewriter planner: %s", m))
-            written_slots = story_planner.apply_plan(clips, asks, plan_slots)
+            first_new = plan_more["start"] - 1 if plan_more else 0
+            if plan_more:
+                written_slots = story_planner.apply_plan(
+                    clips, [""] * first_new + asks, list(range(first_new, first_new + len(asks))),
+                    states=[None] * first_new + plan_states)
+            else:
+                written_slots = story_planner.apply_plan(clips, asks, plan_slots, states=plan_states)
             _LOG.info("Rewriter: planned %d clip(s) in %.1f s; wrote %d into the clip list (typed clips untouched)",
                       len(asks), time.time() - t_plan, len(written_slots))
-            for n_, ask in enumerate(asks, start=1):
+            for n_, ask in enumerate(asks, start=first_new + 1):
                 _LOG.info("Rewriter plan clip %d:\n%s", n_, ask)
             notes.append(f"planned {len(asks)} clip(s) from the story, wrote {len(written_slots)} new ask(s)")
             if plan_cb is not None:

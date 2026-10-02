@@ -16,6 +16,7 @@ callable handed in by the rewriter, which runs it on the writer's llama-server.
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 import random
@@ -110,8 +111,43 @@ OUTPUT FORMAT — reply with ONE JSON object and nothing else (no prose, no code
 Each clip has 3-6 shots whose seconds sum to 15. "ledger.entities" may be an empty array when nothing visibly changes."""
 
 
-def build_user_message(story: str, target_clips: int) -> str:
-    return fill_template(load_prompt("planner"), story, "target", target_clips) + OUTPUT_SHAPE
+def output_shape(start: int = 1) -> str:
+    if start == 1:
+        return OUTPUT_SHAPE
+    return (OUTPUT_SHAPE.replace('{"clip": 1,', f'{{"clip": {start},', 1)
+            .replace('"clip_ids": [1, 2]', f'"clip_ids": [{start}, {start + 1}]', 1))
+
+
+def build_user_message(story: str, target_clips: int, start: int = 1) -> str:
+    return fill_template(load_prompt("planner"), story, "target", target_clips) + output_shape(start)
+
+
+def more_block(more: dict) -> str:
+    """Everything a plan-more call needs besides the template (kept out of prompts/planner.md): the clips already
+    in the film, the state carried out of the last of them, and the continuation instruction."""
+    x, k = more["start"], more["count"]
+    y = x + k - 1
+    parts = [f"ALREADY IN THE FILM (do not re-plan, repeat or contradict) \u2014 the asks of clips 1-{x - 1}, in order:"]
+    for number, text in more["existing"]:
+        body = text.strip() or "(empty \u2014 nothing planned or typed here)"
+        parts.append(f"--- Clip {number} ---\n{body}")
+    carried = more.get("carried")
+    if carried:
+        lines = [f"STATE CARRIED INTO CLIPS {x}-{y} (as of the end of clip {x - 1}). These are the OPENING values of your ledger: "
+                 f"reuse these entity ids and set each entity's 'initial' to exactly these values (each value must be one of "
+                 f"that axis's options):"]
+        for eid, ent in carried.items():
+            axes = ", ".join(f"{a}={v}" for a, v in ent["axes"].items())
+            lines.append(f"{eid} | {ent['name']} ({ent['kind']}): {axes}")
+        parts.append("\n".join(lines))
+    span = f"{x}-{y}" if k > 1 else f"{x}"
+    parts.append(
+        f"CONTINUATION \u2014 Plan exactly {k} more clip{'' if k == 1 else 's'}, numbered {span}. Begin where clip {x - 1} ends "
+        f"and carry the story forward from there; cover what the story has not yet covered. Number them {span} in the JSON "
+        f"('clip' fields and the ledger's clip_ids). The CHAPTER below is the whole film's story; clips 1-{x - 1} above already "
+        f"cover its first part. Plan ONLY the {k} new clip{'' if k == 1 else 's'}."
+    )
+    return "\n\n".join(parts)
 
 
 # Kept out of prompts/planner.md on purpose: that file is the Studio's template, compared with it by the
@@ -145,19 +181,21 @@ def png_data_uri(path: str) -> str:
         return "data:image/png;base64," + base64.b64encode(handle.read()).decode("ascii")
 
 
-def build_user_content(story: str, target_clips: int, refs: dict | None = None):
+def build_user_content(story: str, target_clips: int, refs: dict | None = None, more: dict | None = None):
     """The planner's user turn: a string, or (with real pictures) a list of OpenAI-style content parts.
 
     ``refs`` = ``{"pictures": [{"label": "Picture 1", "caption": str, "image": data-URI or None}],
     "videos": [{"label": "Video 1", "caption": str}]}``. Pictures with an ``image`` are sent as image parts
     followed by their caption; the others as one labelled caption line. Videos are always caption lines.
+    ``more`` (see ``plan_more``) turns the call into a continuation of an existing film.
     """
-    text = build_user_message(story, target_clips)
+    text = build_user_message(story, target_clips, more["start"] if more else 1)
+    body = f"{more_block(more)}\n\n{text}" if more else text
     pictures = list((refs or {}).get("pictures") or [])
     videos = list((refs or {}).get("videos") or [])
     if not pictures and not videos:
-        return text
-    tail = f"{REFS_RULE}\n\n{text}"
+        return body
+    tail = f"{REFS_RULE}\n\n{body}"
     if not any(p.get("image") for p in pictures):
         lines = [f"{item['label']}: {item['caption']}".rstrip() for item in pictures + videos]
         return "\n".join([REFS_HEADER] + lines) + f"\n\n{tail}"
@@ -462,11 +500,57 @@ def check_breakdown(b) -> list[str]:
 # --------------------------------------------------------------------------- the planner call
 
 
+def renumber(b, start: int):
+    """Number the planned clips start, start+1, ... in order, mapping each entity's clip_ids the same way.
+
+    The model may count from 1 whatever it was told; the position in the reply is the truth.
+    """
+    ordered = sorted(b["clips"], key=lambda c: c["clip"])
+    mapping = {c["clip"]: start + i for i, c in enumerate(ordered)}
+    for c in ordered:
+        c["clip"] = mapping[c["clip"]]
+    for e in b["ledger"]["entities"]:
+        e["clip_ids"] = sorted({mapping[n] for n in e["clip_ids"] if n in mapping})
+    b["clips"] = ordered
+    return b
+
+
+def apply_carried(ledger, carried) -> None:
+    """Make the ledger open on the state carried out of the existing film (where the declared options allow it)."""
+    for e in ledger["entities"]:
+        known = (carried or {}).get(e["id"])
+        if not known:
+            continue
+        for item in e["initial"]:
+            value = known["axes"].get(item["axis"])
+            axis = next((a for a in e["axes"] if a["axis"] == item["axis"]), None)
+            if value is not None and axis is not None and value in axis["options"]:
+                item["value"] = value
+
+
+def end_states(b, carried=None) -> list:
+    """The state at the END of each planned clip (carried entities not redeclared are kept), in clip order."""
+    state = {k: {"name": v["name"], "kind": v["kind"], "axes": dict(v["axes"])} for k, v in (carried or {}).items()}
+    for e in b["ledger"]["entities"]:
+        entry = state.setdefault(e["id"], {"name": e["name"], "kind": e["kind"], "axes": {}})
+        entry["name"], entry["kind"] = e["name"], e["kind"]
+        for item in e["initial"]:
+            entry["axes"][item["axis"]] = item["value"]
+    out = []
+    for c in sorted(b["clips"], key=lambda c: c["clip"]):
+        for change in c["state_changes"]:
+            if change["entity"] in state:
+                state[change["entity"]]["axes"][change["axis"]] = change["to"]
+        out.append(copy.deepcopy(state))
+    return out
+
+
 class PlanError(RuntimeError):
     pass
 
 
-def plan_story(chat, story: str, target_clips: int, log=None, refs: dict | None = None) -> list[str]:
+def plan_story(chat, story: str, target_clips: int, log=None, refs: dict | None = None,
+               more: dict | None = None, states_out: list | None = None) -> list[str]:
     """Plan ``story`` into exactly ``target_clips`` raw asks with ``chat(messages) -> reply text``.
 
     One call; on an unparseable reply, a wrong clip count or any failed check, exactly one retry with the
@@ -474,7 +558,9 @@ def plan_story(chat, story: str, target_clips: int, log=None, refs: dict | None 
     an unparseable reply or a wrong clip count raises ``PlanError``.
     """
     say = log or (lambda *_: None)
-    user = build_user_content(story, target_clips, refs)
+    start = more["start"] if more else 1
+    carried = more.get("carried") if more else None
+    user = build_user_content(story, target_clips, refs, more)
     complaint, parsed, issues = [], None, []
     for attempt in range(2):
         content = user
@@ -483,6 +569,9 @@ def plan_story(chat, story: str, target_clips: int, log=None, refs: dict | None 
                 user, "\n\nYOUR PREVIOUS REPLY FAILED THESE CHECKS — CORRECT EXACTLY THIS AND NOTHING ELSE:\n" + "\n".join(complaint))
         reply = chat([{"role": "user", "content": content}])
         parsed = parse_breakdown(reply)
+        if parsed is not None:
+            renumber(parsed, start)
+            apply_carried(parsed["ledger"], carried)
         if parsed is None:
             complaint = ["Your reply was not one valid JSON object in the OUTPUT FORMAT above (or had no clips). Reply with that JSON object only."]
             issues = list(complaint)
@@ -501,6 +590,8 @@ def plan_story(chat, story: str, target_clips: int, log=None, refs: dict | None 
     if issues:
         say("kept the plan with remaining issues: " + " | ".join(issues))
     ordered = sorted(parsed["clips"], key=lambda c: c["clip"])
+    if states_out is not None:
+        states_out[:] = end_states(parsed, carried)
     return [raw_ask_for_clip(parsed, c["clip"]) for c in ordered]
 
 
@@ -530,12 +621,33 @@ def plan_slots(clips: list, target_clips: int) -> list[int]:
     return slots
 
 
+def plan_more(clips: list, target_clips: int):
+    """The continuation to plan when ``auto_clips`` is raised past the existing film, else None.
+
+    Fires only when the list already carries a ``planned`` flag (it was planned once) and ``target_clips`` is more
+    than the clips there now. Plans exactly the difference, numbered from len+1, appended after the end. Existing
+    clips, typed or planned, are existing film and are never touched; empty clips inside the existing range stay
+    as they are (they appear in the 'already in the film' block as empty). The state carried in is the end state
+    stored on the latest existing clip that has one, so a typed clip with no ledger carries the last known state.
+    """
+    if target_clips <= len(clips) or not any(isinstance(c, dict) and "planned" in c for c in clips):
+        return None
+    carried = None
+    for c in reversed(clips):
+        if isinstance(c, dict) and isinstance(c.get("plan_end_state"), dict):
+            carried = c["plan_end_state"]
+            break
+    return {"start": len(clips) + 1, "count": target_clips - len(clips),
+            "existing": [(i + 1, _ask_text(c).strip() if isinstance(c, dict) else "") for i, c in enumerate(clips)],
+            "carried": carried}
+
+
 def _next_id(clips: list) -> int:
     ids = [c["id"] for c in clips if isinstance(c, dict) and isinstance(c.get("id"), int)]
     return (max(ids) + 1) if ids else 0
 
 
-def apply_plan(clips: list, asks: list[str], slots: list[int]) -> list[int]:
+def apply_plan(clips: list, asks: list[str], slots: list[int], states: list | None = None) -> list[int]:
     """Write ``asks[i]`` into the empty ``slots`` (appending clips past the end). Typed clips are never touched.
 
     Returns the positions written. Each is flagged ``planned: True``, 15 s, not rewritten.
@@ -557,6 +669,8 @@ def apply_plan(clips: list, asks: list[str], slots: list[int]) -> list[int]:
         clip["prompt"] = asks[i]
         clip["prompt_rewritten"] = False
         clip["planned"] = True
+        if states is not None and i < len(states) and states[i] is not None:
+            clip["plan_end_state"] = states[i]
         clip["duration"] = 15
         clip["validated"] = False
         written.append(i)

@@ -54,6 +54,7 @@ from .pdd_pure_engine import (
 )
 
 _LOG = logging.getLogger("minimax_h3_master_extender")
+_LOG.addFilter(prompt_rewriter.ConsoleSafeFilter())
 EVENT_PROGRESS = "master_extender_progress"
 EVENT_CLIPS = "master_extender_clips"
 EVENT_REWRITE = "master_extender_rewrite"
@@ -429,7 +430,7 @@ class MiniMaxH3MasterExtender:
                 # --- Film story for the rewriter (appended last; old workflows' trailing master_ui '' lands here = empty) ---
                 "rewrite_story": ("STRING", {"default": "", "multiline": True, "tooltip": "The whole film's story, start to end (optional). When filled, every clip's writer gets it as a 'story:' block and is told to use it only to pick what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat), not later events, not the whole story squeezed in, not its wording unless the clip's ask calls for it. The clip's own ask wins over the story. Works with every continuity mode. Changing it does not mark already rewritten clips stale; it applies to clips rewritten from then on."}),
                 # --- Story planner (appended last) ---
-                "auto_clips": ("INT", {"default": 0, "min": 0, "max": 40, "step": 1, "tooltip": "0 = off. With rewrite_mode on and a rewrite_story set, plan the story ONCE into exactly this many 15 s clips before rewriting (the Studio's one-call chapter-breakdown planner, run on the writer GGUF): each planned clip's shot list is written into the clip list as its raw ask, flagged 'planned', and editable in the panel; then the normal rewrite runs. Empty clips are filled; clips you typed are never overwritten; changing the story or this number later never replans (it would throw away rendered takes). To plan again use 'Replan from story' in the Prompt Rewriter section."}),
+                "auto_clips": ("INT", {"default": 0, "min": 0, "max": 40, "step": 1, "tooltip": "0 = off. With rewrite_mode on and a rewrite_story set, plan the story ONCE into exactly this many 15 s clips before rewriting (the Studio's one-call chapter-breakdown planner, run on the writer GGUF): each planned clip's shot list is written into the clip list as its raw ask, flagged 'planned', and editable in the panel; then the normal rewrite runs. Empty clips are filled; clips you typed are never overwritten; changing the story or this number later never replans (it would throw away rendered takes). Raise it to plan more clips after the existing ones: only the difference is planned (continuing from where the last existing clip ends, with the state carried over), existing clips typed or planned are never touched, and lowering it or editing the story does nothing. To plan the whole story again use 'Replan from story' in the Prompt Rewriter section."}),
                 "planner_refs": (prompt_rewriter.PLANNER_REFS, {"default": "images", "tooltip": "What the story planner (auto_clips) is shown of the reference pictures. images (default): the pictures themselves, each labelled 'Picture N:' and followed by its caption, plus a rule to stage the story only with them (needs the writer GGUF to be the captioner too, so the server has vision; otherwise it falls back to captions). captions: the labelled caption lines only. off: the story text alone. Videos are always captions. Only used when a plan is made."}),
             },
             "hidden": {
