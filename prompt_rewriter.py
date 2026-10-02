@@ -47,6 +47,7 @@ TASKS = ["auto", "Ref2VA", "T2VA"]
 CAPTION_LENGTHS = ["brief", "standard", "detailed"]
 RAW_ASKS = "raw asks"
 FINAL_PROMPTS = "final prompts"
+PLANNER_REFS = ["images", "captions", "off"]
 CONTINUITY = ["off", RAW_ASKS, FINAL_PROMPTS]
 
 CONTINUITY_RULE = (
@@ -455,6 +456,9 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     story = str(settings.get("rewrite_story") or "").strip()
     system_given = str(settings.get("rewrite_system_prompt_in") or "").strip() or str(settings.get("rewrite_system_prompt") or "").strip()
     auto_clips = max(0, int(settings.get("auto_clips", 0) or 0))
+    planner_refs = str(settings.get("planner_refs", "images"))
+    if planner_refs not in PLANNER_REFS:
+        planner_refs = "images"
 
     if writer_label.startswith("(") or not writer_label:
         raise RuntimeError("rewrite_writer_model: pick a GGUF from the list (the rewriter pack's model list).")
@@ -592,9 +596,25 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     pool_ctx = writer_ctx * writers_at_once if writer_on_server else 0
     plan_tokens = max(max_new_tokens, 900 * auto_clips + 1500) if planning else 0
     plan_budget = plan_tokens + (max(budget, 0) if reasoning["enabled"] else 0)
-    plan_ctx = (guide_prompt.context_needed(
-        [{"role": "user", "content": story_planner.build_user_message(story, auto_clips)}], plan_budget)
-        if planning and writer_on_server else 0)
+    # What the planner is shown of the references. images = the pictures themselves (needs the writer GGUF to be
+    # the captioner, i.e. the server has the mmproj) plus their captions; captions = labelled caption lines.
+    plan_refs_mode = "off"
+    if planning and task != "T2VA" and (ordered or ordered_videos) and planner_refs != "off":
+        plan_refs_mode = "images" if (planner_refs == "images" and writer_on_server and mmproj_path and ordered) else "captions"
+        if planner_refs == "images" and plan_refs_mode == "captions":
+            _LOG.info("Rewriter: planner_refs=images but the writer server has no vision (writer and captioner are "
+                      "different GGUFs); the planner gets the captions only")
+    # Each picture costs min(768, (w//28)*(h//28)) tokens on the server path (the pack's per-picture ceiling).
+    plan_image_tokens = sum(story_planner.image_tokens(t) for _slot, t in ordered) if plan_refs_mode == "images" else 0
+    plan_ctx = 0
+    if planning and writer_on_server:
+        stand = None
+        if plan_refs_mode != "off":
+            stand = {"pictures": [{"label": f"Picture {slot + 1}", "caption": "x" * 1600, "image": None} for slot, _t in ordered],
+                     "videos": [{"label": f"Video {k}", "caption": "x" * 1600} for k, _v in enumerate(ordered_videos, start=1)]}
+        plan_ctx = guide_prompt.context_needed(
+            [{"role": "user", "content": story_planner.build_user_content(story, auto_clips, stand)}],
+            plan_budget + plan_image_tokens)
     caption_jobs = len(to_describe) + len(videos_to_describe)
     caption_slots = max(1, min(caption_jobs, slots)) if caption_jobs else 1
     server_slots = max(caption_slots, writers_at_once)
@@ -714,8 +734,27 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                     text = nodes.run_messages(writer_label, messages, greedy, seed, False, plan_settings, progress, label=task)
                 return constants.answer_only((text or "").replace("\r\n", "\n")).strip()
 
+            plan_refs = None
+            if plan_refs_mode != "off":
+                uris = {}
+                if plan_refs_mode == "images":
+                    media = _mod("media")
+                    with media.Workspace() as workspace:
+                        for slot, tensor in ordered:
+                            path = media.image_files(tensor, workspace, 1, prefix=f"plan{slot}",
+                                                     max_pixels=story_planner.IMAGE_TOKENS_CAP * media.PATCH ** 2)[0]
+                            uris[slot] = story_planner.png_data_uri(path)
+                plan_refs = {
+                    "pictures": [{"label": f"Picture {slot + 1}", "caption": captions.get(slot, ""), "image": uris.get(slot)}
+                                 for slot, _t in ordered],
+                    "videos": [{"label": f"Video {k}", "caption": video_captions.get(slot, "")}
+                               for k, (slot, _f) in enumerate(ordered_videos, start=1)],
+                }
+                _LOG.info("Rewriter: planner sees the references as %s (%d picture(s), %d video caption(s), ~%d image tokens)",
+                          plan_refs_mode, len(ordered), len(ordered_videos), plan_image_tokens)
             t_plan = time.time()
-            asks = story_planner.plan_story(plan_chat, story, auto_clips, log=lambda m: _LOG.info("Rewriter planner: %s", m))
+            asks = story_planner.plan_story(plan_chat, story, auto_clips, refs=plan_refs,
+                                            log=lambda m: _LOG.info("Rewriter planner: %s", m))
             written_slots = story_planner.apply_plan(clips, asks, plan_slots)
             _LOG.info("Rewriter: planned %d clip(s) in %.1f s; wrote %d into the clip list (typed clips untouched)",
                       len(asks), time.time() - t_plan, len(written_slots))

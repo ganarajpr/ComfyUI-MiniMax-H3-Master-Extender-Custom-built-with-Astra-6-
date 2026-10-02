@@ -15,6 +15,7 @@ callable handed in by the rewriter, which runs it on the writer's llama-server.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import random
@@ -111,6 +112,73 @@ Each clip has 3-6 shots whose seconds sum to 15. "ledger.entities" may be an emp
 
 def build_user_message(story: str, target_clips: int) -> str:
     return fill_template(load_prompt("planner"), story, "target", target_clips) + OUTPUT_SHAPE
+
+
+# Kept out of prompts/planner.md on purpose: that file is the Studio's template, compared with it by the
+# Studio's drift test. This rule exists only when the run has reference pictures.
+REFS_RULE = (
+    "REFERENCE RULE — These are the only characters, props and locations that have a reference picture. "
+    "Stage the story with them, matching how they actually look (wardrobe, material, layout). Anything without a "
+    "picture stays off screen or unseen. Name a subject by its Picture number the first time it appears in a "
+    "clip's shots."
+)
+REFS_HEADER = "REFERENCES — the only subjects that have a reference (labelled in slot order):"
+
+#: What the pack allows one picture on the server path (media.PATCH-pixel blocks, mtmd_engine.FRAME_MAX_TOKENS).
+IMAGE_TOKENS_CAP = 768
+IMAGE_PATCH = 28
+
+
+def image_tokens(tensor, cap: int = IMAGE_TOKENS_CAP, patch: int = IMAGE_PATCH) -> int:
+    """Tokens one reference picture costs on the server: its (height//28) x (width//28) blocks, capped at 768.
+
+    The cap is the per-picture ceiling the pack's server path shrinks a picture to (``FRAME_MAX_TOKENS``); a
+    picture smaller than that costs its own block count.
+    """
+    shape = tuple(int(x) for x in tensor.shape)
+    height, width = shape[-3], shape[-2]
+    return min(cap, max(1, (width // patch) * (height // patch)))
+
+
+def png_data_uri(path: str) -> str:
+    with open(path, "rb") as handle:
+        return "data:image/png;base64," + base64.b64encode(handle.read()).decode("ascii")
+
+
+def build_user_content(story: str, target_clips: int, refs: dict | None = None):
+    """The planner's user turn: a string, or (with real pictures) a list of OpenAI-style content parts.
+
+    ``refs`` = ``{"pictures": [{"label": "Picture 1", "caption": str, "image": data-URI or None}],
+    "videos": [{"label": "Video 1", "caption": str}]}``. Pictures with an ``image`` are sent as image parts
+    followed by their caption; the others as one labelled caption line. Videos are always caption lines.
+    """
+    text = build_user_message(story, target_clips)
+    pictures = list((refs or {}).get("pictures") or [])
+    videos = list((refs or {}).get("videos") or [])
+    if not pictures and not videos:
+        return text
+    tail = f"{REFS_RULE}\n\n{text}"
+    if not any(p.get("image") for p in pictures):
+        lines = [f"{item['label']}: {item['caption']}".rstrip() for item in pictures + videos]
+        return "\n".join([REFS_HEADER] + lines) + f"\n\n{tail}"
+    parts = [{"type": "text", "text": REFS_HEADER}]
+    for item in pictures:
+        parts.append({"type": "text", "text": f"{item['label']}:"})
+        if item.get("image"):
+            parts.append({"type": "image_url", "image_url": {"url": item["image"]}})
+        parts.append({"type": "text", "text": item["caption"] or "(no caption)"})
+    for item in videos:
+        parts.append({"type": "text", "text": f"{item['label']}: {item['caption']}".rstrip()})
+    parts.append({"type": "text", "text": f"\n{tail}"})
+    return parts
+
+
+def _with_complaint(content, complaint: str):
+    if isinstance(content, str):
+        return content + complaint
+    parts = [dict(p) for p in content]
+    parts[-1]["text"] += complaint
+    return parts
 
 
 # --------------------------------------------------------------------------- parse (lenient, never raises)
@@ -398,7 +466,7 @@ class PlanError(RuntimeError):
     pass
 
 
-def plan_story(chat, story: str, target_clips: int, log=None) -> list[str]:
+def plan_story(chat, story: str, target_clips: int, log=None, refs: dict | None = None) -> list[str]:
     """Plan ``story`` into exactly ``target_clips`` raw asks with ``chat(messages) -> reply text``.
 
     One call; on an unparseable reply, a wrong clip count or any failed check, exactly one retry with the
@@ -406,12 +474,13 @@ def plan_story(chat, story: str, target_clips: int, log=None) -> list[str]:
     an unparseable reply or a wrong clip count raises ``PlanError``.
     """
     say = log or (lambda *_: None)
-    user = build_user_message(story, target_clips)
+    user = build_user_content(story, target_clips, refs)
     complaint, parsed, issues = [], None, []
     for attempt in range(2):
         content = user
         if complaint:
-            content = f"{user}\n\nYOUR PREVIOUS REPLY FAILED THESE CHECKS — CORRECT EXACTLY THIS AND NOTHING ELSE:\n" + "\n".join(complaint)
+            content = _with_complaint(
+                user, "\n\nYOUR PREVIOUS REPLY FAILED THESE CHECKS — CORRECT EXACTLY THIS AND NOTHING ELSE:\n" + "\n".join(complaint))
         reply = chat([{"role": "user", "content": content}])
         parsed = parse_breakdown(reply)
         if parsed is None:

@@ -194,7 +194,7 @@ const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
 const SINGLE_TE_WIDGETS = ["single_text_encode"];
 // auto_clips is appended after rewrite_story; a workflow saved before it carries the empty master_ui value there.
-const AUTO_CLIPS_WIDGETS = ["auto_clips"];
+const AUTO_CLIPS_WIDGETS = ["auto_clips", "planner_refs"];
 const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...SINGLE_TE_WIDGETS, ...AUTO_CLIPS_WIDGETS];
 
 function setWidgetVisible(widget, visible) {
@@ -800,6 +800,7 @@ app.registerExtension({
                     if (W("auto_clips")) {
                         wrap.appendChild(uiRow("plan story into N clips", bindNumber("auto_clips"), { hint: "0 = off. With a film story set, the first run plans it ONCE into exactly N 15 s clips (shot lists written into the empty clips, flagged planned, editable), then rewrites them. Typed clips are never overwritten; changing the story or N never replans on its own." }));
                         if (Number(getW("auto_clips", 0)) > 0) {
+                            if (W("planner_refs")) wrap.appendChild(uiRow("planner sees references as", bindSelect("planner_refs"), { indent: true, hint: "images: the reference pictures themselves plus their captions (needs the writer GGUF to also be the caption model); captions: caption lines only; off: the story text alone." }));
                             const replan = document.createElement("button");
                             replan.textContent = "Replan from story";
                             replan.title = "Clear the untouched planned asks (and their rewrites) so the next run plans the story again. Clips you edited or typed stay.";

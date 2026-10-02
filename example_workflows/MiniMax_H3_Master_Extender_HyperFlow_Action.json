@@ -1254,6 +1254,16 @@
           },
           "link": null,
           "shape": 7
+        },
+        {
+          "localized_name": "planner_refs",
+          "name": "planner_refs",
+          "type": "COMBO",
+          "widget": {
+            "name": "planner_refs"
+          },
+          "link": null,
+          "shape": 7
         }
       ],
       "outputs": [
@@ -1355,6 +1365,7 @@
         "standard",
         "",
         0,
+        "images",
         ""
       ]
     }
