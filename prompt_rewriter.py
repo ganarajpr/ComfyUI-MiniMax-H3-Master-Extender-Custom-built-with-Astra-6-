@@ -39,7 +39,9 @@ MISSING = "(install MiniMax-H3-Prompt-Rewriter-ComfyUI for the built-in rewriter
 MODES = ["off", "pending clips", "all clips"]
 TASKS = ["auto", "Ref2VA", "T2VA"]
 CAPTION_LENGTHS = ["brief", "standard", "detailed"]
-CONTINUITY = ["off", "raw asks"]
+RAW_ASKS = "raw asks"
+FINAL_PROMPTS = "final prompts"
+CONTINUITY = ["off", RAW_ASKS, FINAL_PROMPTS]
 
 CONTINUITY_RULE = (
     "\n\nContinuity: the task message may carry a 'previous_clips' block. Those are the earlier "
@@ -47,6 +49,24 @@ CONTINUITY_RULE = (
     "exactly where the last of them ends: keep the subjects, wardrobe, setting, lighting and "
     "visual style continuous with them, do not re-describe or repeat their events, and do not "
     "count them as shots of this clip."
+)
+
+CONTINUITY_RULE_FINAL = (
+    "\n\nContinuity: the task message may carry a 'previous_clips' block with two parts. "
+    "'Story so far' is the short raw asks of the earlier clips, as story memory only. "
+    "'Previous clip, final prompt' is the finished H3 prompt of the clip immediately before this one, "
+    "already rendered. The target video begins exactly where the LAST shot of that final prompt ends: "
+    "take its end state (positions, wardrobe, props, light, set, who is where) as this clip's opening "
+    "state, and keep the subjects and visual style continuous with it. Do not repeat its events, do not "
+    "re-describe what it already showed, and do not count its shots as shots of this clip."
+)
+
+STORY_RULE = (
+    "\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. "
+    "Use it only to decide what THIS clip covers: the next beat after where the previous clips end "
+    "(clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the "
+    "remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless "
+    "the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree."
 )
 
 CAPTION_TOKENS = 512
@@ -235,37 +255,70 @@ def fingerprint(source: str, duration: float, resolution: str, task: str, previo
     Its raw ask, duration, aspect and task, and the raw asks of the clips before
     it (``previous``, independent of the continuity setting): an earlier ask that
     changes re-renders this clip anyway. The writer, captioner, system prompt,
-    references and continuity setting are left out on purpose: changing them
-    applies to clips rewritten from now on and keeps the rendered ones.
+    references, continuity setting and the film story (``rewrite_story``) are
+    left out on purpose: changing them applies to clips rewritten from now on
+    and keeps the rendered ones.
     """
     payload = json.dumps([source.strip(), f"{float(duration):.2f}", resolution, task, previous.strip()],
                          ensure_ascii=False)
     return "v2:" + hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
-def continuity_block(clips: list, index: int, continuity: str) -> str:
-    """What the writer is told about clips 1..index-1: their raw asks, in order.
-
-    Short, in the user's words, and available before any rewrite runs, so
-    pending clips can still be written in parallel.
-    """
-    if continuity == "off" or index <= 0:
+def final_text_of(clip) -> str:
+    """A clip's final prompt: the rewrite once rewritten, otherwise the prompt as typed."""
+    if not isinstance(clip, dict):
         return ""
+    return clip.get("prompt").strip() if isinstance(clip.get("prompt"), str) else ""
+
+
+def final_hash(clip) -> str:
+    return hashlib.sha1(final_text_of(clip).encode("utf-8")).hexdigest()
+
+
+def _raw_ask_lines(clips: list, count: int) -> list[str]:
     lines = []
-    for i, clip in enumerate(clips[:index]):
+    for i, clip in enumerate(clips[:count]):
         if not isinstance(clip, dict):
             continue
         ask = " ".join(source_of(clip).split())
         if ask:
             lines.append(f"Clip {i + 1} ({float(clip.get('duration', 15) or 15):g}s): {ask}")
-    return "\n".join(lines)
+    return lines
 
 
-def with_previous(user_prompt: str, previous: str) -> str:
-    """Insert a 'previous_clips:' block ahead of the original prompt in the task message."""
-    if not previous:
+def continuity_block(clips: list, index: int, continuity: str) -> str:
+    """What the writer is told about clips 1..index-1.
+
+    ``raw asks``: their raw asks, in order. Short, in the user's words, and
+    available before any rewrite runs, so pending clips can be written in parallel.
+
+    ``final prompts``: the full final prompt of clip index-1 (what it actually
+    became), led by the raw asks of clips 1..index-2 as short story memory.
+    Needs clip index-1 already written, so the clips are written in order.
+    """
+    if continuity == "off" or index <= 0:
+        return ""
+    if continuity == FINAL_PROMPTS:
+        parts = []
+        memory = _raw_ask_lines(clips, index - 1)
+        if memory:
+            parts.append("Story so far (raw asks of the earlier clips, memory only):\n" + "\n".join(memory))
+        last = clips[index - 1]
+        final = final_text_of(last)
+        if final:
+            seconds = float(last.get("duration", 15) or 15)
+            parts.append(f"Previous clip, final prompt (clip {index}, {seconds:g}s, already rendered; "
+                         f"this clip starts where its last shot ends):\n{final}")
+        return "\n\n".join(parts)
+    return "\n".join(_raw_ask_lines(clips, index))
+
+
+def with_previous(user_prompt: str, previous: str, story: str = "") -> str:
+    """Insert 'story:' then 'previous_clips:' blocks ahead of the original prompt in the task message."""
+    story = (story or "").strip()
+    if not previous and not story:
         return user_prompt
-    block = f"previous_clips:\n{previous}\n"
+    block = (f"story:\n{story}\n" if story else "") + (f"previous_clips:\n{previous}\n" if previous else "")
     marker = "original_prompt:"
     at = user_prompt.rfind(marker)
     if at < 0:
@@ -273,15 +326,22 @@ def with_previous(user_prompt: str, previous: str) -> str:
     return user_prompt[:at] + block + user_prompt[at:]
 
 
-def pending_indices(clips: list, mode: str, current: dict | None = None) -> list[int]:
+def pending_indices(clips: list, mode: str, current: dict | None = None, continuity: str = RAW_ASKS) -> list[int]:
     """Which clips this run rewrites.
 
     ``all clips``: every clip with text. ``pending clips``: clips never
     rewritten, marked pending by the panel, or whose inputs changed since (the
     stored fingerprint in ``rewrite_meta`` differs from ``current[index]``); a
     rewrite from before fingerprints existed counts as out of date once.
+
+    With ``final prompts`` continuity a rewritten clip is also out of date when
+    the final prompt of the clip before it differs from the one it was written
+    from (``rewrite_meta["prev_final"]``), or when that clip is rewritten in this
+    same run. A clip with no ``prev_final`` (written under another continuity
+    setting) is never stale for that reason: switching the setting keeps it.
     """
     wanted = []
+    chosen = set()
     for index, clip in enumerate(clips):
         if not isinstance(clip, dict):
             continue
@@ -290,11 +350,15 @@ def pending_indices(clips: list, mode: str, current: dict | None = None) -> list
             continue
         if mode == "all clips" or not clip.get("prompt_rewritten"):
             wanted.append(index)
+            chosen.add(index)
             continue
-        if current is not None:
-            stored = (clip.get("rewrite_meta") or {}).get("fingerprint")
-            if stored != current.get(index):
-                wanted.append(index)
+        meta = clip.get("rewrite_meta") or {}
+        stale = current is not None and meta.get("fingerprint") != current.get(index)
+        if not stale and continuity == FINAL_PROMPTS and index > 0 and meta.get("prev_final"):
+            stale = (index - 1) in chosen or meta["prev_final"] != final_hash(clips[index - 1])
+        if stale:
+            wanted.append(index)
+            chosen.add(index)
     return wanted
 
 
@@ -357,7 +421,9 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     slots = max(1, int(settings.get("rewrite_parallel", 3)))
     continuity = str(settings.get("rewrite_previous_clips", "raw asks"))
     if continuity not in CONTINUITY:
-        continuity = "raw asks"
+        continuity = RAW_ASKS
+    chained = continuity == FINAL_PROMPTS
+    story = str(settings.get("rewrite_story") or "").strip()
     system_given = str(settings.get("rewrite_system_prompt_in") or "").strip() or str(settings.get("rewrite_system_prompt") or "").strip()
 
     if writer_label.startswith("(") or not writer_label:
@@ -414,7 +480,15 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         if clip.get("prompt_rewritten") and stored and not stored.startswith("v2:") \
                 and (clip.get("prompt_raw") or "").strip() == source_of(clip).strip():
             clip["rewrite_meta"] = dict(meta, fingerprint=current[index])
-    todo = pending_indices(clips, mode, current)
+    todo = pending_indices(clips, mode, current, continuity)
+    if chained:
+        # Clips written under another setting get their baseline now, so a later
+        # change to the previous final prompt is noticed; switching never invalidates.
+        for index, clip in enumerate(clips):
+            meta = clip.get("rewrite_meta") if isinstance(clip, dict) else None
+            if index > 0 and index not in todo and clip.get("prompt_rewritten") and isinstance(meta, dict) \
+                    and not meta.get("prev_final"):
+                clip["rewrite_meta"] = dict(meta, prev_final=final_hash(clips[index - 1]))
     if not todo:
         _LOG.info("Rewriter: nothing to do (every clip prompt is rewritten, up to date, or empty)")
         return ["rewriter: nothing pending"]
@@ -455,10 +529,18 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     stand_in = "" if task == "T2VA" else "x" * (1600 * max(len(ordered) + len(ordered_videos) + len(ordered_audios), 1))
     longest = max((source_of(clips[i]) for i in todo), key=len)
     rough = guide_prompt.build_messages(guide, task, longest, resolution, 15.0, stand_in, system=system_given)
-    if continuity != "off" and len(clips) > 1:
-        rough[1]["content"] += "\n" + continuity_block(clips, len(clips) - 1, "raw asks")
+    if chained and len(clips) > 1:
+        # The previous clip's final prompt is a full six-section answer: size for one
+        # as long as the writer may produce, not for the raw ask it is today.
+        tail = continuity_block(clips, len(clips) - 1, FINAL_PROMPTS)
+        pad = max(0, max_new_tokens * 4 - len(final_text_of(clips[-2])))
+        rough[1]["content"] += "\n" + tail + "x" * pad + CONTINUITY_RULE_FINAL
+    elif continuity != "off" and len(clips) > 1:
+        rough[1]["content"] += "\n" + continuity_block(clips, len(clips) - 1, RAW_ASKS)
+    if story:
+        rough[1]["content"] += "\nstory:\n" + story + STORY_RULE
     writer_ctx = guide_prompt.context_needed(rough, writer_budget)
-    writers_at_once = min(len(todo), slots) if writer_on_server else 1
+    writers_at_once = min(len(todo), slots) if writer_on_server and not chained else 1
     pool_ctx = writer_ctx * writers_at_once if writer_on_server else 0
     caption_jobs = len(to_describe) + len(videos_to_describe)
     caption_slots = max(1, min(caption_jobs, slots)) if caption_jobs else 1
@@ -558,7 +640,9 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         # ---- writing ----------------------------------------------------------
         say("rewrite", f"writing {len(todo)} clip prompt(s) as {task}"
             + (f" with thinking (budget {budget})" if reasoning["enabled"] else "")
-            + (f", {writers_at_once} at once" if writers_at_once > 1 else ""), 0.3)
+            + (f", {writers_at_once} at once" if writers_at_once > 1 else "")
+            + (", one after another (continuity 'final prompts': each clip continues from the previous clip's final prompt)"
+               if chained else ""), 0.3)
 
         pack_settings = dict(nodes.DEFAULT_OPTIONS)
         pack_settings.update(max_new_tokens=max_new_tokens, temperature=temperature)
@@ -572,8 +656,11 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             messages = guide_prompt.build_messages(guide, task, source, resolution, duration, block, system=system_given)
             previous = continuity_block(clips, index, continuity)
             if previous:
-                messages[0]["content"] = messages[0]["content"].rstrip() + CONTINUITY_RULE
-                messages[1]["content"] = with_previous(messages[1]["content"], previous)
+                messages[0]["content"] = messages[0]["content"].rstrip() + (CONTINUITY_RULE_FINAL if chained else CONTINUITY_RULE)
+            if story:
+                messages[0]["content"] = messages[0]["content"].rstrip() + STORY_RULE
+            if previous or story:
+                messages[1]["content"] = with_previous(messages[1]["content"], previous, story)
 
             last = {"at": 0.0}
 
@@ -613,36 +700,49 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             stream("done", text, force=True)
             return index, source, text, time.time() - t0
 
-        if server is not None and writer_on_server and writers_at_once > 1:
-            with ThreadPoolExecutor(max_workers=writers_at_once) as pool:
-                written = list(pool.map(write_one, todo))
-        else:
-            written = [write_one(index) for index in todo]
+        def apply(result) -> None:
+            index, source, text, seconds = result
+            clip = clips[index]
+            if not text:
+                notes.append(f"Clip {index + 1}: rewriter returned nothing, prompt left as typed")
+                return
+            sections = fields.split_fields(text, names)
+            missing = fields.missing(sections, names)
+            if missing:
+                notes.append(f"Clip {index + 1}: missing {', '.join(missing)}")
+            clip["prompt_raw"] = source
+            clip["prompt"] = text
+            clip["rewrite_text"] = text
+            clip["prompt_rewritten"] = True
+            clip["validated"] = False
+            meta = {
+                "model": os.path.basename(writer_file or writer_label),
+                "task": task,
+                "thinking": bool(reasoning["enabled"]),
+                "budget": budget if reasoning["enabled"] else 0,
+                "seconds": round(seconds, 1),
+                "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "fingerprint": current.get(index),
+            }
+            if chained and index > 0:
+                meta["prev_final"] = final_hash(clips[index - 1])
+            clip["rewrite_meta"] = meta
+            _LOG.info("Rewriter: clip %d rewritten in %.1f s (%d chars)", index + 1, seconds, len(text))
 
-    for index, source, text, seconds in written:
-        clip = clips[index]
-        if not text:
-            notes.append(f"Clip {index + 1}: rewriter returned nothing, prompt left as typed")
-            continue
-        sections = fields.split_fields(text, names)
-        missing = fields.missing(sections, names)
-        if missing:
-            notes.append(f"Clip {index + 1}: missing {', '.join(missing)}")
-        clip["prompt_raw"] = source
-        clip["prompt"] = text
-        clip["rewrite_text"] = text
-        clip["prompt_rewritten"] = True
-        clip["validated"] = False
-        clip["rewrite_meta"] = {
-            "model": os.path.basename(writer_file or writer_label),
-            "task": task,
-            "thinking": bool(reasoning["enabled"]),
-            "budget": budget if reasoning["enabled"] else 0,
-            "seconds": round(seconds, 1),
-            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "fingerprint": current.get(index),
-        }
-        _LOG.info("Rewriter: clip %d rewritten in %.1f s (%d chars)", index + 1, seconds, len(text))
+        if chained:
+            written = []
+            for index in todo:
+                result = write_one(index)
+                apply(result)
+                written.append(result)
+        else:
+            if server is not None and writer_on_server and writers_at_once > 1:
+                with ThreadPoolExecutor(max_workers=writers_at_once) as pool:
+                    written = list(pool.map(write_one, todo))
+            else:
+                written = [write_one(index) for index in todo]
+            for result in written:
+                apply(result)
 
     total = time.time() - started
     say("rewrite", f"rewrote {len(written)} clip(s) in {total:.0f} s", 1.0)

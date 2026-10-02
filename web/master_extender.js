@@ -787,7 +787,14 @@ app.registerExtension({
                     msgWrap.appendChild(msg);
                     wrap.appendChild(msgWrap);
                 }
-                if (W("rewrite_previous_clips")) wrap.appendChild(uiRow("continuity for clip N", bindSelect("rewrite_previous_clips"), { hint: "Earlier clips' raw asks go into the task message as previous_clips, so clip N continues from where N-1 ends." }));
+                if (W("rewrite_previous_clips")) wrap.appendChild(uiRow("continuity for clip N", bindSelect("rewrite_previous_clips"), { hint: "raw asks: earlier clips' asks as you typed them (written in parallel). final prompts: clip N-1's full rewritten prompt plus the earlier raw asks, so clip N continues from what N-1 became (written one after another; N is redone when N-1's final prompt changes). off: nothing." }));
+                if (W("rewrite_story")) {
+                    wrap.appendChild(uiHint("Film story (optional): the whole story, start to end. Every clip's writer gets it and picks only the next beat after the previous clips. Changing it does not redo clips already rewritten."));
+                    const storyBox = document.createElement("div");
+                    storyBox.style.cssText = "margin-left: 14px;";
+                    storyBox.appendChild(uiTextarea(getW("rewrite_story", ""), (v) => setW("rewrite_story", v, { rerender: false }), { rows: 4, placeholder: "The whole film in a few lines: who, where, how it begins, turns and ends. Each clip then covers only its own beat." }));
+                    wrap.appendChild(storyBox);
+                }
                 wrap.appendChild(uiRow("greedy decoding", bindToggle("rewrite_greedy")));
                 if (!getW("rewrite_greedy", true)) wrap.appendChild(uiRow("temperature", bindNumber("rewrite_temperature"), { indent: true }));
                 wrap.appendChild(uiRow("max new tokens", bindNumber("rewrite_max_new_tokens")));

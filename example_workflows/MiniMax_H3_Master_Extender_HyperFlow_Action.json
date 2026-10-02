@@ -1234,6 +1234,16 @@
           },
           "link": null,
           "shape": 7
+        },
+        {
+          "localized_name": "rewrite_story",
+          "name": "rewrite_story",
+          "type": "STRING",
+          "widget": {
+            "name": "rewrite_story"
+          },
+          "link": null,
+          "shape": 7
         }
       ],
       "outputs": [
@@ -1333,6 +1343,7 @@
         true,
         false,
         "standard",
+        "",
         ""
       ]
     }
