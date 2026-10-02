@@ -47,13 +47,11 @@ OFFICIAL_SENTINEL = "@official"
 def load_prompt(name: str) -> str:
     """A ``prompts/<name>.md`` body with its leading ``<!-- ... -->`` header stripped."""
     with open(os.path.join(PROMPT_DIR, name + ".md"), "r", encoding="utf-8", newline="") as handle:
-        text = handle.read()
+        text = handle.read().replace("\r\n", "\n")
     if text.startswith("<!--"):
         end = text.index("-->")
         text = text[end + 3:]
-        if text.startswith("\r\n"):
-            text = text[2:]
-        elif text.startswith("\n"):
+        if text.startswith("\n"):
             text = text[1:]
     return text
 
