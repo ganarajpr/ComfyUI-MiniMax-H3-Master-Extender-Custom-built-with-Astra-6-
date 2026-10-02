@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fix**: the first plan now sees typed clips. With typed clips in the range (1-6 typed and `auto_clips` 10, or clip 1 typed and N=4) only the empty slots are planned, as a continuation of / bridge between the typed clips (`[TO PLAN: clip N]` markers, non-contiguous clip numbers allowed, one call), instead of planning the whole story from scratch and dropping its first clips into the empty slots. One shared context builder serves this and plan-more. With nothing typed the plan is unchanged.
 - **Plan more**: raising `auto_clips` past the existing clip count plans only the new clips after the existing ones (continuation block, carried ledger state, numbering from the next clip). The planner's end-of-clip state is stored on each planned clip as `plan_end_state`.
 - **Fix**: logging model or user text (an en dash, Devanagari...) raised UnicodeEncodeError on a cp1252 console. Our loggers now pass every record through `ConsoleSafeFilter` (typographic punctuation to ASCII, the rest as \\uXXXX); the panel and the stored clips keep the real Unicode.
 - `planner_refs` (images / captions / off, default images): the story planner sees the reference pictures (real image parts on the writer server, or caption lines) with a stage-only-with-these rule kept outside `prompts/planner.md`; videos are captions only.

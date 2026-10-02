@@ -543,18 +543,22 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     image_keys = [(slot, _image_key(tensor, model_path, length)) for slot, tensor in ordered] if task != "T2VA" else []
     video_keys = [(slot, _video_key(frames, model_path, length)) for slot, frames in ordered_videos] if task != "T2VA" else []
     plan_slots = story_planner.plan_slots(clips, auto_clips) if (auto_clips and story) else []
-    # Raising auto_clips past a film that was planned once plans only the new clips, after the existing ones.
-    plan_more = story_planner.plan_more(clips, auto_clips) if (auto_clips and story and not plan_slots) else None
-    planning = bool(plan_slots) or bool(plan_more)
-    plan_n = plan_more["count"] if plan_more else auto_clips
+    # plan_ctx is None for a first plan with nothing typed (the whole story into N). Otherwise the planner sees the
+    # existing clips: typed ones around the empty slots of a first plan, or every clip when auto_clips is raised past a
+    # film that was planned once (only the new clips are planned, after the existing ones).
+    plan_ctx = story_planner.plan_around(clips, auto_clips, plan_slots) if plan_slots else None
+    if not plan_slots and auto_clips and story:
+        plan_ctx = story_planner.plan_more(clips, auto_clips)
+    planning = bool(plan_slots) or bool(plan_ctx)
+    plan_n = len(plan_ctx["numbers"]) if plan_ctx else auto_clips
     sizing_clips = clips
-    if planning and plan_more:
+    if planning:
         sizing_clips = copy.deepcopy(clips)
-        before = plan_more["start"] - 1
-        story_planner.apply_plan(sizing_clips, [""] * before + ["x" * 1500] * plan_n, list(range(before, auto_clips)))
-    elif planning:
-        sizing_clips = copy.deepcopy(clips)
-        story_planner.apply_plan(sizing_clips, ["x" * 1500] * auto_clips, plan_slots)
+        if plan_ctx:
+            placeholders, _none, sizing_slots = story_planner.place(["x" * 1500] * plan_n, [], plan_ctx["numbers"])
+            story_planner.apply_plan(sizing_clips, placeholders, sizing_slots)
+        else:
+            story_planner.apply_plan(sizing_clips, ["x" * 1500] * auto_clips, plan_slots)
 
     def assess(cl: list) -> tuple[dict, list[int]]:
         current = {}
@@ -658,7 +662,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             stand = {"pictures": [{"label": f"Picture {slot + 1}", "caption": "x" * 1600, "image": None} for slot, _t in ordered],
                      "videos": [{"label": f"Video {k}", "caption": "x" * 1600} for k, _v in enumerate(ordered_videos, start=1)]}
         plan_ctx = guide_prompt.context_needed(
-            [{"role": "user", "content": story_planner.build_user_content(story, plan_n, stand, plan_more)}],
+            [{"role": "user", "content": story_planner.build_user_content(story, plan_n, stand, plan_ctx)}],
             plan_budget + plan_image_tokens)
     caption_jobs = len(to_describe) + len(videos_to_describe)
     caption_slots = max(1, min(caption_jobs, slots)) if caption_jobs else 1
@@ -762,7 +766,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
         # ---- planning: the film story into the clip list, once ----------------
         if planning:
-            say("rewrite", (f"planning {plan_n} more clip(s), {plan_more['start']}-{plan_more['start'] + plan_n - 1}, after the existing {plan_more['start'] - 1}" if plan_more else f"planning the story into {auto_clips} clip(s) of 15 s")
+            say("rewrite", (f"planning {plan_n} clip(s) ({story_planner._spans(plan_ctx['numbers'])}) around the {len([1 for _n, t in plan_ctx['existing'] if t])} existing clip(s)" if plan_ctx else f"planning the story into {auto_clips} clip(s) of 15 s")
                 + (f" with thinking (budget {budget})" if reasoning["enabled"] else ""), 0.2)
 
             def plan_chat(messages):
@@ -799,18 +803,18 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                           plan_refs_mode, len(ordered), len(ordered_videos), plan_image_tokens)
             t_plan = time.time()
             plan_states: list = []
-            asks = story_planner.plan_story(plan_chat, story, plan_n, refs=plan_refs, more=plan_more, states_out=plan_states,
+            asks = story_planner.plan_story(plan_chat, story, plan_n, refs=plan_refs, more=plan_ctx, states_out=plan_states,
                                             log=lambda m: _LOG.info("Rewriter planner: %s", m))
-            first_new = plan_more["start"] - 1 if plan_more else 0
-            if plan_more:
-                written_slots = story_planner.apply_plan(
-                    clips, [""] * first_new + asks, list(range(first_new, first_new + len(asks))),
-                    states=[None] * first_new + plan_states)
+            if plan_ctx:
+                full_asks, full_states, apply_slots = story_planner.place(asks, plan_states, plan_ctx["numbers"])
+                written_slots = story_planner.apply_plan(clips, full_asks, apply_slots, states=full_states)
+                plan_numbers = plan_ctx["numbers"][:len(asks)]
             else:
                 written_slots = story_planner.apply_plan(clips, asks, plan_slots, states=plan_states)
+                plan_numbers = list(range(1, len(asks) + 1))
             _LOG.info("Rewriter: planned %d clip(s) in %.1f s; wrote %d into the clip list (typed clips untouched)",
                       len(asks), time.time() - t_plan, len(written_slots))
-            for n_, ask in enumerate(asks, start=first_new + 1):
+            for n_, ask in zip(plan_numbers, asks):
                 _LOG.info("Rewriter plan clip %d:\n%s", n_, ask)
             notes.append(f"planned {len(asks)} clip(s) from the story, wrote {len(written_slots)} new ask(s)")
             if plan_cb is not None:
