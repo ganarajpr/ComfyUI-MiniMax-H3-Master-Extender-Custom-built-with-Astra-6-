@@ -426,6 +426,57 @@ class RewriteIntegrationTests(unittest.TestCase):
         finally:
             PLAN_REPLY = saved
 
+    def test_gapped_first_plan_is_one_call_then_plan_more_continues_after_it(self):
+        global PLAN_REPLY
+        saved = PLAN_REPLY
+        PLAN_REPLY = ledger_plan
+        try:
+            clips = [{"id": 0, "title": "Clip 1", "prompt": "typed one", "duration": 15},
+                     {"id": 1, "title": "Clip 2", "prompt": "", "duration": 15},
+                     {"id": 2, "title": "Clip 3", "prompt": "", "duration": 15},
+                     {"id": 3, "title": "Clip 4", "prompt": "typed four", "duration": 15}]
+            log = []
+            _, calls = self.run_rewrite(clips, {"auto_clips": 5, "rewrite_previous_clips": "raw asks"}, log)
+            planner = [m for m in log if "Break the chapter below" in m]
+            self.assertEqual(len(planner), 1)
+            self.assertIn("[TO PLAN: clip 2]", planner[0])
+            self.assertIn("[TO PLAN: clip 5]", planner[0])
+            self.assertIn("--- Clip 4 ---\ntyped four", planner[0])
+            self.assertEqual(calls, [[1, 2, 4]])
+            self.assertEqual(len(clips), 5)
+            self.assertEqual(clips[0]["prompt_raw"], "typed one")
+            self.assertEqual(clips[3]["prompt_raw"], "typed four")
+            self.assertNotIn("planned", clips[0])
+            self.assertNotIn("planned", clips[3])
+            self.assertTrue(all(clips[i]["planned"] is True for i in (1, 2, 4)))
+            self.assertTrue(clips[1]["prompt_raw"].startswith("Clip 2:") or "Clip 2:" in clips[1]["prompt_raw"])
+            self.assertTrue(clips[4]["prompt_raw"].rstrip().endswith("What is at the station 3?"))
+            # no second plan from a story edit or a lower N
+            self.assertEqual(self.run_rewrite(clips, {"auto_clips": 5, "rewrite_story": "Changed."}, [])[1], [])
+            self.assertEqual(self.run_rewrite(clips, {"auto_clips": 3}, [])[1], [])
+            # plan more after the gapped plan: typed and planned clips are all existing film, carried state from clip 5
+            log2 = []
+            _, calls2 = self.run_rewrite(clips, {"auto_clips": 7, "rewrite_previous_clips": "raw asks"}, log2)
+            msg = [m for m in log2 if "Break the chapter below" in m][0]
+            self.assertEqual(calls2, [[5, 6]])
+            self.assertIn("numbered 6-7", msg)
+            self.assertIn("--- Clip 1 ---\ntyped one", msg)
+            self.assertIn("--- Clip 4 ---\ntyped four", msg)
+            self.assertIn("--- Clip 5 ---\n", msg)
+            self.assertIn("ana | Ana (character): coat=soaked", msg)
+            self.assertEqual(len(clips), 7)
+        finally:
+            PLAN_REPLY = saved
+
+    def test_no_typed_clips_first_plan_has_no_existing_film_block(self):
+        clips = [{"id": 0, "prompt": "", "duration": 15}]
+        log = []
+        self.run_rewrite(clips, {"auto_clips": 3}, log)
+        msg = [m for m in log if "Break the chapter below" in m][0]
+        self.assertNotIn("ALREADY IN THE FILM", msg)
+        self.assertNotIn("TO PLAN", msg)
+        self.assertIn("EXACTLY 3 clips", msg)
+
     def test_hand_clip_counts_as_existing_film_when_raising(self):
         clips = [{"id": 0, "prompt": "", "duration": 15, "seed": 1, "seed_mode": "fixed"}]
         self.run_rewrite(clips, {"auto_clips": 3}, [])
@@ -619,6 +670,89 @@ class PlanMoreUnitTests(unittest.TestCase):
         more = sp.plan_more(self.film(), 5)
         with self.assertRaises(sp.PlanError):
             sp.plan_story(lambda m: plan_json(3), "S", 2, more=more)
+
+
+class PlanAroundUnitTests(unittest.TestCase):
+    def typed(self, *texts):
+        return [{"id": i, "title": f"Clip {i + 1}", "prompt": t, "duration": 15} for i, t in enumerate(texts)]
+
+    def test_typed_1_to_6_with_n10_plans_only_7_to_10_with_all_typed_asks_in_the_block(self):
+        clips = self.typed(*[f"typed ask number {i}" for i in range(1, 7)])
+        slots = sp.plan_slots(clips, 10)
+        self.assertEqual(slots, [6, 7, 8, 9])
+        ctx = sp.plan_around(clips, 10, slots)
+        self.assertEqual(ctx["numbers"], [7, 8, 9, 10])
+        self.assertTrue(ctx["tail"])
+        msg = sp.build_user_content("The whole story.", 4, None, ctx)
+        for i in range(1, 7):
+            self.assertIn(f"--- Clip {i} ---\ntyped ask number {i}", msg)
+        for n in range(7, 11):
+            self.assertIn(f"[TO PLAN: clip {n}]", msg)
+        self.assertIn("Plan exactly 4 more clips, numbered 7-10. Begin where clip 6 ends", msg)
+        self.assertIn("derive the opening state of your ledger from where the existing clips leave things", msg)
+        self.assertNotIn("PLAN AROUND THE TYPED CLIPS", msg)
+        self.assertIn("EXACTLY 4 clips", msg)
+        self.assertIn('{"clip": 7,', msg)
+
+    def test_typed_clip_1_with_n4_plans_2_to_4(self):
+        clips = self.typed("my opening")
+        ctx = sp.plan_around(clips, 4, sp.plan_slots(clips, 4))
+        self.assertEqual(ctx["numbers"], [2, 3, 4])
+        self.assertIn("--- Clip 1 ---\nmy opening", sp.build_user_content("S", 3, None, ctx))
+
+    def test_nothing_typed_is_the_whole_story_plan_unchanged(self):
+        clips = self.typed("")
+        self.assertIsNone(sp.plan_around(clips, 4, sp.plan_slots(clips, 4)))
+        self.assertEqual(sp.plan_slots(clips, 4), [0, 1, 2, 3])
+
+    def gapped(self):
+        return self.typed("typed one", "", "", "typed four")
+
+    def test_gapped_list_one_context_with_markers_and_noncontiguous_numbers(self):
+        clips = self.gapped()
+        slots = sp.plan_slots(clips, 5)
+        self.assertEqual(slots, [1, 2, 4])
+        ctx = sp.plan_around(clips, 5, slots)
+        self.assertEqual(ctx["numbers"], [2, 3, 5])
+        self.assertFalse(ctx["tail"])
+        msg = sp.build_user_content("The whole story.", 3, None, ctx)
+        self.assertLess(msg.index("--- Clip 1 ---\ntyped one"), msg.index("[TO PLAN: clip 2]"))
+        self.assertLess(msg.index("[TO PLAN: clip 3]"), msg.index("--- Clip 4 ---\ntyped four"))
+        self.assertLess(msg.index("--- Clip 4 ---"), msg.index("[TO PLAN: clip 5]"))
+        self.assertIn("PLAN AROUND THE TYPED CLIPS", msg)
+        self.assertIn("Plan exactly the clips marked TO PLAN (clips 2-3, 5)", msg)
+        self.assertIn("bridge from the clip before it to the clip after it; never repeat or contradict a typed clip", msg)
+        self.assertNotIn("CONTINUATION", msg)
+        self.assertIn("EXACTLY 3 clips", msg)
+        self.assertIn('{"clip": 2,', msg)
+        self.assertIn('"clip_ids": [2, 3]', msg)
+
+    def test_noncontiguous_numbers_pass_the_checks_and_map_by_field(self):
+        ctx = sp.plan_around(self.gapped(), 5, [1, 2, 4])
+        reply = json.loads(plan_json(3))
+        for c, n in zip(reply["clips"], (2, 3, 5)):
+            c["clip"] = n
+        asks = sp.plan_story(lambda m: json.dumps(reply), "S", 3, more=ctx)
+        self.assertEqual([a.split("\n")[0] for a in asks], ["Clip 2:", "Clip 3:", "Clip 5:"])
+        b = sp.parse_breakdown(json.dumps(reply))
+        self.assertEqual(sp.check_breakdown(b), [])
+
+    def test_reply_numbered_1_to_k_is_remapped_by_position(self):
+        ctx = sp.plan_around(self.gapped(), 5, [1, 2, 4])
+        asks = sp.plan_story(lambda m: plan_json(3), "S", 3, more=ctx)
+        self.assertEqual([a.split("\n")[0] for a in asks], ["Clip 2:", "Clip 3:", "Clip 5:"])
+
+    def test_place_and_apply_fill_the_right_slots_and_leave_typed_clips_alone(self):
+        clips = self.gapped()
+        ctx = sp.plan_around(clips, 5, sp.plan_slots(clips, 5))
+        full, states, slots = sp.place(["A2", "A3", "A5"], [{"s": 2}, {"s": 3}, {"s": 5}], ctx["numbers"])
+        written = sp.apply_plan(clips, full, slots, states=states)
+        self.assertEqual(written, [1, 2, 4])
+        self.assertEqual([c["prompt"] for c in clips], ["typed one", "A2", "A3", "typed four", "A5"])
+        self.assertNotIn("planned", clips[0])
+        self.assertNotIn("planned", clips[3])
+        self.assertTrue(all(clips[i]["planned"] is True for i in (1, 2, 4)))
+        self.assertEqual(clips[4]["plan_end_state"], {"s": 5})
 
 
 try:
