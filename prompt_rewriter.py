@@ -19,6 +19,7 @@ behaves exactly as before.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
 import json
@@ -29,6 +30,11 @@ import threading
 import time
 import types
 from concurrent.futures import ThreadPoolExecutor
+
+try:
+    from . import story_planner
+except ImportError:  # imported as a top-level module (tests)
+    import story_planner
 
 _LOG = logging.getLogger("minimax_h3_master_extender.rewriter")
 
@@ -326,6 +332,26 @@ def with_previous(user_prompt: str, previous: str, story: str = "") -> str:
     return user_prompt[:at] + block + user_prompt[at:]
 
 
+def choose_system(given: str, task: str) -> tuple[str, str]:
+    """The writer's system prompt: ``(text, name)``; empty text means MiniMax's official guide.
+
+    A socket or widget text wins; ``@official`` selects the official guide; empty means the Studio builder
+    (``prompts/builder.md``) for Ref2VA. The builder is written for Ref2VA (``<Subject N>`` / ``<Picture N>``
+    labels and its six sections), so T2VA keeps the official guide.
+    """
+    given = (given or "").strip()
+    if given.lower() == story_planner.OFFICIAL_SENTINEL:
+        return "", "MiniMax's official writing guide (chosen with @official)"
+    if given:
+        return given, "the custom system prompt"
+    if task == "Ref2VA":
+        try:
+            return story_planner.load_prompt("builder"), "the Studio builder prompt (default for Ref2VA)"
+        except OSError:
+            return "", "MiniMax's official writing guide (prompts/builder.md not found)"
+    return "", "MiniMax's official writing guide (the builder is written for Ref2VA; this run is " + task + ")"
+
+
 def pending_indices(clips: list, mode: str, current: dict | None = None, continuity: str = RAW_ASKS) -> list[int]:
     """Which clips this run rewrites.
 
@@ -366,7 +392,8 @@ def pending_indices(clips: list, mode: str, current: dict | None = None, continu
 
 
 def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, progress_cb=None, stream_cb=None,
-                  videos: dict | None = None, video_audios: dict | None = None, audios: dict | None = None) -> list[str]:
+                  videos: dict | None = None, video_audios: dict | None = None, audios: dict | None = None,
+                  plan_cb=None) -> list[str]:
     """Rewrite the pending clips in place. Returns human-readable notes.
 
     ``settings`` is the extender's kwargs (the ``rewrite_*`` widgets and the
@@ -380,6 +407,8 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     sampled frames as <Video k>; ``video_audios`` / ``audios`` cannot be heard by a
     vision-only captioner, so they enter the reference block as labelled but
     undescribed <Audio j> lines, numbered the way the core node numbers them.
+    ``plan_cb(clips, positions)`` is called once when ``auto_clips`` planned the story into the clip list,
+    so the panel can show the planned asks.
     """
     mode = str(settings.get("rewrite_mode", "off"))
     if mode == "off":
@@ -425,6 +454,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     chained = continuity == FINAL_PROMPTS
     story = str(settings.get("rewrite_story") or "").strip()
     system_given = str(settings.get("rewrite_system_prompt_in") or "").strip() or str(settings.get("rewrite_system_prompt") or "").strip()
+    auto_clips = max(0, int(settings.get("auto_clips", 0) or 0))
 
     if writer_label.startswith("(") or not writer_label:
         raise RuntimeError("rewrite_writer_model: pick a GGUF from the list (the rewriter pack's model list).")
@@ -441,6 +471,9 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     if task == "Ref2VA" and not any_refs:
         say("rewrite", "no references connected, writing T2VA instead of Ref2VA")
         task = "T2VA"
+
+    system_given, system_name = choose_system(system_given, task)
+    _LOG.info("Rewriter: system prompt = %s", system_name)
 
     model_path = mmproj_path = ""
     if task != "T2VA" or writer_file:
@@ -467,41 +500,56 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     # ---- what is out of date --------------------------------------------------
     image_keys = [(slot, _image_key(tensor, model_path, length)) for slot, tensor in ordered] if task != "T2VA" else []
     video_keys = [(slot, _video_key(frames, model_path, length)) for slot, frames in ordered_videos] if task != "T2VA" else []
-    current = {}
-    for index, clip in enumerate(clips):
-        if not isinstance(clip, dict):
-            continue
-        duration = float(clip.get("duration", 15) or 15)
-        current[index] = fingerprint(source_of(clip), duration, resolution, task,
-                                     previous=continuity_block(clips, index, "raw asks"))
-        meta = clip.get("rewrite_meta") or {}
-        stored = str(meta.get("fingerprint") or "")
-        # A rewrite stored before v2 fingerprints is kept while its raw ask is unchanged.
-        if clip.get("prompt_rewritten") and stored and not stored.startswith("v2:") \
-                and (clip.get("prompt_raw") or "").strip() == source_of(clip).strip():
-            clip["rewrite_meta"] = dict(meta, fingerprint=current[index])
-    todo = pending_indices(clips, mode, current, continuity)
-    if chained:
-        # Clips written under another setting get their baseline now, so a later
-        # change to the previous final prompt is noticed; switching never invalidates.
-        for index, clip in enumerate(clips):
-            meta = clip.get("rewrite_meta") if isinstance(clip, dict) else None
-            if index > 0 and index not in todo and clip.get("prompt_rewritten") and isinstance(meta, dict) \
-                    and not meta.get("prev_final"):
-                clip["rewrite_meta"] = dict(meta, prev_final=final_hash(clips[index - 1]))
-    if not todo:
+    plan_slots = story_planner.plan_slots(clips, auto_clips) if (auto_clips and story) else []
+    planning = bool(plan_slots)
+    sizing_clips = clips
+    if planning:
+        sizing_clips = copy.deepcopy(clips)
+        story_planner.apply_plan(sizing_clips, ["x" * 1500] * auto_clips, plan_slots)
+
+    def assess(cl: list) -> tuple[dict, list[int]]:
+        current = {}
+        for index, clip in enumerate(cl):
+            if not isinstance(clip, dict):
+                continue
+            duration = float(clip.get("duration", 15) or 15)
+            current[index] = fingerprint(source_of(clip), duration, resolution, task,
+                                         previous=continuity_block(cl, index, "raw asks"))
+            meta = clip.get("rewrite_meta") or {}
+            stored = str(meta.get("fingerprint") or "")
+            # A rewrite stored before v2 fingerprints is kept while its raw ask is unchanged.
+            if clip.get("prompt_rewritten") and stored and not stored.startswith("v2:") \
+                    and (clip.get("prompt_raw") or "").strip() == source_of(clip).strip():
+                clip["rewrite_meta"] = dict(meta, fingerprint=current[index])
+        wanted = pending_indices(cl, mode, current, continuity)
+        if chained:
+            # Clips written under another setting get their baseline now, so a later
+            # change to the previous final prompt is noticed; switching never invalidates.
+            for index, clip in enumerate(cl):
+                meta = clip.get("rewrite_meta") if isinstance(clip, dict) else None
+                if index > 0 and index not in wanted and clip.get("prompt_rewritten") and isinstance(meta, dict) \
+                        and not meta.get("prev_final"):
+                    clip["rewrite_meta"] = dict(meta, prev_final=final_hash(cl[index - 1]))
+        return current, wanted
+
+    def log_reasons(cl: list, wanted: list[int]) -> None:
+        reasons = []
+        for index in wanted:
+            clip = cl[index]
+            if not clip.get("prompt_rewritten"):
+                reasons.append(f"clip {index + 1}: pending")
+            elif mode == "all clips":
+                reasons.append(f"clip {index + 1}: all clips")
+            else:
+                reasons.append(f"clip {index + 1}: inputs changed")
+        _LOG.info("Rewriter: %s", "; ".join(reasons))
+
+    current, todo = assess(sizing_clips)
+    if not todo and not planning:
         _LOG.info("Rewriter: nothing to do (every clip prompt is rewritten, up to date, or empty)")
         return ["rewriter: nothing pending"]
-    reasons = []
-    for index in todo:
-        clip = clips[index]
-        if not clip.get("prompt_rewritten"):
-            reasons.append(f"clip {index + 1}: pending")
-        elif mode == "all clips":
-            reasons.append(f"clip {index + 1}: all clips")
-        else:
-            reasons.append(f"clip {index + 1}: inputs changed")
-    _LOG.info("Rewriter: %s", "; ".join(reasons))
+    if not planning:
+        log_reasons(clips, todo)
 
     guide = "" if system_given else guides.text(guide_prompt.GUIDE_FOR_MODE[task], True, None)
 
@@ -527,7 +575,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
     # The KV pool must hold the parallel writers (guide + block + answer each).
     stand_in = "" if task == "T2VA" else "x" * (1600 * max(len(ordered) + len(ordered_videos) + len(ordered_audios), 1))
-    longest = max((source_of(clips[i]) for i in todo), key=len)
+    longest = max((source_of(sizing_clips[i]) for i in todo), key=len)
     rough = guide_prompt.build_messages(guide, task, longest, resolution, 15.0, stand_in, system=system_given)
     if chained and len(clips) > 1:
         # The previous clip's final prompt is a full six-section answer: size for one
@@ -542,9 +590,15 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     writer_ctx = guide_prompt.context_needed(rough, writer_budget)
     writers_at_once = min(len(todo), slots) if writer_on_server and not chained else 1
     pool_ctx = writer_ctx * writers_at_once if writer_on_server else 0
+    plan_tokens = max(max_new_tokens, 900 * auto_clips + 1500) if planning else 0
+    plan_budget = plan_tokens + (max(budget, 0) if reasoning["enabled"] else 0)
+    plan_ctx = (guide_prompt.context_needed(
+        [{"role": "user", "content": story_planner.build_user_message(story, auto_clips)}], plan_budget)
+        if planning and writer_on_server else 0)
     caption_jobs = len(to_describe) + len(videos_to_describe)
     caption_slots = max(1, min(caption_jobs, slots)) if caption_jobs else 1
     server_slots = max(caption_slots, writers_at_once)
+    pool_ctx = max(pool_ctx, plan_ctx * server_slots)
 
     started = time.time()
     notes: list[str] = []
@@ -637,16 +691,53 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                 lines.append(f"Audio {audio_no}: an attached audio reference (voice or sound to reuse; not described here)")
         block = "\n".join(lines)
 
+        pack_settings = dict(nodes.DEFAULT_OPTIONS)
+        pack_settings.update(max_new_tokens=max_new_tokens, temperature=temperature)
+        names = guide_prompt.FIELDS_FOR_MODE[task]
+
+        # ---- planning: the film story into the clip list, once ----------------
+        if planning:
+            say("rewrite", f"planning the story into {auto_clips} clip(s) of 15 s"
+                + (f" with thinking (budget {budget})" if reasoning["enabled"] else ""), 0.2)
+
+            def plan_chat(messages):
+                if server is not None and writer_on_server:
+                    text = server.chat(
+                        messages, seed=seed, greedy=greedy, max_new_tokens=plan_budget,
+                        temperature=temperature, top_p=0.8, top_k=20, repeat_penalty=1.05,
+                        enable_thinking=reasoning["enabled"],
+                        on_text=lambda whole: bool(checks.looping(whole)),
+                    )
+                else:
+                    plan_settings = dict(pack_settings, max_new_tokens=plan_tokens)
+                    progress = _mod("progress").NodeProgress(None)
+                    text = nodes.run_messages(writer_label, messages, greedy, seed, False, plan_settings, progress, label=task)
+                return constants.answer_only((text or "").replace("\r\n", "\n")).strip()
+
+            t_plan = time.time()
+            asks = story_planner.plan_story(plan_chat, story, auto_clips, log=lambda m: _LOG.info("Rewriter planner: %s", m))
+            written_slots = story_planner.apply_plan(clips, asks, plan_slots)
+            _LOG.info("Rewriter: planned %d clip(s) in %.1f s; wrote %d into the clip list (typed clips untouched)",
+                      len(asks), time.time() - t_plan, len(written_slots))
+            for n_, ask in enumerate(asks, start=1):
+                _LOG.info("Rewriter plan clip %d:\n%s", n_, ask)
+            notes.append(f"planned {len(asks)} clip(s) from the story, wrote {len(written_slots)} new ask(s)")
+            if plan_cb is not None:
+                try:
+                    plan_cb(clips, written_slots)
+                except Exception:
+                    _LOG.debug("plan callback failed", exc_info=True)
+            current, todo = assess(clips)
+            if not todo:
+                return notes
+            log_reasons(clips, todo)
+
         # ---- writing ----------------------------------------------------------
         say("rewrite", f"writing {len(todo)} clip prompt(s) as {task}"
             + (f" with thinking (budget {budget})" if reasoning["enabled"] else "")
             + (f", {writers_at_once} at once" if writers_at_once > 1 else "")
             + (", one after another (continuity 'final prompts': each clip continues from the previous clip's final prompt)"
                if chained else ""), 0.3)
-
-        pack_settings = dict(nodes.DEFAULT_OPTIONS)
-        pack_settings.update(max_new_tokens=max_new_tokens, temperature=temperature)
-        names = guide_prompt.FIELDS_FOR_MODE[task]
 
         def write_one(index: int) -> tuple[int, str, str, float]:
             clip = clips[index]

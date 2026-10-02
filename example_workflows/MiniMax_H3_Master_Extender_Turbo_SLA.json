@@ -1244,6 +1244,16 @@
           },
           "link": null,
           "shape": 7
+        },
+        {
+          "localized_name": "auto_clips",
+          "name": "auto_clips",
+          "type": "INT",
+          "widget": {
+            "name": "auto_clips"
+          },
+          "link": null,
+          "shape": 7
         }
       ],
       "outputs": [
@@ -1344,6 +1354,7 @@
         false,
         "standard",
         "",
+        0,
         ""
       ]
     }
