@@ -155,7 +155,7 @@ class OrderingTests(unittest.TestCase):
         self.addCleanup(os.unlink, gguf.name)
         choice = types.SimpleNamespace(local=True, reference=gguf.name, mmproj="")
         nodes = types.SimpleNamespace(
-            _resolve_writer_choice=lambda label: choice, _resolve_captioner_choice=lambda label: choice,
+            _resolve_writer_choice=lambda label: choice, _resolve_captioner_choice=lambda label: choice, captioner_choices=lambda: ["c"],
             DEFAULT_OPTIONS={}, caption_question=lambda *a: "?")
         import contextlib
 
@@ -186,7 +186,7 @@ class OrderingTests(unittest.TestCase):
         pr.available = lambda: True
         pr._load_cache = lambda: {}
         try:
-            settings = {"rewrite_mode": mode, "rewrite_writer_model": "w", "rewrite_caption_model": "c",
+            settings = {"rewrite_mode": mode, "rewrite_writer_model": "w",
                         "rewrite_task": "T2VA", "rewrite_parallel": 3, "rewrite_previous_clips": continuity,
                         "rewrite_max_new_tokens": 100, "rewrite_story": story}
             notes = pr.rewrite_clips(clips, {}, settings, aspect_text="1280x720")

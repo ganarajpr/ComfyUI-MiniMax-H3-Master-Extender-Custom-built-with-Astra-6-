@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { createProjectControls } from "./master_projects.js";
+import { dropCaptionModelValue, normalizeReasoningBudget } from "./widget_migration.js";
 
 const TARGET_NODE = "MiniMaxH3MasterExtender";
 const EVENT_PROGRESS = "master_extender_progress";
@@ -236,8 +237,25 @@ function repairFinalDecode(node) {
     else if (w.value === "X2 detail") w.value = values.find(v => v !== "standard") ?? "standard";
 }
 
+// rewrite_reasoning_budget is a 1024/2048/4096 dropdown now; saved workflows and projects carry the old INT.
+function repairReasoningBudget(node) {
+    const w = node.widgets?.find(x => x.name === "rewrite_reasoning_budget");
+    if (w) w.value = normalizeReasoningBudget(w.value);
+}
+
+// rewrite_caption_model was merged into rewrite_writer_model. LiteGraph has already put the old array's values
+// into the widgets by index, so re-seat them from the array with the caption model's value removed.
+function repairMergedRewriterModel(node, info) {
+    const values = info?.widgets_values;
+    const migrated = dropCaptionModelValue((node.widgets || []).map(w => w.name), values);
+    if (!migrated) return;
+    info.widgets_values = migrated;
+    migrated.forEach((value, i) => { if (node.widgets[i]) node.widgets[i].value = value; });
+}
+
 function repairHyperflowWidgets(node, defaults) {
     repairFinalDecode(node);
+    repairReasoningBudget(node);
     for (const name of REPAIRED_WIDGETS) {
         const w = node.widgets?.find(x => x.name === name);
         if (!w || hyperflowValueOk(w, w.value)) continue;
@@ -627,8 +645,9 @@ app.registerExtension({
             }
 
             const originalConfigure = node.onConfigure;
-            node.onConfigure = function () {
+            node.onConfigure = function (info) {
                 const result = originalConfigure?.apply(this, arguments);
+                repairMergedRewriterModel(node, info);
                 repairHyperflowWidgets(node, hyperflowDefaults);
                 // Older workflows stored the empty master_ui value in this slot.
                 const attentionWidget = node.widgets?.find(w => w.name === "attention_backend");
@@ -661,6 +680,8 @@ app.registerExtension({
                 save: saveState,
                 render: () => renderUI(),
             });
+            const restoreProject = node.masterProjectRestore;
+            node.masterProjectRestore = () => { repairReasoningBudget(node); restoreProject?.(); };
 
             // ---- Simplified panel state (persisted in node.properties) ----
             node.properties = node.properties || {};
@@ -778,12 +799,11 @@ app.registerExtension({
                 const noPack = String(getW("rewrite_writer_model", "")).startsWith("(");
                 if (noPack) wrap.appendChild(uiHint("The MiniMax-H3-Prompt-Rewriter-ComfyUI pack is not installed beside this node; the run will stop with that message."));
                 wrap.appendChild(uiRow("task", bindSelect("rewrite_task"), { hint: "auto: Ref2VA when reference pictures are connected, else T2VA." }));
-                wrap.appendChild(uiRow("writer model", bindSelect("rewrite_writer_model", { render: modelLabel })));
-                wrap.appendChild(uiRow("caption model", bindSelect("rewrite_caption_model", { render: modelLabel }), { hint: "Describes the reference pictures. Same GGUF as the writer = one server for everything, and thinking becomes available. With the Strata writer (text only) this model still describes the pictures, first; its server is closed before Strata starts." }));
+                wrap.appendChild(uiRow("rewriter model", bindSelect("rewrite_writer_model", { render: modelLabel }), { hint: "One model describes the reference pictures and writes the prompts, on one server session. A model with vision (an mmproj) captions the pictures and thinking is available. A model without vision (a plain GGUF, or Strata) skips the picture descriptions: the rewrite is text-only and the pictures are only labelled <Picture N>." }));
                 wrap.appendChild(uiRow("caption length", bindSelect("rewrite_caption_length"), { indent: true }));
-                wrap.appendChild(uiRow("thinking (writer only)", bindToggle("rewrite_thinking")));
+                wrap.appendChild(uiRow("thinking", bindToggle("rewrite_thinking")));
                 if (getW("rewrite_thinking", false)) {
-                    wrap.appendChild(uiRow("thinking budget (tokens)", bindNumber("rewrite_reasoning_budget"), { indent: true, hint: "-1 = unrestricted" }));
+                    wrap.appendChild(uiRow("thinking budget (tokens)", bindSelect("rewrite_reasoning_budget"), { indent: true, hint: "Thinking tokens at most, on top of the answer length." }));
                     const msg = uiTextarea(getW("rewrite_reasoning_budget_message", ""), (v) => setW("rewrite_reasoning_budget_message", v, { rerender: false }), { rows: 2, placeholder: "Message injected when the budget runs out, e.g. 'Time is up, write the answer now.'" });
                     const msgWrap = document.createElement("div");
                     msgWrap.style.cssText = "margin-left: 14px;";
@@ -802,7 +822,7 @@ app.registerExtension({
                         if (Number(getW("auto_clips", 0)) > 0) {
                             wrap.appendChild(uiHint("Raise the number to plan more clips after the existing ones (only the new clips are planned)."));
                             if (W("auto_clip_seconds")) wrap.appendChild(uiRow("planned clip length (s)", bindNumber("auto_clip_seconds"), { indent: true, hint: "Seconds per planned clip, 5-15 (15 = the old fixed length). The planner budgets its beats and shots to this length and the planned clips are created with it. Typed clips keep their own duration. Applies only when a plan is made; to re-plan at a new length use 'Replan from story'." }));
-                            if (W("planner_refs")) wrap.appendChild(uiRow("planner sees references as", bindSelect("planner_refs"), { indent: true, hint: "images: the reference pictures themselves plus their captions (needs the writer GGUF to also be the caption model); captions: caption lines only; off: the story text alone." }));
+                            if (W("planner_refs")) wrap.appendChild(uiRow("planner sees references as", bindSelect("planner_refs"), { indent: true, hint: "images: the reference pictures themselves plus their captions (needs a rewriter model with vision, else it is the story text alone); captions: caption lines only (also needs vision); off: the story text alone." }));
                             const replan = document.createElement("button");
                             replan.textContent = "Replan from story";
                             replan.title = "Clear the untouched planned asks (and their rewrites) so the next run plans the story again. Clips you edited or typed stay.";

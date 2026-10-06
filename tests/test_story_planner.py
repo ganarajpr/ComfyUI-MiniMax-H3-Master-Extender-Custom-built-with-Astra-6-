@@ -324,7 +324,7 @@ class RewriteIntegrationTests(unittest.TestCase):
         gguf.close()
         self.addCleanup(os.unlink, gguf.name)
         choice = types.SimpleNamespace(local=True, reference=gguf.name, mmproj="")
-        nodes = types.SimpleNamespace(_resolve_writer_choice=lambda l: choice, _resolve_captioner_choice=lambda l: choice,
+        nodes = types.SimpleNamespace(_resolve_writer_choice=lambda l: choice, _resolve_captioner_choice=lambda l: choice, captioner_choices=lambda: ["c"],
                                       DEFAULT_OPTIONS={}, caption_question=lambda *a: "?")
 
         @contextlib.contextmanager
@@ -352,7 +352,7 @@ class RewriteIntegrationTests(unittest.TestCase):
         pr._load_cache = lambda: {}
         calls = []
         try:
-            settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": "w", "rewrite_caption_model": "c",
+            settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": "w",
                         "rewrite_task": "T2VA", "rewrite_parallel": 3, "rewrite_previous_clips": "final prompts",
                         "rewrite_max_new_tokens": 100, "rewrite_story": "Ana walks to the station.", "auto_clips": 3}
             settings.update(settings_extra)
@@ -783,7 +783,7 @@ class RewriteRefsTests(unittest.TestCase):
         sent = []
         choice_w = types.SimpleNamespace(local=True, reference=writer, mmproj="")
         choice_c = types.SimpleNamespace(local=True, reference=cap, mmproj=mmproj)
-        nodes = types.SimpleNamespace(_resolve_writer_choice=lambda l: choice_w, _resolve_captioner_choice=lambda l: choice_c,
+        nodes = types.SimpleNamespace(_resolve_writer_choice=lambda l: choice_w, _resolve_captioner_choice=lambda l: choice_c, captioner_choices=lambda: ["c"],
                                       DEFAULT_OPTIONS={}, caption_question=lambda *a: "?")
 
         class Server:
@@ -842,7 +842,7 @@ class RewriteRefsTests(unittest.TestCase):
         pr._save_cache = lambda c: None
         try:
             clips = [{"id": 0, "prompt": "", "duration": 15}]
-            settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": "w", "rewrite_caption_model": "c",
+            settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": "w",
                         "rewrite_task": "Ref2VA", "rewrite_parallel": 1, "rewrite_previous_clips": "raw asks",
                         "rewrite_max_new_tokens": 100, "rewrite_story": "A story.", "auto_clips": 2,
                         "planner_refs": planner_refs}

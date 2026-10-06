@@ -277,7 +277,7 @@ class RewriteWithStrataTests(unittest.TestCase):
         sb.open_strata = open_strata
         try:
             clips = [{"id": "1", "prompt": "ask", "duration": 10}]
-            settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": sb.LABEL, "rewrite_caption_model": "c",
+            settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": sb.LABEL,
                         "rewrite_task": "T2VA", "rewrite_parallel": 3, "rewrite_max_new_tokens": max_new,
                         "rewrite_thinking": thinking, "rewrite_reasoning_budget": budget}
             pr.rewrite_clips(clips, {}, settings, aspect_text="1280x720")

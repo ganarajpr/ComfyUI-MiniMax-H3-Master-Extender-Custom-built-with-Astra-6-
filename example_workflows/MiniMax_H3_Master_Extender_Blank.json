@@ -956,16 +956,6 @@
           "shape": 7
         },
         {
-          "localized_name": "rewrite_caption_model",
-          "name": "rewrite_caption_model",
-          "type": "COMBO",
-          "widget": {
-            "name": "rewrite_caption_model"
-          },
-          "link": null,
-          "shape": 7
-        },
-        {
           "localized_name": "rewrite_caption_length",
           "name": "rewrite_caption_length",
           "type": "COMBO",
@@ -1028,7 +1018,7 @@
         {
           "localized_name": "rewrite_reasoning_budget",
           "name": "rewrite_reasoning_budget",
-          "type": "INT",
+          "type": "COMBO",
           "widget": {
             "name": "rewrite_reasoning_budget"
           },
@@ -1352,14 +1342,13 @@
         "off",
         "auto",
         "Swift-Qwen3.8-27B Uncensored (local) · ~21 GB with the guide in context — ajgazin abliterated Swift-Qwen3.8-27B UD-Q5_K_M, already on disk (same file the llama router preset swift-uncensored-27b serves)",
-        "Swift-Qwen3.8-27B Uncensored (local) · ~22 GB — ajgazin abliterated Swift-Qwen3.8-27B UD-Q5_K_M, already on disk (same file the llama router preset swift-uncensored-27b serves) - with its bf16 mmproj (vision only, no audio)",
         "standard",
         true,
         0.7,
         4096,
         42,
         false,
-        4096,
+        "4096",
         "",
         3,
         "",

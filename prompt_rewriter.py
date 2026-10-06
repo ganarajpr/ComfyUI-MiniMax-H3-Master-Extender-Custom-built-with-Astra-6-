@@ -90,6 +90,19 @@ CAPTION_LENGTHS = ["brief", "standard", "detailed"]
 RAW_ASKS = "raw asks"
 FINAL_PROMPTS = "final prompts"
 PLANNER_REFS = ["images", "captions", "off"]
+
+REASONING_BUDGETS = ["1024", "2048", "4096"]
+
+
+def reasoning_budget(value) -> str:
+    """The nearest allowed thinking budget for whatever an old workflow or an API graph sent (-1/0/junk -> 4096)."""
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return REASONING_BUDGETS[-1]
+    if number <= 0:
+        return REASONING_BUDGETS[-1]
+    return str(min((int(b) for b in REASONING_BUDGETS), key=lambda b: (abs(b - number), -b)))
 CONTINUITY = ["off", RAW_ASKS, FINAL_PROMPTS]
 
 CONTINUITY_RULE = (
@@ -117,6 +130,14 @@ STORY_RULE = (
     "remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless "
     "the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe "
     "comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip."
+)
+
+NO_CAPTIONS_RULE = (
+    "\n\nNo reference picture is described in this task: each reference line only says a picture is attached. Do not "
+    "guess what a picture shows. Define each person as the one whose face, build, skin tone and hair come from "
+    "<Picture N>, and take the wardrobe, props and accessories from sources (1) to (3) above; when none of them says, "
+    "give a plain outfit that suits the story. retention_analysis uses partially_preserved for that subject and says the "
+    "identity features are retained from the picture and the clothing is replaced by the outfit defined in subject_definitions."
 )
 
 REFERENCE_RULE = (
@@ -203,13 +224,6 @@ def writer_choices() -> list[str]:
         return [MISSING]
 
 
-def captioner_choices() -> list[str]:
-    try:
-        return list(_mod("nodes").captioner_choices())
-    except Exception:
-        return [MISSING]
-
-
 # --------------------------------------------------------------------------- helpers
 
 
@@ -221,6 +235,32 @@ def _writer_file(nodes, paths, label: str) -> str:
     choice = nodes._resolve_writer_choice(label)
     path = choice.reference if choice.local else (paths.catalog_file(choice.reference, choice.file) or "")
     return path if path and os.path.isfile(path) else ""
+
+
+def _same_choice(writer, captioner) -> bool:
+    """A writer entry and a captioner entry are one model when they name the same GGUF."""
+    if writer.local or captioner.local:
+        return bool(writer.local and captioner.local) and _same_file(writer.reference, captioner.reference)
+    return writer.reference == captioner.reference and writer.file == captioner.file
+
+
+def _vision_files(nodes, paths, writer_label: str) -> tuple[str, str]:
+    """The writer's own model and mmproj when it can see images, else ("", "").
+
+    The pack's captioner list is the catalog of models that ship an mmproj (or run on ninfer-serve with a
+    built-in vision tower); a writer sees exactly when it is one of those entries and its files are on disk.
+    """
+    writer = nodes._resolve_writer_choice(writer_label)
+    for label in nodes.captioner_choices():
+        if label.startswith("("):
+            continue
+        try:
+            captioner = nodes._resolve_captioner_choice(label)
+        except Exception:
+            continue
+        if _same_choice(writer, captioner):
+            return _captioner_files(nodes, paths, label)
+    return "", ""
 
 
 def _captioner_files(nodes, paths, label: str) -> tuple[str, str]:
@@ -551,14 +591,13 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     constants = _mod("constants")
 
     writer_label = str(settings.get("rewrite_writer_model", ""))
-    caption_label = str(settings.get("rewrite_caption_model", ""))
     length = str(settings.get("rewrite_caption_length", "standard"))
     greedy = bool(settings.get("rewrite_greedy", True))
     temperature = float(settings.get("rewrite_temperature", 0.7))
     max_new_tokens = int(settings.get("rewrite_max_new_tokens", 4096))
     seed = int(settings.get("rewrite_seed", 42))
     thinking = bool(settings.get("rewrite_thinking", False))
-    budget = int(settings.get("rewrite_reasoning_budget", 4096))
+    budget = int(reasoning_budget(settings.get("rewrite_reasoning_budget", "4096")))
     budget_message = str(settings.get("rewrite_reasoning_budget_message", "") or "")
     slots = max(1, int(settings.get("rewrite_parallel", 3)))
     continuity = str(settings.get("rewrite_previous_clips", "raw asks"))
@@ -577,8 +616,6 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         raise RuntimeError("rewrite_writer_model: pick a GGUF from the list (the rewriter pack's model list).")
 
     strata = writer_label == strata_backend.LABEL
-    if strata and budget <= 0:
-        budget = strata_backend.DEFAULT_BUDGET  # every local call carries a thinking budget; Strata reads <= 0 as none
     writer_file = "" if strata else _writer_file(nodes, paths, writer_label)
     ordered = _ordered_refs(refs)
     ordered_videos = _ordered(videos, "ref_video_")
@@ -595,32 +632,32 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     system_given, system_name = choose_system(system_given, task)
     _LOG.info("Rewriter: system prompt = %s", system_name)
 
-    model_path = mmproj_path = ""
-    if task != "T2VA" or writer_file:
-        if caption_label and not caption_label.startswith("("):
-            model_path, mmproj_path = _captioner_files(nodes, paths, caption_label)
-    if task != "T2VA" and not model_path:
-        raise RuntimeError(
-            "rewrite_caption_model: the captioner (a GGUF with its mmproj) must already be on disk "
-            "for the built-in rewriter; pick a local entry."
-        )
+    # One model writes and describes. It sees images when the pack lists it as a captioner (it ships an mmproj);
+    # Strata, and any GGUF without one, does not: the references are then labelled but not described.
+    model_path, mmproj_path = ("", "") if strata else _vision_files(nodes, paths, writer_label)
+    sees = bool(model_path)
+    if not sees:
+        model_path = writer_file
+    if task != "T2VA" and not sees and (ordered or ordered_videos):
+        say("rewrite", "writer has no vision: reference images not interpreted (no captions, the rewrite is text-only)")
 
-    writer_on_server = bool(writer_file) and _same_file(writer_file, model_path)
+    writer_on_server = sees
     if writer_file.lower().endswith(".ninfer") and not writer_on_server:
         raise RuntimeError(
-            "rewrite_writer_model: a NInfer model only runs on ninfer-serve, so pick the same entry "
-            "for rewrite_caption_model."
+            "rewrite_writer_model: a NInfer model only runs on ninfer-serve, and this entry has no vision "
+            "entry in the rewriter pack's model list to run it through. Pick another writer."
         )
     on_server = writer_on_server or strata
     if thinking and not on_server:
-        say("rewrite", "thinking applies only when writer and caption model are the same GGUF; writing without it")
+        say("rewrite", "thinking needs a writer with vision (one server session) or Strata; writing without it")
     reasoning = {"enabled": thinking and on_server, "budget": budget, "message": budget_message}
     writer_budget = max_new_tokens + (max(budget, 0) if reasoning["enabled"] else 0)
     resolution = aspect.resolve(aspect_text, "16:9")
 
     # ---- what is out of date --------------------------------------------------
-    image_keys = [(slot, _image_key(tensor, model_path, length)) for slot, tensor in ordered] if task != "T2VA" else []
-    video_keys = [(slot, _video_key(frames, model_path, length)) for slot, frames in ordered_videos] if task != "T2VA" else []
+    described = task != "T2VA" and sees
+    image_keys = [(slot, _image_key(tensor, model_path, length)) for slot, tensor in ordered] if described else []
+    video_keys = [(slot, _video_key(frames, model_path, length)) for slot, frames in ordered_videos] if described else []
     plan_slots = story_planner.plan_slots(clips, auto_clips) if (auto_clips and story) else []
     # plan_ctx is None for a first plan with nothing typed (the whole story into N). Otherwise the planner sees the
     # existing clips: typed ones around the empty slots of a first plan, or every clip when auto_clips is raised past a
@@ -691,7 +728,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     to_describe: list[tuple[int, object, str]] = []
     video_captions: dict[int, str] = {}
     videos_to_describe: list[tuple[int, object, str]] = []
-    if task != "T2VA":
+    if described:
         for (slot, tensor), (_slot, key) in zip(ordered, image_keys):
             hit = cache.get(key)
             if isinstance(hit, dict) and hit.get("caption"):
@@ -728,11 +765,11 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     # What the planner is shown of the references. images = the pictures themselves (needs the writer GGUF to be
     # the captioner, i.e. the server has the mmproj) plus their captions; captions = labelled caption lines.
     plan_refs_mode = "off"
-    if planning and task != "T2VA" and (ordered or ordered_videos) and planner_refs != "off":
-        plan_refs_mode = "images" if (planner_refs == "images" and writer_on_server and mmproj_path and ordered) else "captions"
+    if planning and described and (ordered or ordered_videos) and planner_refs != "off":
+        plan_refs_mode = "images" if (planner_refs == "images" and mmproj_path and ordered) else "captions"
         if planner_refs == "images" and plan_refs_mode == "captions":
-            _LOG.info("Rewriter: planner_refs=images but the writer server has no vision (writer and captioner are "
-                      "different GGUFs); the planner gets the captions only")
+            _LOG.info("Rewriter: planner_refs=images but the writer's vision is a NInfer tower the server cannot take "
+                      "pictures through; the planner gets the captions only")
     # Each picture costs min(768, (w//28)*(h//28)) tokens on the server path (the pack's per-picture ceiling).
     plan_image_tokens = sum(story_planner.image_tokens(t) for _slot, t in ordered) if plan_refs_mode == "images" else 0
     plan_ctx_tokens = 0
@@ -825,8 +862,6 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             _save_cache(cache)
 
         if strata:
-            # Strata takes the whole card: the captioner's server has to be gone before it loads.
-            stack.close()
             say("rewrite", "starting Strata" + (f" (thinking budget {budget})" if reasoning["enabled"] else ""), 0.18)
             server = stack.enter_context(strata_backend.open_strata(
                 budget, adopt=getattr(_mod("runner"), "_adopt", None),
@@ -837,13 +872,15 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         lines = []
         if task != "T2VA":
             for slot, _tensor in ordered:
-                lines.append(f"Picture {slot + 1}: {captions.get(slot, '')}".rstrip())
+                lines.append(f"Picture {slot + 1}: {captions[slot]}" if captions.get(slot)
+                             else f"Picture {slot + 1}: an attached reference picture (not described here)")
             audio_no = 0
             for k, (slot, _frames) in enumerate(ordered_videos, start=1):
                 if slot in soundtracks:
                     audio_no += 1
                     lines.append(f"Audio {audio_no}: the soundtrack of Video {k} (voice and sound to reuse; not described here)")
-                lines.append(f"Video {k}: {video_captions.get(slot, '')}".rstrip())
+                lines.append(f"Video {k}: {video_captions[slot]}" if video_captions.get(slot)
+                             else f"Video {k}: an attached reference video (not described here)")
             for _slot, _audio in ordered_audios:
                 audio_no += 1
                 lines.append(f"Audio {audio_no}: an attached audio reference (voice or sound to reuse; not described here)")
@@ -935,7 +972,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             if story:
                 messages[0]["content"] = messages[0]["content"].rstrip() + STORY_RULE
             if task == "Ref2VA":
-                messages[0]["content"] = messages[0]["content"].rstrip() + REFERENCE_RULE
+                messages[0]["content"] = messages[0]["content"].rstrip() + REFERENCE_RULE + ("" if sees else NO_CAPTIONS_RULE)
             if story_planner.OPENS_MARK[:20] in source or story_planner.ENDS_MARK[:20] in source:
                 messages[0]["content"] = messages[0]["content"].rstrip() + STATE_RULE
             if previous or story:

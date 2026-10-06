@@ -78,7 +78,7 @@ class Harness(unittest.TestCase):
         def caption_question(role, length, question=None):
             return f"STOCK {role} {question.text if question else ''}".strip()
 
-        nodes = types.SimpleNamespace(_resolve_writer_choice=lambda l: choice, _resolve_captioner_choice=lambda l: choice,
+        nodes = types.SimpleNamespace(_resolve_writer_choice=lambda l: choice, _resolve_captioner_choice=lambda l: choice, captioner_choices=lambda: ["c"],
                                       DEFAULT_OPTIONS={}, caption_question=caption_question, Question=Question)
 
         class Server:
@@ -124,7 +124,7 @@ class Harness(unittest.TestCase):
         pr._image_key = lambda *a: "k"
         clips = [{"id": 0, "prompt": "", "duration": 15}]
         try:
-            settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": "w", "rewrite_caption_model": "c",
+            settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": "w",
                         "rewrite_task": "Ref2VA", "rewrite_parallel": 1, "rewrite_previous_clips": continuity,
                         "rewrite_max_new_tokens": 100, "rewrite_story": STORY, "auto_clips": 3, "planner_refs": "captions"}
             pr.rewrite_clips(clips, {"ref_image_0": FakeTensor()}, settings, aspect_text="1280x720")
