@@ -22,8 +22,15 @@ def shot(n, seconds, camera, subject="Ana", action="walks on", dialogue=False, l
             "has_dialogue": dialogue, "dialogue_speaker": speaker, "dialogue_line": line}
 
 
+def end_state_json(n):
+    return {"location": f"the street, lamp {n}", "time_light": "night, sodium lamplight",
+            "end_action": f"Ana stops under lamp {n} and looks up",
+            "characters": [{"name": "Ana", "position": "centre of the lane, facing the station", "wardrobe": "as on the reference",
+                            "props": "none", "state": "wary"}]}
+
+
 def clip_json(n, beat="a beat", shots=None, changes=None):
-    return {"clip": n, "beat": beat, "forward_pull": f"What is at the station {n}?",
+    return {"clip": n, "beat": beat, "forward_pull": f"What is at the station {n}?", "end_state": end_state_json(n),
             "shots": shots or [shot(1, 5, "wide_establishing", "The wet street", "shines under a lamp"),
                                shot(2, 5, "medium", "Ana", "walks on"),
                                shot(3, 5, "close_up", "Her face", "tightens", True, "Not yet.", "Ana")],
@@ -140,7 +147,8 @@ class FormatTests(unittest.TestCase):
         c1 = clip_json(1, changes=[{"entity": "ana", "axis": "coat", "to": "wet", "shot": 2}])
         b = sp.parse_breakdown(json.dumps({"chapter": "c", "ledger": ledger, "clips": [c1, clip_json(2)]}))
         two = sp.raw_ask_for_clip(b, 2)
-        self.assertTrue(two.startswith("STATE AT THE START OF THIS CLIP:\nAna (character): coat=wet\n\nClip 2:"))
+        self.assertTrue(two.startswith("STATE AT THE START OF THIS CLIP:\nAna (character): coat=wet\n\nCONTINUITY"))
+        self.assertIn("\n\nClip 2:\n", two)
         self.assertIn("CHANGES DURING THIS CLIP:\nAna.coat -> wet (shot 2)", sp.raw_ask_for_clip(b, 1))
 
 
@@ -159,7 +167,7 @@ class PlanStoryTests(unittest.TestCase):
         self.assertNotIn("PREVIOUS REPLY FAILED", seen[0])
         self.assertIn("PREVIOUS REPLY FAILED", seen[1])
         self.assertIn("not one valid JSON object", seen[1])
-        self.assertTrue(asks[2].startswith("Clip 3:"))
+        self.assertIn("\nClip 3:\n", asks[2])
 
     def test_wrong_count_retries_then_raises(self):
         calls = []
@@ -450,7 +458,7 @@ class RewriteIntegrationTests(unittest.TestCase):
             self.assertNotIn("planned", clips[3])
             self.assertTrue(all(clips[i]["planned"] is True for i in (1, 2, 4)))
             self.assertTrue(clips[1]["prompt_raw"].startswith("Clip 2:") or "Clip 2:" in clips[1]["prompt_raw"])
-            self.assertTrue(clips[4]["prompt_raw"].rstrip().endswith("What is at the station 3?"))
+            self.assertIn("What is at the station 3?", clips[4]["prompt_raw"])
             # no second plan from a story edit or a lower N
             self.assertEqual(self.run_rewrite(clips, {"auto_clips": 5, "rewrite_story": "Changed."}, [])[1], [])
             self.assertEqual(self.run_rewrite(clips, {"auto_clips": 3}, [])[1], [])
@@ -733,14 +741,14 @@ class PlanAroundUnitTests(unittest.TestCase):
         for c, n in zip(reply["clips"], (2, 3, 5)):
             c["clip"] = n
         asks = sp.plan_story(lambda m: json.dumps(reply), "S", 3, more=ctx)
-        self.assertEqual([a.split("\n")[0] for a in asks], ["Clip 2:", "Clip 3:", "Clip 5:"])
+        self.assertEqual([re.search(r"^Clip \d+:", a, re.M).group(0) for a in asks], ["Clip 2:", "Clip 3:", "Clip 5:"])
         b = sp.parse_breakdown(json.dumps(reply))
         self.assertEqual(sp.check_breakdown(b), [])
 
     def test_reply_numbered_1_to_k_is_remapped_by_position(self):
         ctx = sp.plan_around(self.gapped(), 5, [1, 2, 4])
         asks = sp.plan_story(lambda m: plan_json(3), "S", 3, more=ctx)
-        self.assertEqual([a.split("\n")[0] for a in asks], ["Clip 2:", "Clip 3:", "Clip 5:"])
+        self.assertEqual([re.search(r"^Clip \d+:", a, re.M).group(0) for a in asks], ["Clip 2:", "Clip 3:", "Clip 5:"])
 
     def test_place_and_apply_fill_the_right_slots_and_leave_typed_clips_alone(self):
         clips = self.gapped()
