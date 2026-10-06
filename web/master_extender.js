@@ -779,7 +779,7 @@ app.registerExtension({
                 if (noPack) wrap.appendChild(uiHint("The MiniMax-H3-Prompt-Rewriter-ComfyUI pack is not installed beside this node; the run will stop with that message."));
                 wrap.appendChild(uiRow("task", bindSelect("rewrite_task"), { hint: "auto: Ref2VA when reference pictures are connected, else T2VA." }));
                 wrap.appendChild(uiRow("writer model", bindSelect("rewrite_writer_model", { render: modelLabel })));
-                wrap.appendChild(uiRow("caption model", bindSelect("rewrite_caption_model", { render: modelLabel }), { hint: "Describes the reference pictures. Same GGUF as the writer = one server for everything, and thinking becomes available." }));
+                wrap.appendChild(uiRow("caption model", bindSelect("rewrite_caption_model", { render: modelLabel }), { hint: "Describes the reference pictures. Same GGUF as the writer = one server for everything, and thinking becomes available. With the Strata writer (text only) this model still describes the pictures, first; its server is closed before Strata starts." }));
                 wrap.appendChild(uiRow("caption length", bindSelect("rewrite_caption_length"), { indent: true }));
                 wrap.appendChild(uiRow("thinking (writer only)", bindToggle("rewrite_thinking")));
                 if (getW("rewrite_thinking", false)) {

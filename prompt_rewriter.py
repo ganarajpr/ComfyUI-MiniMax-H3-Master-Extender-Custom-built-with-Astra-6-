@@ -19,6 +19,7 @@ behaves exactly as before.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import importlib
@@ -34,8 +35,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 try:
     from . import story_planner
+    from . import strata_backend
 except ImportError:  # imported as a top-level module (tests)
     import story_planner
+    import strata_backend
 
 _LOG = logging.getLogger("minimax_h3_master_extender.rewriter")
 
@@ -158,7 +161,9 @@ def _mod(name: str):
 
 def writer_choices() -> list[str]:
     try:
-        return list(_mod("nodes").writer_choices())
+        # The pack's list is built from GGUF files only (catalog entries without 'repo'/'file' are skipped),
+        # so an endpoint backend is appended here, last: the pack's first entry stays the dropdown default.
+        return list(_mod("nodes").writer_choices()) + [strata_backend.LABEL]
     except Exception:
         return [MISSING]
 
@@ -517,7 +522,10 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     if writer_label.startswith("(") or not writer_label:
         raise RuntimeError("rewrite_writer_model: pick a GGUF from the list (the rewriter pack's model list).")
 
-    writer_file = _writer_file(nodes, paths, writer_label)
+    strata = writer_label == strata_backend.LABEL
+    if strata and budget <= 0:
+        budget = strata_backend.DEFAULT_BUDGET  # every local call carries a thinking budget; Strata reads <= 0 as none
+    writer_file = "" if strata else _writer_file(nodes, paths, writer_label)
     ordered = _ordered_refs(refs)
     ordered_videos = _ordered(videos, "ref_video_")
     ordered_audios = _ordered(audios, "ref_audio_")
@@ -549,9 +557,10 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             "rewrite_writer_model: a NInfer model only runs on ninfer-serve, so pick the same entry "
             "for rewrite_caption_model."
         )
-    if thinking and not writer_on_server:
+    on_server = writer_on_server or strata
+    if thinking and not on_server:
         say("rewrite", "thinking applies only when writer and caption model are the same GGUF; writing without it")
-    reasoning = {"enabled": thinking and writer_on_server, "budget": budget, "message": budget_message}
+    reasoning = {"enabled": thinking and on_server, "budget": budget, "message": budget_message}
     writer_budget = max_new_tokens + (max(budget, 0) if reasoning["enabled"] else 0)
     resolution = aspect.resolve(aspect_text, "16:9")
 
@@ -697,11 +706,10 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             reasoning=reasoning if writer_on_server else None, pool_ctx=pool_ctx,
         )
     else:
-        import contextlib
-
         session = contextlib.nullcontext(None)
 
-    with session as server:
+    with contextlib.ExitStack() as stack:
+        server = stack.enter_context(session)
         if to_describe:
             question = nodes.caption_question("Picture", length)
             say("rewrite", f"describing {len(to_describe)} reference picture(s)"
@@ -759,6 +767,14 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                     notes.append(f"Video {slot + 1}: empty caption")
             _save_cache(cache)
 
+        if strata:
+            # Strata takes the whole card: the captioner's server has to be gone before it loads.
+            stack.close()
+            say("rewrite", "starting Strata" + (f" (thinking budget {budget})" if reasoning["enabled"] else ""), 0.18)
+            server = stack.enter_context(strata_backend.open_strata(
+                budget, adopt=getattr(_mod("runner"), "_adopt", None),
+                on_wait=lambda seconds: say("rewrite", f"waiting for Strata to load ({seconds:.0f} s)", 0.18)))
+
         # The reference block in the core node's label order: pictures, then each
         # video (its soundtrack's <Audio j> right before it), then standalone audio.
         lines = []
@@ -786,7 +802,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                 + (f" with thinking (budget {budget})" if reasoning["enabled"] else ""), 0.2)
 
             def plan_chat(messages):
-                if server is not None and writer_on_server:
+                if server is not None and on_server:
                     text = server.chat(
                         messages, seed=seed, greedy=greedy, max_new_tokens=plan_budget,
                         temperature=temperature, top_p=0.8, top_k=20, repeat_penalty=1.05,
@@ -887,7 +903,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
             stream("thinking" if reasoning["enabled"] else "writing", "", force=True)
             t0 = time.time()
-            if server is not None and writer_on_server:
+            if server is not None and on_server:
                 text = server.chat(
                     messages, seed=seed, greedy=greedy, max_new_tokens=writer_budget,
                     temperature=temperature, top_p=0.8, top_k=20, repeat_penalty=1.05,
