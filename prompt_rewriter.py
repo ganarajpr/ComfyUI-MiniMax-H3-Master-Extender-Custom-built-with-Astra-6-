@@ -568,6 +568,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     story = str(settings.get("rewrite_story") or "").strip()
     system_given = str(settings.get("rewrite_system_prompt_in") or "").strip() or str(settings.get("rewrite_system_prompt") or "").strip()
     auto_clips = max(0, int(settings.get("auto_clips", 0) or 0))
+    clip_seconds = story_planner.clip_seconds(settings.get("auto_clip_seconds", story_planner.CLIP_SECONDS))
     planner_refs = str(settings.get("planner_refs", "images"))
     if planner_refs not in PLANNER_REFS:
         planner_refs = "images"
@@ -634,9 +635,9 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         sizing_clips = copy.deepcopy(clips)
         if plan_ctx:
             placeholders, _none, sizing_slots = story_planner.place(["x" * 1500] * plan_n, [], plan_ctx["numbers"])
-            story_planner.apply_plan(sizing_clips, placeholders, sizing_slots)
+            story_planner.apply_plan(sizing_clips, placeholders, sizing_slots, seconds=clip_seconds)
         else:
-            story_planner.apply_plan(sizing_clips, ["x" * 1500] * auto_clips, plan_slots)
+            story_planner.apply_plan(sizing_clips, ["x" * 1500] * auto_clips, plan_slots, seconds=clip_seconds)
 
     def assess(cl: list) -> tuple[dict, list[int]]:
         current = {}
@@ -741,7 +742,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             stand = {"pictures": [{"label": f"Picture {slot + 1}", "caption": "x" * 1600, "image": None} for slot, _t in ordered],
                      "videos": [{"label": f"Video {k}", "caption": "x" * 1600} for k, _v in enumerate(ordered_videos, start=1)]}
         plan_ctx_tokens = guide_prompt.context_needed(
-            [{"role": "user", "content": story_planner.build_user_content(story, plan_n, stand, plan_ctx)}],
+            [{"role": "user", "content": story_planner.build_user_content(story, plan_n, stand, plan_ctx, clip_seconds)}],
             plan_budget + plan_image_tokens)
     caption_jobs = len(to_describe) + len(videos_to_describe)
     caption_slots = max(1, min(caption_jobs, slots)) if caption_jobs else 1
@@ -854,7 +855,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
         # ---- planning: the film story into the clip list, once ----------------
         if planning:
-            say("rewrite", (f"planning {plan_n} clip(s) ({story_planner._spans(plan_ctx['numbers'])}) around the {len([1 for _n, t in plan_ctx['existing'] if t])} existing clip(s)" if plan_ctx else f"planning the story into {auto_clips} clip(s) of 15 s")
+            say("rewrite", (f"planning {plan_n} clip(s) ({story_planner._spans(plan_ctx['numbers'])}) around the {len([1 for _n, t in plan_ctx['existing'] if t])} existing clip(s)" if plan_ctx else f"planning the story into {auto_clips} clip(s) of {clip_seconds} s")
                 + (f" with thinking (budget {budget})" if reasoning["enabled"] else ""), 0.2)
 
             def plan_chat(messages):
@@ -891,14 +892,14 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                           plan_refs_mode, len(ordered), len(ordered_videos), plan_image_tokens)
             t_plan = time.time()
             plan_states: list = []
-            asks = story_planner.plan_story(plan_chat, story, plan_n, refs=plan_refs, more=plan_ctx, states_out=plan_states,
+            asks = story_planner.plan_story(plan_chat, story, plan_n, refs=plan_refs, more=plan_ctx, states_out=plan_states, seconds=clip_seconds,
                                             log=lambda m: _LOG.info("Rewriter planner: %s", m))
             if plan_ctx:
                 full_asks, full_states, apply_slots = story_planner.place(asks, plan_states, plan_ctx["numbers"])
-                written_slots = story_planner.apply_plan(clips, full_asks, apply_slots, states=full_states)
+                written_slots = story_planner.apply_plan(clips, full_asks, apply_slots, states=full_states, seconds=clip_seconds)
                 plan_numbers = plan_ctx["numbers"][:len(asks)]
             else:
-                written_slots = story_planner.apply_plan(clips, asks, plan_slots, states=plan_states)
+                written_slots = story_planner.apply_plan(clips, asks, plan_slots, states=plan_states, seconds=clip_seconds)
                 plan_numbers = list(range(1, len(asks) + 1))
             _LOG.info("Rewriter: planned %d clip(s) in %.1f s; wrote %d into the clip list (typed clips untouched)",
                       len(asks), time.time() - t_plan, len(written_slots))

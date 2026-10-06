@@ -875,5 +875,69 @@ class RewriteRefsTests(unittest.TestCase):
         self.assertNotIn("REFERENCE RULE", content)
 
 
+class ClipSecondsTests(unittest.TestCase):
+    def plan_at(self, seconds, n=2):
+        plan = json.loads(plan_json(n))
+        for c in plan["clips"]:
+            k = len(c["shots"])
+            for i, shot_ in enumerate(c["shots"]):
+                shot_["seconds"] = seconds / k
+        return json.dumps(plan)
+
+    def test_default_prompt_is_unchanged_and_says_15(self):
+        explicit = sp.build_user_message("Ana walks.", 3, None, 15)
+        self.assertEqual(sp.build_user_message("Ana walks.", 3), explicit)
+        self.assertIn("fixed 15-second video clips", explicit)
+        self.assertIn("exactly 15 seconds of shots (they must sum to 15, plus", explicit)
+        self.assertIn("need the next 15 seconds", explicit)
+        self.assertIn("sum to 15. \"ledger", explicit)
+
+    def test_10s_prompt_has_no_stray_15(self):
+        out = sp.build_user_message("Ana walks.", 3, None, 10)
+        self.assertIn("fixed 10-second video clips", out)
+        self.assertIn("exactly 10 seconds of shots (they must sum to 10, plus", out)
+        self.assertIn("need the next 10 seconds", out)
+        self.assertIn("EXACTLY 3 clips of 10 seconds each (30s total)", out)
+        self.assertIn("seconds sum to 10.", out)
+        self.assertNotRegex(out, r"\b15\b")
+        self.assertIn("decide how many 10-second clips", sp.runtime_instruction("auto", None, 10))
+
+    def test_clip_seconds_is_clamped(self):
+        self.assertEqual([sp.clip_seconds(v) for v in (10, "10", 3, 99, None, "x", 12.4)], [10, 10, 5, 15, 15, 15, 12])
+
+    def test_check_uses_the_target_length(self):
+        b = sp.parse_breakdown(self.plan_at(10, 1))
+        self.assertEqual(sp.check_breakdown(b, 10), [])
+        self.assertIn("off the 15s target", " ".join(sp.check_breakdown(b)))
+
+    def test_plan_story_at_10s_prompts_10_and_writes_10s_clips(self):
+        seen = []
+
+        def chat(messages):
+            seen.append(messages[0]["content"])
+            return self.plan_at(10, 6)
+
+        asks = sp.plan_story(chat, "Ana walks.", 6, seconds=10)
+        self.assertEqual(len(seen), 1)
+        self.assertIn("EXACTLY 6 clips of 10 seconds each (60s total)", seen[0])
+        clips = []
+        sp.apply_plan(clips, asks, list(range(6)), seconds=10)
+        self.assertEqual([c["duration"] for c in clips], [10] * 6)
+
+    def test_apply_plan_default_stays_15_and_fills_an_existing_empty_clip(self):
+        clips = [{"id": 0, "title": "Clip 1", "prompt": "", "duration": 15}]
+        sp.apply_plan(clips, ["a", "b"], [0, 1])
+        self.assertEqual([c["duration"] for c in clips], [15, 15])
+        clips = [{"id": 0, "title": "Clip 1", "prompt": "", "duration": 15}]
+        sp.apply_plan(clips, ["a", "b"], [0, 1], seconds=10)
+        self.assertEqual([c["duration"] for c in clips], [10, 10])
+
+    def test_node_input_is_last_after_planner_refs(self):
+        text = (Path(__file__).resolve().parents[1] / "master_node.py").read_text(encoding="utf-8")
+        names = re.findall(r'^\s{16}"(\w+)": \(', text, re.M)
+        self.assertEqual(names[names.index("planner_refs") + 1], "auto_clip_seconds")
+        self.assertRegex(text, r'"auto_clip_seconds": \("INT", \{"default": 15, "min": 5, "max": 15')
+
+
 if __name__ == "__main__":
     unittest.main()

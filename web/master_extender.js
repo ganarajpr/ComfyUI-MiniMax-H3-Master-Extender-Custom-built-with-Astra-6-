@@ -194,7 +194,7 @@ const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
 const SINGLE_TE_WIDGETS = ["single_text_encode"];
 // auto_clips is appended after rewrite_story; a workflow saved before it carries the empty master_ui value there.
-const AUTO_CLIPS_WIDGETS = ["auto_clips", "planner_refs"];
+const AUTO_CLIPS_WIDGETS = ["auto_clips", "planner_refs", "auto_clip_seconds"];
 const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...SINGLE_TE_WIDGETS, ...AUTO_CLIPS_WIDGETS];
 
 function setWidgetVisible(widget, visible) {
@@ -798,9 +798,10 @@ app.registerExtension({
                     storyBox.appendChild(uiTextarea(getW("rewrite_story", ""), (v) => setW("rewrite_story", v, { rerender: false }), { rows: 4, placeholder: "The whole film in a few lines: who, where, how it begins, turns and ends. Each clip then covers only its own beat." }));
                     wrap.appendChild(storyBox);
                     if (W("auto_clips")) {
-                        wrap.appendChild(uiRow("plan story into N clips", bindNumber("auto_clips"), { hint: "0 = off. With a film story set, the first run plans it ONCE into exactly N 15 s clips (shot lists written into the empty clips, flagged planned, editable), then rewrites them. Clips you typed are kept and planned around: the planner sees them and fills only the empty ones. Changing the story never replans. Raise to plan more clips after the existing ones (only the new ones are planned, continuing from the last clip); lowering does nothing." }));
+                        wrap.appendChild(uiRow("plan story into N clips", bindNumber("auto_clips"), { hint: "0 = off. With a film story set, the first run plans it ONCE into exactly N clips (length below, 15 s by default; shot lists written into the empty clips, flagged planned, editable), then rewrites them. Clips you typed are kept and planned around: the planner sees them and fills only the empty ones. Changing the story never replans. Raise to plan more clips after the existing ones (only the new ones are planned, continuing from the last clip); lowering does nothing." }));
                         if (Number(getW("auto_clips", 0)) > 0) {
                             wrap.appendChild(uiHint("Raise the number to plan more clips after the existing ones (only the new clips are planned)."));
+                            if (W("auto_clip_seconds")) wrap.appendChild(uiRow("planned clip length (s)", bindNumber("auto_clip_seconds"), { indent: true, hint: "Seconds per planned clip, 5-15 (15 = the old fixed length). The planner budgets its beats and shots to this length and the planned clips are created with it. Typed clips keep their own duration. Applies only when a plan is made; to re-plan at a new length use 'Replan from story'." }));
                             if (W("planner_refs")) wrap.appendChild(uiRow("planner sees references as", bindSelect("planner_refs"), { indent: true, hint: "images: the reference pictures themselves plus their captions (needs the writer GGUF to also be the caption model); captions: caption lines only; off: the story text alone." }));
                             const replan = document.createElement("button");
                             replan.textContent = "Replan from story";

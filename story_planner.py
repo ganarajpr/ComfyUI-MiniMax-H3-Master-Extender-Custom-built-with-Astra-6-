@@ -2,11 +2,11 @@
 
 A Python port of the one-call chapter-breakdown planner of the H3 Prompt Studio
 (``h3-prompt-studio/src/lib/chapterBreakdown.ts``): one story in, exactly N
-fixed-15s clips out, each a numbered shot list that reads as a clip's raw ask.
+fixed-length clips out (15 s unless ``auto_clip_seconds`` says otherwise), each a numbered shot list that reads as a clip's raw ask.
 The prompt itself is ``prompts/planner.md`` (verbatim from the Studio; this repo
 holds the canonical copy). Everything else here is the Studio's own contract:
 the runtime instruction (auto / target N), the output shape, the lenient parse,
-the checks (3-6 shots, shots sum to 15 s +-0.5, camera from the fixed list, the
+the checks (3-6 shots, shots sum to the clip length +-0.5, camera from the fixed list, the
 state ledger's referential integrity) and ``format_clip_raw_ask``.
 
 Pure functions only (no ComfyUI, no torch): the model call is a ``chat``
@@ -37,6 +37,8 @@ CAMERA_LABELS = {
 SHOT_MIN = 3
 SHOT_MAX = 6
 CLIP_SECONDS = 15
+CLIP_SECONDS_MIN = 5
+CLIP_SECONDS_MAX = 15
 SECONDS_TOLERANCE = 0.5
 DIALOGUE_WORDS_PER_SECOND_MAX = 2.2
 
@@ -61,26 +63,48 @@ def load_prompt(name: str) -> str:
 # --------------------------------------------------------------------------- prompt filling
 
 
-def runtime_instruction(mode: str, target_clips: int | None = None) -> str:
+def clip_seconds(value) -> int:
+    """``auto_clip_seconds`` as a whole number of seconds inside what the clip slider takes without 'go beyond'."""
+    try:
+        seconds = int(round(float(value)))
+    except (TypeError, ValueError):
+        return CLIP_SECONDS
+    return max(CLIP_SECONDS_MIN, min(CLIP_SECONDS_MAX, seconds))
+
+
+# The template (prompts/planner.md, verbatim from the Studio, which tests it for drift) is written for 15 s clips; these are
+# its four places that say so.
+_TEMPLATE_SECONDS = (
+    ("fixed 15-second video clips", "fixed {s}-second video clips"),
+    ("exactly 15 seconds of shots (they must sum to 15, plus", "exactly {s} seconds of shots (they must sum to {s}, plus"),
+    ("need the next 15 seconds", "need the next {s} seconds"),
+)
+
+
+def runtime_instruction(mode: str, target_clips: int | None = None, seconds: int = CLIP_SECONDS) -> str:
     if mode == "target" and target_clips and target_clips > 0:
         n = target_clips
         return (
             f"RUNTIME — TARGET, NOT A CEILING OR A FLOOR: this chapter must become EXACTLY {n} clip{'' if n == 1 else 's'} "
-            f"of 15 seconds each ({n * 15}s total) — not one more, not one fewer. Reach EXACTLY {n} by covering the SAME "
+            f"of {seconds} seconds each ({n * seconds}s total) — not one more, not one fewer. Reach EXACTLY {n} by covering the SAME "
             f"events at a finer or coarser grain — more or fewer clips, longer or shorter dwell on each beat — never by "
             f"inventing events the chapter does not contain, and never by compressing two distinct dramatic beats into one clip "
             f"or stretching one beat thin across several just to fill the count."
         )
     return (
-        "RUNTIME — AUTO: decide how many 15-second clips this chapter genuinely needs, one clip per distinct dramatic beat. "
+        f"RUNTIME — AUTO: decide how many {seconds}-second clips this chapter genuinely needs, one clip per distinct dramatic beat. "
         "Do not compress two beats into one clip, and do not pad a single beat across several clips just to run longer. "
         "The clip count follows the STORY, not a target."
     )
 
 
-def fill_template(template: str, chapter: str, mode: str = "auto", target_clips: int | None = None) -> str:
+def fill_template(template: str, chapter: str, mode: str = "auto", target_clips: int | None = None,
+                  seconds: int = CLIP_SECONDS) -> str:
+    if seconds != CLIP_SECONDS:
+        for old, new in _TEMPLATE_SECONDS:
+            template = template.replace(old, new.format(s=seconds), 1)
     return (template
-            .replace("{{runtimeInstruction}}", runtime_instruction(mode, target_clips), 1)
+            .replace("{{runtimeInstruction}}", runtime_instruction(mode, target_clips, seconds), 1)
             .replace("{{chapter}}", chapter.strip(), 1))
 
 
@@ -135,19 +159,21 @@ OPENS_MARK = "CONTINUITY \u2014 THIS CLIP OPENS EXACTLY WHERE CLIP {n} ENDED:"
 ENDS_MARK = "AT THE END OF THIS CLIP (the next clip opens exactly here):"
 
 
-def output_shape(start: int = 1, second: int | None = None) -> str:
+def output_shape(start: int = 1, second: int | None = None, seconds: int = CLIP_SECONDS) -> str:
     """The OUTPUT FORMAT block, its example clip numbered ``start`` (and ``second``, for the ledger's clip_ids)."""
     second = start + 1 if second is None else second
+    shape = OUTPUT_SHAPE.replace("sum to 15.", f"sum to {seconds}.") if seconds != CLIP_SECONDS else OUTPUT_SHAPE
     if start == 1 and second == 2:
-        return OUTPUT_SHAPE
-    return (OUTPUT_SHAPE.replace('{"clip": 1,', f'{{"clip": {start},', 1)
+        return shape
+    return (shape.replace('{"clip": 1,', f'{{"clip": {start},', 1)
             .replace('"clip_ids": [1, 2]', f'"clip_ids": [{start}, {second}]', 1))
 
 
-def build_user_message(story: str, target_clips: int, numbers: list[int] | None = None) -> str:
+def build_user_message(story: str, target_clips: int, numbers: list[int] | None = None, seconds: int = CLIP_SECONDS) -> str:
     first = numbers[0] if numbers else 1
     second = numbers[1] if numbers and len(numbers) > 1 else None
-    return fill_template(load_prompt("planner"), story, "target", target_clips) + "\n\n" + CONTINUITY_RULE + output_shape(first, second)
+    return (fill_template(load_prompt("planner"), story, "target", target_clips, seconds) + "\n\n" + CONTINUITY_RULE
+            + output_shape(first, second, seconds))
 
 
 def _spans(numbers: list[int]) -> str:
@@ -241,7 +267,8 @@ def png_data_uri(path: str) -> str:
         return "data:image/png;base64," + base64.b64encode(handle.read()).decode("ascii")
 
 
-def build_user_content(story: str, target_clips: int, refs: dict | None = None, more: dict | None = None):
+def build_user_content(story: str, target_clips: int, refs: dict | None = None, more: dict | None = None,
+                       seconds: int = CLIP_SECONDS):
     """The planner's user turn: a string, or (with real pictures) a list of OpenAI-style content parts.
 
     ``refs`` = ``{"pictures": [{"label": "Picture 1", "caption": str, "image": data-URI or None}],
@@ -249,7 +276,7 @@ def build_user_content(story: str, target_clips: int, refs: dict | None = None, 
     followed by their caption; the others as one labelled caption line. Videos are always caption lines.
     ``more`` (see ``plan_more``) turns the call into a continuation of an existing film.
     """
-    text = build_user_message(story, target_clips, more["numbers"] if more else None)
+    text = build_user_message(story, target_clips, more["numbers"] if more else None, seconds)
     body = f"{more_block(more)}\n\n{text}" if more else text
     pictures = list((refs or {}).get("pictures") or [])
     videos = list((refs or {}).get("videos") or [])
@@ -532,7 +559,7 @@ def check_raw_asks_distinct(b) -> list[str]:
     return issues
 
 
-def check_breakdown(b) -> list[str]:
+def check_breakdown(b, seconds: int = CLIP_SECONDS) -> list[str]:
     issues = []
     entity_by_id = {e["id"]: e for e in b["ledger"]["entities"]}
     for clip in b["clips"]:
@@ -540,9 +567,9 @@ def check_breakdown(b) -> list[str]:
         if n < SHOT_MIN or n > SHOT_MAX:
             issues.append(f"clip {clip['clip']} has {n} shot{'' if n == 1 else 's'} — outside the {SHOT_MIN}-{SHOT_MAX} range.")
         total = sum(s["seconds"] for s in clip["shots"])
-        drift = abs(total - CLIP_SECONDS)
+        drift = abs(total - seconds)
         if drift > SECONDS_TOLERANCE:
-            issues.append(f"clip {clip['clip']}'s shots sum to {total:.1f}s — {drift:.1f}s off the {CLIP_SECONDS}s target.")
+            issues.append(f"clip {clip['clip']}'s shots sum to {total:.1f}s — {drift:.1f}s off the {seconds}s target.")
         for s in clip["shots"]:
             if s["camera_raw"] not in CAMERA_SHOTS:
                 issues.append(f"clip {clip['clip']} shot {s['shot']}: camera '{s['camera_raw']}' is not one of {', '.join(CAMERA_SHOTS)}.")
@@ -656,7 +683,7 @@ class PlanError(RuntimeError):
 
 
 def plan_story(chat, story: str, target_clips: int, log=None, refs: dict | None = None,
-               more: dict | None = None, states_out: list | None = None) -> list[str]:
+               more: dict | None = None, states_out: list | None = None, seconds: int = CLIP_SECONDS) -> list[str]:
     """Plan ``story`` into exactly ``target_clips`` raw asks with ``chat(messages) -> reply text``.
 
     One call; on an unparseable reply, a wrong clip count or any failed check, exactly one retry with the
@@ -666,7 +693,7 @@ def plan_story(chat, story: str, target_clips: int, log=None, refs: dict | None 
     say = log or (lambda *_: None)
     numbers = more["numbers"] if more else list(range(1, target_clips + 1))
     carried = more.get("carried") if more else None
-    user = build_user_content(story, target_clips, refs, more)
+    user = build_user_content(story, target_clips, refs, more, seconds)
     complaint, parsed, issues = [], None, []
     for attempt in range(2):
         content = user
@@ -683,7 +710,7 @@ def plan_story(chat, story: str, target_clips: int, log=None, refs: dict | None 
             issues = list(complaint)
             say(f"attempt {attempt + 1}: reply not parseable")
             continue
-        issues = check_clip_count(parsed, target_clips) + check_breakdown(parsed)
+        issues = check_clip_count(parsed, target_clips) + check_breakdown(parsed, seconds)
         if not issues:
             break
         complaint = issues
@@ -791,10 +818,11 @@ def _next_id(clips: list) -> int:
     return (max(ids) + 1) if ids else 0
 
 
-def apply_plan(clips: list, asks: list[str], slots: list[int], states: list | None = None) -> list[int]:
+def apply_plan(clips: list, asks: list[str], slots: list[int], states: list | None = None,
+               seconds: int = CLIP_SECONDS) -> list[int]:
     """Write ``asks[i]`` into the empty ``slots`` (appending clips past the end). Typed clips are never touched.
 
-    Returns the positions written. Each is flagged ``planned: True``, 15 s, not rewritten.
+    Returns the positions written. Each is flagged ``planned: True``, ``seconds`` long, not rewritten.
     """
     written = []
     for i in slots:
@@ -805,7 +833,7 @@ def apply_plan(clips: list, asks: list[str], slots: list[int], states: list | No
             if _ask_text(clip).strip() or "planned" in clip:
                 continue
         else:
-            clip = {"id": _next_id(clips), "title": f"Clip {i + 1}", "duration": 15, "beyond": False,
+            clip = {"id": _next_id(clips), "title": f"Clip {i + 1}", "duration": seconds, "beyond": False,
                     "seed": random.randint(0, 999999999), "seed_mode": "randomize", "validated": False, "loras": []}
             clips.append(clip)
         for key in ("prompt_raw", "rewrite_text", "rewrite_meta"):
@@ -815,7 +843,7 @@ def apply_plan(clips: list, asks: list[str], slots: list[int], states: list | No
         clip["planned"] = True
         if states is not None and i < len(states) and states[i] is not None:
             clip["plan_end_state"] = states[i]
-        clip["duration"] = 15
+        clip["duration"] = seconds
         clip["validated"] = False
         written.append(i)
     return written
