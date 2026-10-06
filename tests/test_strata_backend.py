@@ -18,8 +18,9 @@ import strata_backend as sb  # noqa: E402
 class FakeStrata:
     """A loopback server with the four routes of Strata that the extender uses."""
 
-    def __init__(self, busy_first=0):
+    def __init__(self, busy_first=0, vision=True):
         self.requests = []
+        self.modalities = ["text", "image"] if vision else ["text"]
         self.busy = busy_first
         owner = self
 
@@ -37,7 +38,13 @@ class FakeStrata:
 
             def do_GET(self):
                 owner.requests.append(("GET", self.path, None))
-                self._reply(200, {"status": "ok"}) if self.path == "/health" else self._reply(404, {})
+                if self.path == "/health":
+                    self._reply(200, {"status": "ok"})
+                elif self.path == "/v1/models":
+                    self._reply(200, {"object": "list", "data": [{"id": "qwen3.8-flash-next-iq3_s", "architecture": {
+                        "input_modalities": owner.modalities, "output_modalities": ["text"]}}]})
+                else:
+                    self._reply(404, {})
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
@@ -50,7 +57,10 @@ class FakeStrata:
                 frames = [{"choices": [{"delta": {"reasoning_content": "hmm "}}]},
                           {"choices": [{"delta": {"reasoning_content": "ok"}}]},
                           {"choices": [{"delta": {"content": "shot_1: "}}]},
-                          {"choices": [{"delta": {"content": "a door."}}]}]
+                          {"choices": [{"delta": {"content": "a door."}}]},
+                          {"choices": [{"delta": {}, "finish_reason": "stop"}],
+                           "usage": {"prompt_tokens": 2400, "completion_tokens": 9, "total_tokens": 2409,
+                                     "prompt_tokens_details": {"cached_tokens": 2000}}}]
                 text = "".join(f"data: {json.dumps(f)}\n\n" for f in frames) + "data: [DONE]\n\n"
                 self._reply(200, text.encode(), "text/event-stream")
 
@@ -110,6 +120,22 @@ class ChatTests(unittest.TestCase):
         self.assertNotIn("repeat_penalty", sent)
         self.assertTrue(sent["stream"])
 
+    def test_image_parts_reach_strata_with_the_budget_and_its_usage_is_kept(self):
+        uri = "data:image/png;base64,AAAA"
+        messages = [{"role": "system", "content": "SYS"},
+                    {"role": "user", "content": [{"type": "text", "text": "Picture 1:"},
+                                                 {"type": "image_url", "image_url": {"url": uri}},
+                                                 {"type": "text", "text": "go"}]}]
+        server = sb.StrataServer(self.fake.url, budget=2048)
+        self.assertIsNone(server.last_usage)
+        server.chat(messages, max_new_tokens=100 + 2048, enable_thinking=True)
+        sent = self.fake.posts("/v1/chat/completions")[0]
+        self.assertEqual(sent["messages"][1]["content"][1], {"type": "image_url", "image_url": {"url": uri}})
+        self.assertEqual(sent["reasoning_budget_tokens"], 2048)
+        self.assertEqual(sent["max_tokens"], 2148)
+        self.assertEqual(server.last_usage["prompt_tokens"], 2400)
+        self.assertEqual(server.last_usage["prompt_tokens_details"]["cached_tokens"], 2000)
+
     def test_a_503_starting_is_retried(self):
         fake = FakeStrata(busy_first=2)
         self.addCleanup(fake.close)
@@ -119,6 +145,64 @@ class ChatTests(unittest.TestCase):
         text = sb.StrataServer(fake.url).chat(MSGS, enable_thinking=False)
         self.assertEqual(text, "shot_1: a door.")
         self.assertEqual(len(fake.posts("/v1/chat/completions")), 3)
+
+
+class VisionTests(unittest.TestCase):
+    def setUp(self):
+        self.env = {k: os.environ.pop(k, None) for k in (sb.URL_ENV, sb.GATEWAY_CONFIG_ENV)}
+        self.default_url = sb.DEFAULT_URL
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        sb.DEFAULT_URL = self.default_url
+        for key, value in self.env.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+
+    def touch(self, name):
+        path = os.path.join(self.dir, name)
+        Path(path).write_bytes(b"x")
+        return path
+
+    def gateway(self, *, flag=True, mmproj=True, section=True):
+        config = {"args": ["--native", "m.gguf"] + (["--vision", "--vram-reserve-mib", "700"] if flag else [])}
+        if section:
+            config["vision"] = {"exe": self.touch("strata-vision.exe"),
+                                "mmproj": self.touch("mmproj.gguf") if mmproj else os.path.join(self.dir, "missing.gguf"),
+                                "gpu": True, "max_tokens": 1024}
+        cfg = os.path.join(self.dir, "lane.json")
+        Path(cfg).write_text(json.dumps(config), encoding="utf-8")
+        backends = os.path.join(self.dir, "backends.json")
+        Path(backends).write_text(json.dumps({"backends": {"strata": {"cmd": ["python", "server.py", "--engine", "strata",
+                                                                               "--config", cfg, "--port", "8095"]}}}))
+        os.environ[sb.GATEWAY_CONFIG_ENV] = backends
+        sb.DEFAULT_URL = "http://127.0.0.1:9"
+
+    def test_a_running_strata_is_asked_what_it_can_read(self):
+        for vision in (True, False):
+            fake = FakeStrata(vision=vision)
+            self.addCleanup(fake.close)
+            sb.DEFAULT_URL = fake.url
+            self.assertEqual(sb.vision_available(), vision)
+
+    def test_a_strata_that_would_be_started_has_vision_when_its_config_says_so(self):
+        self.gateway()
+        self.assertTrue(sb.vision_available())
+
+    def test_no_vision_when_the_flag_the_section_or_the_mmproj_file_is_missing(self):
+        for kw in ({"flag": False}, {"section": False}, {"mmproj": False}):
+            self.gateway(**kw)
+            self.assertFalse(sb.vision_available(), kw)
+
+    def test_no_vision_without_a_gateway_config_or_with_an_explicit_url_that_is_down(self):
+        sb.DEFAULT_URL = "http://127.0.0.1:9"
+        os.environ[sb.GATEWAY_CONFIG_ENV] = os.path.join(self.dir, "none.json")
+        self.assertFalse(sb.vision_available())
+        self.gateway()
+        os.environ[sb.URL_ENV] = "http://127.0.0.1:9"
+        self.assertFalse(sb.vision_available())
 
 
 class OpenTests(unittest.TestCase):

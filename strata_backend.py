@@ -25,7 +25,14 @@ Strata specifics (read from its server, not guessed): the thinking budget is a
 top-level ``reasoning_budget_tokens`` and its wrap-up message is built in (there
 is no per-request message field); ``chat_template_kwargs.enable_thinking`` can
 only switch thinking off; ``repeat_penalty`` is not part of its sampling; one
-sequence runs at a time; the config has no vision entry, so no image parts.
+sequence runs at a time.
+
+Vision: Strata reads pictures when its config has a ``vision`` section (the model's
+mmproj through ``strata-vision``) and the engine was started with ``--vision``. Pictures
+arrive as OpenAI ``image_url`` parts (a ``data:`` URL), each up to ``vision.max_tokens``
+(1024) context tokens. ``vision_available()`` says whether a Strata that is running, or
+the one the gateway's command would start, can take them; the final stream chunk carries
+``usage`` (kept as ``last_usage``).
 """
 
 from __future__ import annotations
@@ -99,6 +106,17 @@ def _delta(raw: bytes) -> tuple[str, str]:
     return delta.get("content") or "", delta.get("reasoning_content") or ""
 
 
+def _usage(raw: bytes) -> dict | None:
+    line = raw.decode("utf-8", errors="replace").strip()
+    if not line.startswith("data:") or '"usage"' not in line:
+        return None
+    try:
+        usage = json.loads(line[5:].strip()).get("usage")
+    except ValueError:
+        return None
+    return usage if isinstance(usage, dict) else None
+
+
 def _interrupted() -> bool:
     try:
         import comfy.model_management as mm
@@ -124,6 +142,7 @@ class StrataServer:
         self.model = model
         self.budget = budget if budget > 0 else DEFAULT_BUDGET
         self.process = process
+        self.last_usage: dict | None = None
 
     def chat(self, messages: list[dict], seed: int = 42, greedy: bool = True, max_new_tokens: int = 2048,
              temperature: float = 0.7, top_p: float = 0.8, top_k: int = 20, repeat_penalty: float | None = None,
@@ -158,6 +177,9 @@ class StrataServer:
                     import comfy.model_management as mm
 
                     raise mm.InterruptProcessingException()
+                usage = _usage(raw)
+                if usage is not None:
+                    self.last_usage = usage
                 piece, thought = _delta(raw)
                 if thought:
                     thoughts.append(thought)
@@ -211,6 +233,48 @@ def launch_spec(port: int) -> dict | None:
     else:
         command += ["--port", str(port)]
     return {"cmd": command, "cwd": lane.get("cwd") or None, "env": dict(lane.get("env") or {})}
+
+
+def _config_of(command: list[str]) -> str:
+    return command[command.index("--config") + 1] if "--config" in command[:-1] else ""
+
+
+def configured_vision(command: list[str]) -> bool:
+    """Whether the Strata that ``command`` starts reads pictures: its ``--config`` file has the ``--vision`` engine
+    flag and a ``vision`` section whose encoder and mmproj files exist."""
+    try:
+        with open(_config_of(command), "r", encoding="utf-8-sig") as handle:
+            config = json.load(handle)
+        vision = config.get("vision")
+        return ("--vision" in config.get("args", []) and isinstance(vision, dict)
+                and all(os.path.isfile(str(vision.get(key) or "")) for key in ("exe", "mmproj")))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
+def _served_vision(base: str) -> bool:
+    """What a running Strata says of itself (``/v1/models`` lists the model's input modalities, loaded or not)."""
+    try:
+        with urllib.request.urlopen(f"{base}/v1/models", timeout=5) as answer:
+            listed = json.load(answer).get("data") or [{}]
+        return "image" in ((listed[0].get("architecture") or {}).get("input_modalities") or [])
+    except (urllib.error.URLError, OSError, ValueError, AttributeError, IndexError):
+        return False
+
+
+def vision_available() -> bool:
+    """Can the Strata this run will use take pictures? Asks a running one; else reads the config it would start with.
+
+    Never starts or loads anything. False when neither can be found, which sends the rewriter down its no-vision path.
+    """
+    explicit = (os.environ.get(URL_ENV) or "").strip()
+    base = explicit.rstrip("/") or DEFAULT_URL
+    if _healthy(base):
+        return _served_vision(base)
+    if explicit:
+        return False
+    spec = launch_spec(0)
+    return spec is not None and configured_vision(spec["cmd"])
 
 
 def _spawn(spec: dict, adopt=None):

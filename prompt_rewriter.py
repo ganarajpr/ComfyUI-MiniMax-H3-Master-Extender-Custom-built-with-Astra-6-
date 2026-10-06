@@ -5,8 +5,10 @@ renders anything, using the engines of the MiniMax-H3-Prompt-Rewriter pack
 (an optional dependency, resolved lazily so this node imports without it):
 
 - one ``llama-server`` per run, holding the writer GGUF (+ its mmproj) once;
-- the reference pictures are captioned on it, several at a time, and cached by
-  image hash so a re-run does not look at them again;
+- a writer that can see gets the reference pictures themselves in the planner call
+  and in every clip's writer call (downscaled once, first in the user message, in a
+  fixed order, so the server reads them once); there is no caption step. Reference
+  videos are still captioned on that server, and cached by frame hash;
 - every pending clip is written on the same server, several at a time, with
   llama.cpp's thinking budget applied to the writer only (captions never think);
 - the rewritten text replaces ``clip["prompt"]``, the original is kept in
@@ -141,19 +143,25 @@ NO_CAPTIONS_RULE = (
 )
 
 REFERENCE_RULE = (
-    "\n\nReferences, identity versus wardrobe: a reference picture line may read 'Identity: ... Outfit shown: ...'. "
-    "The picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not "
-    "decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS "
+    "\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, "
+    "apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each "
+    "person from the picture's identity features PLUS "
     "the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), "
     "e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding "
     "saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any "
     "'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); "
-    "(3) the story block; (4) only when none of these says what the character wears, the picture's 'Outfit shown'. Use the "
+    "(3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the "
     "same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on "
     "the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not "
     "wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained "
     "from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the "
     "one shown on the picture, use fully_preserved."
+)
+
+ATTACHED_RULE = (
+    "\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled "
+    "'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take "
+    "the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>."
 )
 
 STATE_RULE = (
@@ -164,18 +172,12 @@ STATE_RULE = (
     "With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. "
     "Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening "
     "outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the "
-    "picture's 'Outfit shown'."
+    "outfit shown on the picture."
 )
-
-CAPTION_IDENTITY = (
-    "If the picture shows a person, write the answer as two labelled parts: 'Identity:' the face, build, skin tone, hair, "
-    "apparent age and distinguishing marks only, then 'Outfit shown:' the clothing, accessories and props they have on. "
-    "Otherwise answer as usual, without the labels."
-)
-CAPTION_KEY = "identity-outfit-v1"
 
 CAPTION_TOKENS = 512
-CAPTION_CTX_GUESS = 8192
+
+PICTURES_HEADER = "Reference pictures, in order (each labelled before its image):"
 
 _LOCK = threading.Lock()
 
@@ -276,14 +278,50 @@ def _captioner_files(nodes, paths, label: str) -> tuple[str, str]:
     return "", ""
 
 
-def _image_key(tensor, model_path: str, length: str) -> str:
-    """A stable id for one reference picture as the captioner will see it."""
-    import torch
+def _reference_pictures(ordered: list) -> list[dict]:
+    """The reference pictures as they are sent: downscaled to ``story_planner.REF_IMAGE_MAX_SIDE`` on the long side,
+    PNG, as data URIs. Built once per run and reused byte for byte by the planner and every clip writer, so a server
+    that caches the prompt prefix reads each picture once. ``tokens`` is the estimate for the sent size."""
+    import base64
+    import io
 
-    frame = tensor[0] if tensor.dim() == 4 else tensor
-    small = (frame.detach().float().clamp(0, 1) * 255).to(torch.uint8).cpu().numpy().tobytes()
-    digest = hashlib.sha1(small).hexdigest()
-    return hashlib.sha1(f"{digest}|{os.path.basename(model_path)}|{length}|{CAPTION_KEY}".encode()).hexdigest()
+    import numpy
+    from PIL import Image
+
+    pictures = []
+    for slot, tensor in ordered:
+        frame = tensor[0] if tensor.dim() == 4 else tensor
+        array = numpy.clip(frame.detach().cpu().float().numpy() * 255.0 + 0.5, 0, 255).astype(numpy.uint8)
+        if array.ndim == 3 and array.shape[-1] == 1:
+            array = array[..., 0]
+        elif array.ndim == 3 and array.shape[-1] > 3:
+            array = array[..., :3]
+        picture = Image.fromarray(array)
+        size = story_planner.fitted_size(*picture.size)
+        if size != picture.size:
+            picture = picture.resize(size, Image.LANCZOS)
+        buffer = io.BytesIO()
+        picture.save(buffer, format="PNG")
+        pictures.append({"label": f"Picture {slot + 1}", "slot": slot, "size": size,
+                         "tokens": story_planner.size_tokens(*size),
+                         "image": "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")})
+    return pictures
+
+
+def system_rules(*, continuity: str, chained: bool, later_clips: bool, story: bool, task: str, sees: bool,
+                 state: bool) -> str:
+    """What is appended to the writer's system prompt. Decided per run, never per clip, so the system prompt is
+    identical in every clip's call and a server that caches the prompt prefix keeps the pictures after it."""
+    out = ""
+    if continuity != "off" and later_clips:
+        out += CONTINUITY_RULE_FINAL if chained else CONTINUITY_RULE
+    if story:
+        out += STORY_RULE
+    if task == "Ref2VA":
+        out += REFERENCE_RULE + (ATTACHED_RULE if sees else NO_CAPTIONS_RULE)
+    if state:
+        out += STATE_RULE
+    return out
 
 
 VIDEO_FRAMES = 8
@@ -632,16 +670,19 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     system_given, system_name = choose_system(system_given, task)
     _LOG.info("Rewriter: system prompt = %s", system_name)
 
-    # One model writes and describes. It sees images when the pack lists it as a captioner (it ships an mmproj);
-    # Strata, and any GGUF without one, does not: the references are then labelled but not described.
+    # One model writes, and looks at the pictures itself: they ride in the planner call and in every clip's writer call.
+    # It sees when the pack lists it as a captioner (it ships an mmproj, or is a NInfer artifact with its own tower),
+    # or, for Strata, when its config has the vision section and the --vision flag. Any other writer does not: the
+    # references are then labelled but not described.
     model_path, mmproj_path = ("", "") if strata else _vision_files(nodes, paths, writer_label)
-    sees = bool(model_path)
+    sees = strata_backend.vision_available() if strata else bool(model_path)
     if not sees:
         model_path = writer_file
+    can_caption = sees and not strata
     if task != "T2VA" and not sees and (ordered or ordered_videos):
         say("rewrite", "writer has no vision: reference images not interpreted (no captions, the rewrite is text-only)")
 
-    writer_on_server = sees
+    writer_on_server = sees and not strata
     if writer_file.lower().endswith(".ninfer") and not writer_on_server:
         raise RuntimeError(
             "rewrite_writer_model: a NInfer model only runs on ninfer-serve, and this entry has no vision "
@@ -654,9 +695,15 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     writer_budget = max_new_tokens + (max(budget, 0) if reasoning["enabled"] else 0)
     resolution = aspect.resolve(aspect_text, "16:9")
 
+    pictures = _reference_pictures(ordered) if task == "Ref2VA" and sees else []
+    picture_tokens = sum(item["tokens"] for item in pictures)
+    if pictures:
+        _LOG.info("Rewriter: %d reference picture(s) go to the writer as images (no caption step), sent at %s, ~%d image tokens",
+                  len(pictures), ", ".join(f"{item['label']} {item['size'][0]}x{item['size'][1]}" for item in pictures),
+                  picture_tokens)
+
     # ---- what is out of date --------------------------------------------------
-    described = task != "T2VA" and sees
-    image_keys = [(slot, _image_key(tensor, model_path, length)) for slot, tensor in ordered] if described else []
+    described = task != "T2VA" and can_caption
     video_keys = [(slot, _video_key(frames, model_path, length)) for slot, frames in ordered_videos] if described else []
     plan_slots = story_planner.plan_slots(clips, auto_clips) if (auto_clips and story) else []
     # plan_ctx is None for a first plan with nothing typed (the whole story into N). Otherwise the planner sees the
@@ -724,17 +771,9 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
     # ---- captions -------------------------------------------------------------
     cache = _load_cache()
-    captions: dict[int, str] = {}
-    to_describe: list[tuple[int, object, str]] = []
     video_captions: dict[int, str] = {}
     videos_to_describe: list[tuple[int, object, str]] = []
     if described:
-        for (slot, tensor), (_slot, key) in zip(ordered, image_keys):
-            hit = cache.get(key)
-            if isinstance(hit, dict) and hit.get("caption"):
-                captions[slot] = hit["caption"]
-            else:
-                to_describe.append((slot, tensor, key))
         for (slot, frames), (_slot, key) in zip(ordered_videos, video_keys):
             hit = cache.get(key)
             if isinstance(hit, dict) and hit.get("caption"):
@@ -754,34 +793,31 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         rough[1]["content"] += "\n" + tail + "x" * pad + CONTINUITY_RULE_FINAL
     elif continuity != "off" and len(clips) > 1:
         rough[1]["content"] += "\n" + continuity_block(clips, len(clips) - 1, RAW_ASKS)
-    rough[0]["content"] += REFERENCE_RULE + STATE_RULE
+    rough[0]["content"] += system_rules(continuity=continuity, chained=chained, later_clips=len(clips) > 1, story=bool(story),
+                                        task=task, sees=sees, state=True)
     if story:
-        rough[1]["content"] += "\nstory:\n" + story + STORY_RULE
-    writer_ctx = guide_prompt.context_needed(rough, writer_budget)
+        rough[1]["content"] += "\nstory:\n" + story
+    writer_ctx = guide_prompt.context_needed(rough, writer_budget + picture_tokens)
     writers_at_once = min(len(todo), slots) if writer_on_server and not chained else 1
     pool_ctx = writer_ctx * writers_at_once if writer_on_server else 0
     plan_tokens = max(max_new_tokens, 900 * plan_n + 1500) if planning else 0
     plan_budget = plan_tokens + (max(budget, 0) if reasoning["enabled"] else 0)
-    # What the planner is shown of the references. images = the pictures themselves (needs the writer GGUF to be
-    # the captioner, i.e. the server has the mmproj) plus their captions; captions = labelled caption lines.
+    # What the planner is shown of the references: the pictures themselves (the same data URIs the clip writers get),
+    # and the captions of reference videos. planner_refs=captions is kept for old workflows and now means images.
     plan_refs_mode = "off"
-    if planning and described and (ordered or ordered_videos) and planner_refs != "off":
-        plan_refs_mode = "images" if (planner_refs == "images" and mmproj_path and ordered) else "captions"
-        if planner_refs == "images" and plan_refs_mode == "captions":
-            _LOG.info("Rewriter: planner_refs=images but the writer's vision is a NInfer tower the server cannot take "
-                      "pictures through; the planner gets the captions only")
-    # Each picture costs min(768, (w//28)*(h//28)) tokens on the server path (the pack's per-picture ceiling).
-    plan_image_tokens = sum(story_planner.image_tokens(t) for _slot, t in ordered) if plan_refs_mode == "images" else 0
+    if planning and task != "T2VA" and planner_refs != "off":
+        plan_refs_mode = "images" if pictures else ("captions" if (ordered_videos and described) else "off")
+    plan_image_tokens = picture_tokens if plan_refs_mode == "images" else 0
     plan_ctx_tokens = 0
     if planning and writer_on_server:
         stand = None
         if plan_refs_mode != "off":
-            stand = {"pictures": [{"label": f"Picture {slot + 1}", "caption": "x" * 1600, "image": None} for slot, _t in ordered],
+            stand = {"pictures": [{"label": f"Picture {slot + 1}", "caption": "", "image": None} for slot, _t in ordered],
                      "videos": [{"label": f"Video {k}", "caption": "x" * 1600} for k, _v in enumerate(ordered_videos, start=1)]}
         plan_ctx_tokens = guide_prompt.context_needed(
             [{"role": "user", "content": story_planner.build_user_content(story, plan_n, stand, plan_ctx, clip_seconds)}],
             plan_budget + plan_image_tokens)
-    caption_jobs = len(to_describe) + len(videos_to_describe)
+    caption_jobs = len(videos_to_describe)
     caption_slots = max(1, min(caption_jobs, slots)) if caption_jobs else 1
     server_slots = max(caption_slots, writers_at_once)
     pool_ctx = max(pool_ctx, plan_ctx_tokens * server_slots)
@@ -792,7 +828,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     if open_session:
         session = mtmd.session(
             model_path, mmproj_path,
-            assets=caption_jobs, attachments=VIDEO_FRAMES if videos_to_describe else 1,
+            assets=caption_jobs, attachments=max(VIDEO_FRAMES if videos_to_describe else 1, len(pictures)),
             gpu_layers=-1, n_ctx=0, device="auto", backend="auto", auto_download=True,
             progress=None, slots=server_slots, force=writer_on_server,
             reasoning=reasoning if writer_on_server else None, pool_ctx=pool_ctx,
@@ -802,36 +838,6 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
     with contextlib.ExitStack() as stack:
         server = stack.enter_context(session)
-        if to_describe:
-            question_cls = getattr(nodes, "Question", None)
-            question = (nodes.caption_question("Picture", length, question_cls(CAPTION_IDENTITY, True)) if question_cls
-                        else f"{nodes.caption_question('Picture', length)} {CAPTION_IDENTITY}")
-            say("rewrite", f"describing {len(to_describe)} reference picture(s)"
-                + (f" at once on {caption_slots} slots" if server is not None and caption_slots > 1 else ""), 0.05)
-
-            def describe(item):
-                slot, tensor, key = item
-                text = mtmd.describe(
-                    model_path=model_path, mmproj_path=mmproj_path, instruction=question,
-                    image=tensor, max_frames=8, gpu_layers=-1, n_ctx=0, seed=seed, greedy=True,
-                    max_new_tokens=CAPTION_TOKENS, temperature=0.7, top_p=0.8, top_k=20,
-                    device="auto", backend="auto", auto_download=True, progress=None, server=server,
-                )
-                return slot, key, " ".join((text or "").split())
-
-            if server is not None and caption_slots > 1:
-                with ThreadPoolExecutor(max_workers=caption_slots) as pool:
-                    results = list(pool.map(describe, to_describe))
-            else:
-                results = [describe(item) for item in to_describe]
-            for slot, key, caption in results:
-                captions[slot] = caption
-                if caption:
-                    cache[key] = {"caption": caption, "model": os.path.basename(model_path), "length": length, "at": time.time()}
-                else:
-                    notes.append(f"Picture {slot + 1}: empty caption")
-            _save_cache(cache)
-
         if videos_to_describe:
             video_question = nodes.caption_question("Video", length)
             say("rewrite", f"describing {len(videos_to_describe)} reference video(s) from {VIDEO_FRAMES} sampled frames each", 0.15)
@@ -872,7 +878,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         lines = []
         if task != "T2VA":
             for slot, _tensor in ordered:
-                lines.append(f"Picture {slot + 1}: {captions[slot]}" if captions.get(slot)
+                lines.append(f"Picture {slot + 1}: the attached image labelled 'Picture {slot + 1}:' at the top of this message" if pictures
                              else f"Picture {slot + 1}: an attached reference picture (not described here)")
             audio_no = 0
             for k, (slot, _frames) in enumerate(ordered_videos, start=1):
@@ -911,22 +917,14 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
             plan_refs = None
             if plan_refs_mode != "off":
-                uris = {}
-                if plan_refs_mode == "images":
-                    media = _mod("media")
-                    with media.Workspace() as workspace:
-                        for slot, tensor in ordered:
-                            path = media.image_files(tensor, workspace, 1, prefix=f"plan{slot}",
-                                                     max_pixels=story_planner.IMAGE_TOKENS_CAP * media.PATCH ** 2)[0]
-                            uris[slot] = story_planner.png_data_uri(path)
                 plan_refs = {
-                    "pictures": [{"label": f"Picture {slot + 1}", "caption": captions.get(slot, ""), "image": uris.get(slot)}
-                                 for slot, _t in ordered],
-                    "videos": [{"label": f"Video {k}", "caption": video_captions.get(slot, "")}
+                    "pictures": pictures if plan_refs_mode == "images" else [],
+                    "videos": [{"label": f"Video {k}", "caption": video_captions.get(slot)
+                                or f"an attached reference video (not described here)"}
                                for k, (slot, _f) in enumerate(ordered_videos, start=1)],
                 }
-                _LOG.info("Rewriter: planner sees the references as %s (%d picture(s), %d video caption(s), ~%d image tokens)",
-                          plan_refs_mode, len(ordered), len(ordered_videos), plan_image_tokens)
+                _LOG.info("Rewriter: planner sees the references as %s (%d picture(s), %d video(s), ~%d image tokens)",
+                          plan_refs_mode, len(plan_refs["pictures"]), len(ordered_videos), plan_image_tokens)
             t_plan = time.time()
             plan_states: list = []
             asks = story_planner.plan_story(plan_chat, story, plan_n, refs=plan_refs, more=plan_ctx, states_out=plan_states, seconds=clip_seconds,
@@ -960,6 +958,11 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             + (", one after another (continuity 'final prompts': each clip continues from the previous clip's final prompt)"
                if chained else ""), 0.3)
 
+        marks = (story_planner.OPENS_MARK[:20], story_planner.ENDS_MARK[:20])
+        system_tail = system_rules(
+            continuity=continuity, chained=chained, later_clips=len(clips) > 1, story=bool(story), task=task, sees=sees,
+            state=any(mark in source_of(clip) for clip in clips if isinstance(clip, dict) for mark in marks))
+
         def write_one(index: int) -> tuple[int, str, str, float]:
             clip = clips[index]
             clip_id = clip.get("id")
@@ -967,16 +970,13 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
             duration = float(clip.get("duration", 15) or 15)
             messages = guide_prompt.build_messages(guide, task, source, resolution, duration, block, system=system_given)
             previous = continuity_block(clips, index, continuity)
-            if previous:
-                messages[0]["content"] = messages[0]["content"].rstrip() + (CONTINUITY_RULE_FINAL if chained else CONTINUITY_RULE)
-            if story:
-                messages[0]["content"] = messages[0]["content"].rstrip() + STORY_RULE
-            if task == "Ref2VA":
-                messages[0]["content"] = messages[0]["content"].rstrip() + REFERENCE_RULE + ("" if sees else NO_CAPTIONS_RULE)
-            if story_planner.OPENS_MARK[:20] in source or story_planner.ENDS_MARK[:20] in source:
-                messages[0]["content"] = messages[0]["content"].rstrip() + STATE_RULE
+            messages[0]["content"] = messages[0]["content"].rstrip() + system_tail
             if previous or story:
                 messages[1]["content"] = with_previous(messages[1]["content"], previous, story)
+            if pictures:
+                messages[1] = dict(messages[1], content=[{"type": "text", "text": PICTURES_HEADER}]
+                                   + story_planner.picture_parts(pictures)
+                                   + [{"type": "text", "text": messages[1]["content"]}])
 
             last = {"at": 0.0}
 
@@ -1060,8 +1060,13 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                 written = [write_one(index) for index in todo]
             for result in written:
                 apply(result)
+        usage = getattr(server, "last_usage", None)
+        if pictures and isinstance(usage, dict) and usage.get("prompt_tokens"):
+            cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+            _LOG.info("Rewriter: the server reported %s prompt tokens on the last call (%s of them cached), with %d picture(s) "
+                      "~%d image tokens", usage["prompt_tokens"], cached, len(pictures), picture_tokens)
 
     total = time.time() - started
     say("rewrite", f"rewrote {len(written)} clip(s) in {total:.0f} s", 1.0)
-    notes.insert(0, f"rewriter: {len(written)} clip(s), {len(to_describe) + len(videos_to_describe)} new caption(s), {total:.0f} s")
+    notes.insert(0, f"rewriter: {len(written)} clip(s), {len(videos_to_describe)} new video caption(s), {total:.0f} s")
     return notes

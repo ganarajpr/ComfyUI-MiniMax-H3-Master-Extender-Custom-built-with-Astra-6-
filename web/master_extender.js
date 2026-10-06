@@ -799,7 +799,7 @@ app.registerExtension({
                 const noPack = String(getW("rewrite_writer_model", "")).startsWith("(");
                 if (noPack) wrap.appendChild(uiHint("The MiniMax-H3-Prompt-Rewriter-ComfyUI pack is not installed beside this node; the run will stop with that message."));
                 wrap.appendChild(uiRow("task", bindSelect("rewrite_task"), { hint: "auto: Ref2VA when reference pictures are connected, else T2VA." }));
-                wrap.appendChild(uiRow("rewriter model", bindSelect("rewrite_writer_model", { render: modelLabel }), { hint: "One model describes the reference pictures and writes the prompts, on one server session. A model with vision (an mmproj) captions the pictures and thinking is available. A model without vision (a plain GGUF, or Strata) skips the picture descriptions: the rewrite is text-only and the pictures are only labelled <Picture N>." }));
+                wrap.appendChild(uiRow("rewriter model", bindSelect("rewrite_writer_model", { render: modelLabel }), { hint: "One model looks at the reference pictures and writes the prompts, in one call per clip, on one server session. A model with vision (an mmproj, or Strata with its vision section) is given the pictures themselves, with no caption step, and thinking is available. A model without vision (a plain GGUF) writes text-only and the pictures are only labelled <Picture N>." }));
                 wrap.appendChild(uiRow("caption length", bindSelect("rewrite_caption_length"), { indent: true }));
                 wrap.appendChild(uiRow("thinking", bindToggle("rewrite_thinking")));
                 if (getW("rewrite_thinking", false)) {
@@ -822,7 +822,7 @@ app.registerExtension({
                         if (Number(getW("auto_clips", 0)) > 0) {
                             wrap.appendChild(uiHint("Raise the number to plan more clips after the existing ones (only the new clips are planned)."));
                             if (W("auto_clip_seconds")) wrap.appendChild(uiRow("planned clip length (s)", bindNumber("auto_clip_seconds"), { indent: true, hint: "Seconds per planned clip, 5-15 (15 = the old fixed length). The planner budgets its beats and shots to this length and the planned clips are created with it. Typed clips keep their own duration. Applies only when a plan is made; to re-plan at a new length use 'Replan from story'." }));
-                            if (W("planner_refs")) wrap.appendChild(uiRow("planner sees references as", bindSelect("planner_refs"), { indent: true, hint: "images: the reference pictures themselves plus their captions (needs a rewriter model with vision, else it is the story text alone); captions: caption lines only (also needs vision); off: the story text alone." }));
+                            if (W("planner_refs")) wrap.appendChild(uiRow("planner sees references as", bindSelect("planner_refs"), { indent: true, hint: "images: the reference pictures themselves, as the clip writers get them (needs a rewriter model with vision, else it is the story text alone); captions: the old name for images, now the same; off: the story text alone." }));
                             const replan = document.createElement("button");
                             replan.textContent = "Replan from story";
                             replan.title = "Clear the untouched planned asks (and their rewrites) so the next run plans the story again. Clips you edited or typed stay.";
@@ -837,7 +837,7 @@ app.registerExtension({
                 wrap.appendChild(uiRow("max new tokens", bindNumber("rewrite_max_new_tokens")));
                 if (expert()) {
                     wrap.appendChild(uiRow("seed", bindNumber("rewrite_seed")));
-                    wrap.appendChild(uiRow("parallel slots", bindNumber("rewrite_parallel"), { hint: "Captions and clip prompts generated at the same time on the server." }));
+                    wrap.appendChild(uiRow("parallel slots", bindNumber("rewrite_parallel"), { hint: "Clip prompts generated at the same time on the server." }));
                 }
                 const sysWired = Boolean(node.inputs?.find((i) => i.name === "rewrite_system_prompt_in" && i.link != null));
                 const sysLabel = document.createElement("div");

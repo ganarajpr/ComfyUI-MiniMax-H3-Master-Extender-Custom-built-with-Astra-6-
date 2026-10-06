@@ -28,6 +28,14 @@ def build(guide, task, prompt, resolution, duration, refs, system=""):
     return [{"role": "system", "content": "SYS"}, {"role": "user", "content": f"refs:\n{refs}\nask: {prompt}"}]
 
 
+def text_of(content):
+    return content if isinstance(content, str) else " ".join(p.get("text", "") for p in content if p["type"] == "text")
+
+
+def images_of(content):
+    return [p["image_url"]["url"] for p in content if p["type"] == "image_url"] if isinstance(content, list) else []
+
+
 @unittest.skipUnless(torch, "needs torch (the box has it)")
 class OneModelTests(unittest.TestCase):
     """rewrite_writer_model is the only model: it captions and writes, or, without vision, only writes."""
@@ -39,7 +47,8 @@ class OneModelTests(unittest.TestCase):
         self.gguf = gguf.name
         self.log = types.SimpleNamespace(sessions=[], describes=[], chats=[], run_messages=[], strata=[], texts=[], questions=[])
 
-    def run_rewrite(self, *, vision, strata=False, planner_refs="images", story="", auto_clips=0, refs=2):
+    def run_rewrite(self, *, vision, strata=False, planner_refs="images", story="", auto_clips=0, refs=2,
+                    strata_vision=False, asks=1, side=280):
         log = self.log
         writer = types.SimpleNamespace(local=True, reference=self.gguf, mmproj="", file="")
         captioner = types.SimpleNamespace(local=True, reference=self.gguf, mmproj="mm.gguf", file="")
@@ -56,8 +65,7 @@ class OneModelTests(unittest.TestCase):
         class Server:
             def chat(self, messages, **kw):
                 log.chats.append(messages)
-                content = messages[0]["content"]
-                text = content if isinstance(content, str) else " ".join(p.get("text", "") for p in content)
+                text = text_of(messages[0]["content"])
                 log.texts.append(text)
                 return plan_json(2) if "Break the chapter below" in text else "FINAL"
 
@@ -108,12 +116,13 @@ class OneModelTests(unittest.TestCase):
             "media": Media, "runner": types.SimpleNamespace(_adopt=lambda p: None),
             "progress": types.SimpleNamespace(NodeProgress=lambda x: None),
         }
-        saved = (pr._mod, pr.available, pr._load_cache, pr._save_cache, sb.open_strata)
+        saved = (pr._mod, pr.available, pr._load_cache, pr._save_cache, sb.open_strata, sb.vision_available)
         pr._mod = lambda name: mods[name]
         pr.available = lambda: True
         pr._load_cache = lambda: {}
         pr._save_cache = lambda c: None
         sb.open_strata = open_strata
+        sb.vision_available = lambda: strata_vision
         messages = []
         class Collect(logging.Handler):
             def emit(self, record):
@@ -125,37 +134,85 @@ class OneModelTests(unittest.TestCase):
         pr._LOG.addHandler(handler)
         del BUILD_LINES[:]
         try:
-            clips = [{"id": 0, "prompt": "" if auto_clips else "ask", "duration": 15}]
+            clips = [{"id": i, "prompt": "" if auto_clips else f"ask {i + 1}", "duration": 15} for i in range(asks)]
             settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": sb.LABEL if strata else "w",
                         "rewrite_task": "Ref2VA", "rewrite_parallel": 1, "rewrite_previous_clips": "raw asks",
                         "rewrite_max_new_tokens": 100, "rewrite_story": story, "auto_clips": auto_clips,
                         "planner_refs": planner_refs}
-            tensors = {f"ref_image_{i}": torch.zeros(1, 280, 560, 3) for i in range(refs)}
+            tensors = {f"ref_image_{i}": torch.full((1, side, side * 2, 3), 0.1 * (i % 9)) for i in range(refs)}
             pr.rewrite_clips(clips, tensors, settings, aspect_text="1280x720")
         finally:
             pr._LOG.removeHandler(handler)
             pr._LOG.setLevel(level)
-            pr._mod, pr.available, pr._load_cache, pr._save_cache, sb.open_strata = saved
+            pr._mod, pr.available, pr._load_cache, pr._save_cache, sb.open_strata, sb.vision_available = saved
         self.messages = messages
         return clips
 
     def system_of_writer(self):
         return [m for m in self.log.chats if m[0]["role"] == "system"][-1][0]["content"]
 
-    def test_vision_writer_captions_with_the_same_model_in_one_session(self):
+    def test_vision_writer_sees_the_pictures_in_one_call_with_no_caption_step(self):
         self.run_rewrite(vision=True)
         self.assertEqual(self.log.sessions, [(self.gguf, "mm.gguf")])
-        self.assertEqual(len(self.log.describes), 2)
-        for kw in self.log.describes:
-            self.assertEqual((kw["model_path"], kw["mmproj_path"]), (self.gguf, "mm.gguf"))
+        self.assertEqual(self.log.describes, [])
         self.assertEqual(len(self.log.chats), 1)
         self.assertEqual(self.log.run_messages, [])
+        content = self.log.chats[0][1]["content"]
+        self.assertEqual([p["type"] for p in content], ["text", "text", "image_url", "text", "image_url", "text"])
+        self.assertEqual([p["text"] for p in content[:2]] + [content[3]["text"]],
+                         [pr.PICTURES_HEADER, "Picture 1:", "Picture 2:"])
         block = BUILD_LINES[-1]
-        self.assertIn("Picture 1: Identity: a woman. Outfit shown: a blue kurta.", block)
-        self.assertIn("Picture 2: Identity: a woman. Outfit shown: a blue kurta.", block)
+        self.assertIn("Picture 1: the attached image labelled 'Picture 1:'", block)
+        self.assertIn("Picture 2: the attached image labelled 'Picture 2:'", block)
         self.assertNotIn("not described here", block)
-        self.assertNotIn("No reference picture is described", self.system_of_writer())
+        system = self.system_of_writer()
+        self.assertNotIn("No reference picture is described", system)
+        self.assertIn("the task message opens with the reference pictures themselves", system)
         self.assertFalse([m for m in self.messages if "no vision" in m])
+        sent = [m for m in self.messages if "go to the writer as images" in m]
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Picture 1 560x280, Picture 2 560x280", sent[0])
+        self.assertIn("~400 image tokens", sent[0])
+
+    def test_nine_references_ride_first_in_a_fixed_order_identical_in_every_clips_call(self):
+        self.run_rewrite(vision=True, refs=9, asks=3, side=1000)
+        self.assertEqual(self.log.describes, [])
+        self.assertEqual(len(self.log.chats), 3)
+        heads = []
+        for messages in self.log.chats:
+            content = messages[1]["content"]
+            self.assertEqual([p["type"] for p in content[:19]], ["text"] + ["text", "image_url"] * 9)
+            self.assertEqual([p["text"] for p in content[1:19:2]], [f"Picture {n}:" for n in range(1, 10)])
+            self.assertEqual(content[-1]["type"], "text")
+            heads.append(content[:19])
+        self.assertEqual(heads[0], heads[1])
+        self.assertEqual(heads[0], heads[2])
+        self.assertEqual(len({m[0]["content"] for m in self.log.chats}), 1)
+        tails = {text_of(m[1]["content"]) for m in self.log.chats}
+        self.assertEqual(len(tails), 3)
+        self.assertEqual(len(set(images_of(self.log.chats[0][1]["content"]))), 9)
+
+    def test_pictures_are_downscaled_once_to_the_cap(self):
+        import base64
+        import io
+
+        from PIL import Image
+        self.run_rewrite(vision=True, refs=3, asks=2, side=1000)
+        for uri in images_of(self.log.chats[0][1]["content"]):
+            self.assertEqual(Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).size, (896, 448))
+        line = [m for m in self.messages if "go to the writer as images" in m][0]
+        self.assertIn("Picture 3 896x448", line)
+        self.assertIn(f"~{3 * 32 * 16} image tokens", line)
+
+    def test_strata_with_vision_gets_the_pictures_and_no_captions(self):
+        clips = self.run_rewrite(vision=False, strata=True, strata_vision=True, refs=3, asks=2)
+        self.assertEqual(self.log.describes, [])
+        self.assertEqual(self.log.sessions, [])
+        self.assertEqual(self.log.strata, [4096])
+        self.assertEqual(len(images_of(self.log.chats[0][1]["content"])), 3)
+        self.assertIn("the task message opens with the reference pictures themselves", self.system_of_writer())
+        self.assertFalse([m for m in self.messages if "writer has no vision" in m])
+        self.assertEqual([c["prompt"] for c in clips], ["FINAL", "FINAL"])
 
     def test_strata_skips_captions_and_labels_the_pictures_without_empty_lines(self):
         clips = self.run_rewrite(vision=True, strata=True)
@@ -163,6 +220,7 @@ class OneModelTests(unittest.TestCase):
         self.assertEqual(self.log.sessions, [])
         self.assertEqual(self.log.strata, [4096])
         self.assertEqual(clips[0]["prompt"], "FINAL")
+        self.assertEqual(images_of(self.log.chats[0][1]["content"]), [])
         block = BUILD_LINES[-1]
         self.assertEqual(block.split("\n"), [
             "Picture 1: an attached reference picture (not described here)",
@@ -196,6 +254,13 @@ class OneModelTests(unittest.TestCase):
         self.run_rewrite(vision=True, planner_refs="images", story="A story.", auto_clips=2)
         content = [m for m in self.log.chats if "Break the chapter below" in json.dumps(m[0]["content"])][0][0]["content"]
         self.assertEqual([p["type"] for p in content].count("image_url"), 2)
+
+    def test_planner_and_writers_get_the_same_pictures_on_strata_with_vision(self):
+        self.run_rewrite(vision=False, strata=True, strata_vision=True, planner_refs="images", story="A story.", auto_clips=2)
+        planner = [m for m in self.log.chats if "Break the chapter below" in text_of(m[0]["content"])][0][0]["content"]
+        writer = [m for m in self.log.chats if m[0]["role"] == "system"][0][1]["content"]
+        self.assertEqual(images_of(planner), images_of(writer))
+        self.assertEqual(len(images_of(planner)), 2)
 
 
 class BudgetTests(unittest.TestCase):

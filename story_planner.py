@@ -15,7 +15,6 @@ callable handed in by the rewriter, which runs it on the writer's llama-server.
 
 from __future__ import annotations
 
-import base64
 import copy
 import json
 import os
@@ -246,25 +245,47 @@ REFS_RULE = (
 )
 REFS_HEADER = "REFERENCES — the only subjects that have a reference (labelled in slot order):"
 
-#: What the pack allows one picture on the server path (media.PATCH-pixel blocks, mtmd_engine.FRAME_MAX_TOKENS).
-IMAGE_TOKENS_CAP = 768
+#: The longest side a reference picture is sent at, to the planner and to every clip writer. 896 = 32 blocks of 28 px
+#: (the Qwen-VL tower counts 28 x 28 pixel blocks, 14 px patches merged 2 x 2): a square picture is 32 x 32 = 1,024
+#: tokens, which is also the ceiling of Strata's image encoder (``vision.max_tokens``), so nothing is shrunk a second
+#: time on the server. A 3:4 portrait is 672 x 896 = 768 tokens. Nine pictures cost at most 9,216 tokens.
+REF_IMAGE_MAX_SIDE = 896
 IMAGE_PATCH = 28
+IMAGE_TOKENS_CAP = (REF_IMAGE_MAX_SIDE // IMAGE_PATCH) ** 2
 
 
-def image_tokens(tensor, cap: int = IMAGE_TOKENS_CAP, patch: int = IMAGE_PATCH) -> int:
-    """Tokens one reference picture costs on the server: its (height//28) x (width//28) blocks, capped at 768.
+def fitted_size(width: int, height: int, max_side: int = REF_IMAGE_MAX_SIDE, patch: int = IMAGE_PATCH) -> tuple[int, int]:
+    """The size a picture is sent at: unchanged when its long side fits, else scaled to ``max_side`` on the 28 px grid."""
+    long_side = max(width, height)
+    if long_side <= max_side:
+        return int(width), int(height)
+    scale = max_side / long_side
+    return max(patch, int(width * scale) // patch * patch), max(patch, int(height * scale) // patch * patch)
 
-    The cap is the per-picture ceiling the pack's server path shrinks a picture to (``FRAME_MAX_TOKENS``); a
-    picture smaller than that costs its own block count.
-    """
+
+def size_tokens(width: int, height: int, patch: int = IMAGE_PATCH) -> int:
+    """Tokens one picture of this (already fitted) size costs: its (width//28) x (height//28) blocks."""
+    return max(1, (int(width) // patch) * (int(height) // patch))
+
+
+def image_tokens(tensor) -> int:
+    """Tokens one reference picture costs once it is sent at ``fitted_size``."""
     shape = tuple(int(x) for x in tensor.shape)
-    height, width = shape[-3], shape[-2]
-    return min(cap, max(1, (width // patch) * (height // patch)))
+    return size_tokens(*fitted_size(shape[-2], shape[-3]))
 
 
-def png_data_uri(path: str) -> str:
-    with open(path, "rb") as handle:
-        return "data:image/png;base64," + base64.b64encode(handle.read()).decode("ascii")
+def picture_parts(pictures: list) -> list:
+    """``Picture N:`` label then the image, for each picture that has one, in slot order.
+
+    The one place the reference images are laid out, so the planner and every clip writer send them in the same
+    order and the same form: a server that caches the prompt prefix reads them once.
+    """
+    parts = []
+    for item in pictures:
+        if item.get("image"):
+            parts.append({"type": "text", "text": f"{item['label']}:"})
+            parts.append({"type": "image_url", "image_url": {"url": item["image"]}})
+    return parts
 
 
 def build_user_content(story: str, target_clips: int, refs: dict | None = None, more: dict | None = None,
@@ -273,7 +294,8 @@ def build_user_content(story: str, target_clips: int, refs: dict | None = None, 
 
     ``refs`` = ``{"pictures": [{"label": "Picture 1", "caption": str, "image": data-URI or None}],
     "videos": [{"label": "Video 1", "caption": str}]}``. Pictures with an ``image`` are sent as image parts
-    followed by their caption; the others as one labelled caption line. Videos are always caption lines.
+    (followed by their caption when they have one); the others as one labelled caption line. Videos are always
+    caption lines.
     ``more`` (see ``plan_more``) turns the call into a continuation of an existing film.
     """
     text = build_user_message(story, target_clips, more["numbers"] if more else None, seconds)
@@ -288,10 +310,9 @@ def build_user_content(story: str, target_clips: int, refs: dict | None = None, 
         return "\n".join([REFS_HEADER] + lines) + f"\n\n{tail}"
     parts = [{"type": "text", "text": REFS_HEADER}]
     for item in pictures:
-        parts.append({"type": "text", "text": f"{item['label']}:"})
-        if item.get("image"):
-            parts.append({"type": "image_url", "image_url": {"url": item["image"]}})
-        parts.append({"type": "text", "text": item["caption"] or "(no caption)"})
+        parts.extend(picture_parts([item]))
+        if item.get("caption"):
+            parts.append({"type": "text", "text": item["caption"]})
     for item in videos:
         parts.append({"type": "text", "text": f"{item['label']}: {item['caption']}".rstrip()})
     parts.append({"type": "text", "text": f"\n{tail}"})

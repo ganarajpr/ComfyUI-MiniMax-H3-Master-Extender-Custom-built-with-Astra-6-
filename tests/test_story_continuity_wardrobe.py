@@ -7,6 +7,11 @@ import types
 import unittest
 from pathlib import Path
 
+try:
+    import torch
+except ImportError:
+    torch = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import prompt_rewriter as pr  # noqa: E402
@@ -16,8 +21,9 @@ STORY = ("Meera, in her blue kurta, spends the morning in the courtyard of her f
          "into a red silk wedding saree with a gold border and a gold necklace, and in the afternoon walks from the "
          "courtyard to the temple at the edge of the village, the wedding party behind her.")
 
-CAPTION = ("Identity: a young woman, slim build, warm brown skin, long black hair in a braid, a small mole under her left eye. "
-           "Outfit shown: a plain blue cotton kurta with white churidar.")
+def text_of(content):
+    return content if isinstance(content, str) else "\n".join(p["text"] for p in content if p["type"] == "text")
+
 
 BLUE = "as on the reference"
 RED = "deep red silk wedding saree with a wide gold border, gold necklace, red glass bangles"
@@ -58,10 +64,7 @@ def plan_reply():
     ]})
 
 
-class FakeTensor:
-    pass
-
-
+@unittest.skipUnless(torch, "needs torch (the box has it)")
 class Harness(unittest.TestCase):
     def run_story(self, continuity):
         self.writer_calls, self.planner_calls, self.captions_asked = [], [], []
@@ -83,11 +86,11 @@ class Harness(unittest.TestCase):
 
         class Server:
             def chat(self, messages, **kw):
-                text = messages[0]["content"] if messages[0]["role"] == "user" else None
+                text = text_of(messages[0]["content"]) if messages[0]["role"] == "user" else None
                 if text is not None and "Break the chapter below" in text:
-                    test.planner_calls.append(text)
+                    test.planner_calls.append(messages[0]["content"])
                     return plan_reply()
-                ask = messages[1]["content"].rsplit("original_prompt:", 1)[1]
+                ask = text_of(messages[1]["content"]).rsplit("original_prompt:", 1)[1]
                 n = int(ask.split("Clip ")[1].split(":")[0]) if "Clip " in ask else 0
                 test.writer_calls.append(messages)
                 return (f"subject_definitions:\n<Subject 1> clip {n}\nretention_analysis:\n...\ndetailed_description:\n"
@@ -100,7 +103,7 @@ class Harness(unittest.TestCase):
 
         def describe(**kw):
             test.captions_asked.append(kw["instruction"])
-            return CAPTION
+            return "a caption"
 
         def build(guide, task, prompt, resolution, duration, refs, system=""):
             return [{"role": "system", "content": "SYS"},
@@ -116,20 +119,19 @@ class Harness(unittest.TestCase):
             "aspect": types.SimpleNamespace(resolve=lambda a, d: "16:9"),
             "constants": types.SimpleNamespace(answer_only=lambda t: t),
         }
-        saved = (pr._mod, pr.available, pr._load_cache, pr._save_cache, pr._image_key)
+        saved = (pr._mod, pr.available, pr._load_cache, pr._save_cache)
         pr._mod = lambda name: mods[name]
         pr.available = lambda: True
         pr._load_cache = lambda: {}
         pr._save_cache = lambda c: None
-        pr._image_key = lambda *a: "k"
         clips = [{"id": 0, "prompt": "", "duration": 15}]
         try:
             settings = {"rewrite_mode": "pending clips", "rewrite_writer_model": "w",
                         "rewrite_task": "Ref2VA", "rewrite_parallel": 1, "rewrite_previous_clips": continuity,
                         "rewrite_max_new_tokens": 100, "rewrite_story": STORY, "auto_clips": 3, "planner_refs": "captions"}
-            pr.rewrite_clips(clips, {"ref_image_0": FakeTensor()}, settings, aspect_text="1280x720")
+            pr.rewrite_clips(clips, {"ref_image_0": torch.zeros(1, 56, 28, 3)}, settings, aspect_text="1280x720")
         finally:
-            pr._mod, pr.available, pr._load_cache, pr._save_cache, pr._image_key = saved
+            pr._mod, pr.available, pr._load_cache, pr._save_cache = saved
         return clips
 
 
@@ -146,13 +148,15 @@ class PlannerStateTests(Harness):
 
     def test_planner_is_told_clothing_comes_from_the_story_not_the_picture(self):
         self.run_story("raw asks")
-        msg = self.planner_calls[0]
+        content = self.planner_calls[0]
+        self.assertEqual([p["type"] for p in content].count("image_url"), 1)
+        msg = text_of(content)
         self.assertIn("WARDROBE comes from the STORY, never from a reference picture", msg)
         self.assertIn("as on the reference", msg)
         self.assertIn("A character's clothing comes from the story, not from the picture", msg)
         self.assertNotIn("matching how they actually look (wardrobe", msg)
         self.assertIn('"end_state"', msg)
-        self.assertIn("Outfit shown: a plain blue cotton kurta", msg)
+        self.assertNotIn("Outfit shown", msg)
 
     def test_missing_end_state_is_a_check_issue_and_gets_one_retry(self):
         bare = json.loads(plan_reply())
@@ -181,20 +185,22 @@ class PlannerStateTests(Harness):
 
 
 class WriterTests(Harness):
-    def test_caption_splits_identity_from_outfit_and_old_captions_are_not_reused(self):
+    def test_no_caption_is_asked_for_a_picture_the_writer_sees(self):
         self.run_story("raw asks")
-        self.assertEqual(len(self.captions_asked), 1)
-        self.assertIn("'Identity:'", self.captions_asked[0])
-        self.assertIn("'Outfit shown:'", self.captions_asked[0])
+        self.assertEqual(self.captions_asked, [])
+        for messages in self.writer_calls:
+            self.assertEqual([p["type"] for p in messages[1]["content"]].count("image_url"), 1)
 
     def test_clip2_writer_call_carries_state_wardrobe_rule_and_previous_final(self):
         self.run_story("final prompts")
-        system, user = self.writer_calls[1][0]["content"], self.writer_calls[1][1]["content"]
-        self.assertIn("The picture supplies IDENTITY only", system)
+        system, user = self.writer_calls[1][0]["content"], text_of(self.writer_calls[1][1]["content"])
+        self.assertIn("supplies IDENTITY only", system)
+        self.assertIn("the outfit shown on the picture", system)
+        self.assertNotIn("Outfit shown:", system)
         self.assertIn("partially_preserved", system)
         self.assertIn("never write what the character is not wearing", system)
         self.assertIn("OPENS EXACTLY WHERE", system)
-        self.assertIn("Picture 1: " + CAPTION, user)
+        self.assertIn("Picture 1: the attached image labelled 'Picture 1:'", user)
         self.assertIn("THIS CLIP OPENS EXACTLY WHERE CLIP 1 ENDED:", user)
         self.assertIn("Meera sets the broom against the wall", user)
         self.assertIn("Previous clip, final prompt (clip 1", user)
@@ -208,7 +214,7 @@ class WriterTests(Harness):
 
     def test_raw_asks_mode_still_parallel_safe_and_carries_the_same_state(self):
         self.run_story("raw asks")
-        user = self.writer_calls[2][1]["content"]
+        user = text_of(self.writer_calls[2][1]["content"])
         self.assertIn("THIS CLIP OPENS EXACTLY WHERE CLIP 2 ENDED:", user)
         self.assertNotIn("Where clip", user)
 

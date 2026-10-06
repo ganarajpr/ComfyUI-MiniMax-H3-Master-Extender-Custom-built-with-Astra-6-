@@ -219,6 +219,11 @@ class RefsTests(unittest.TestCase):
         self.assertTrue(parts[8]["text"].lstrip().startswith("REFERENCE RULE"))
         self.assertIn("CHAPTER:\nstory", parts[8]["text"])
 
+    def test_pictures_without_captions_are_just_label_and_image(self):
+        refs = {"pictures": [dict(p, caption="") for p in self.REFS["pictures"]], "videos": []}
+        parts = sp.build_user_content("story", 3, refs)
+        self.assertEqual([p["type"] for p in parts], ["text", "text", "image_url", "text", "image_url", "text"])
+
     def test_captions_mode_is_one_string_and_videos_are_captions_in_both(self):
         refs = {"pictures": [dict(p, image=None) for p in self.REFS["pictures"]], "videos": self.REFS["videos"]}
         text = sp.build_user_content("story", 3, refs)
@@ -230,8 +235,24 @@ class RefsTests(unittest.TestCase):
 
     def test_image_token_estimate(self):
         self.assertEqual(sp.image_tokens(FakeTensor(280, 280)), 100)
-        self.assertEqual(sp.image_tokens(FakeTensor(1024, 1024)), 768)
+        self.assertEqual(sp.image_tokens(FakeTensor(1024, 1024)), 1024)
+        self.assertEqual(sp.image_tokens(FakeTensor(1080, 1920)), 32 * 18)
         self.assertEqual(sp.image_tokens(FakeTensor(10, 10)), 1)
+
+    def test_pictures_are_fitted_to_one_long_side_on_the_28_pixel_grid(self):
+        self.assertEqual(sp.REF_IMAGE_MAX_SIDE, 896)
+        self.assertEqual(sp.fitted_size(560, 280), (560, 280))
+        self.assertEqual(sp.fitted_size(896, 896), (896, 896))
+        self.assertEqual(sp.fitted_size(2000, 2000), (896, 896))
+        self.assertEqual(sp.fitted_size(1920, 1080), (896, 504))
+        self.assertEqual(sp.fitted_size(1200, 1600), (672, 896))
+        self.assertEqual(sp.fitted_size(4000, 10), (896, 28))
+        self.assertEqual(sp.IMAGE_TOKENS_CAP, 1024)
+
+    def test_picture_parts_label_then_image_and_skip_pictures_without_one(self):
+        parts = sp.picture_parts(self.REFS["pictures"] + [{"label": "Picture 3", "caption": "", "image": None}])
+        self.assertEqual([(p["type"], p.get("text") or p["image_url"]["url"][-3:]) for p in parts],
+                         [("text", "Picture 1:"), ("image_url", "AAA"), ("text", "Picture 2:"), ("image_url", "BBB")])
 
     def test_retry_complaint_goes_on_the_last_text_part_keeping_images(self):
         seen = []
@@ -858,15 +879,21 @@ class RewriteRefsTests(unittest.TestCase):
         texts = [p["text"] for p in content if p["type"] == "text"]
         self.assertIn("Picture 1:", texts)
         self.assertIn("Picture 2:", texts)
-        self.assertIn("a caption", texts)
-        self.assertGreaterEqual(self.pool_ctx, 140 * 4 + 768)  # 2 pictures: 560x280 -> 200 tokens, 2000x2000 -> capped 768
+        self.assertNotIn("a caption", texts)
+        self.assertGreaterEqual(self.pool_ctx, 3300 + 200 + 1024)  # 560x280 -> 200 tokens, 2000x2000 -> 896x896 = 1024
+        import base64
+        import io
 
-    def test_captions_mode_and_fallback_without_vision(self):
+        from PIL import Image
+        sizes = [Image.open(io.BytesIO(base64.b64decode(p["image_url"]["url"].split(",", 1)[1]))).size
+                 for p in content if p["type"] == "image_url"]
+        self.assertEqual(sizes, [(560, 280), (896, 896)])
+
+    def test_captions_mode_is_the_old_name_for_images_and_a_ninfer_tower_takes_pictures_too(self):
         for mode, kw in (("captions", {}), ("images", {"mmproj": ""})):
             content = self.run_it(mode, **kw)
-            self.assertIsInstance(content, str, mode)
-            self.assertIn("Picture 1: a caption", content)
-            self.assertIn("REFERENCE RULE", content)
+            self.assertEqual([p["type"] for p in content].count("image_url"), 2, mode)
+            self.assertFalse([p for p in content if p["type"] == "text" and "a caption" in p["text"]], mode)
 
     def test_off_sends_the_story_text_only(self):
         content = self.run_it("off")
