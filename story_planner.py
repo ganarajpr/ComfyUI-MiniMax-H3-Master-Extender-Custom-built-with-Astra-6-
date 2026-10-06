@@ -105,10 +105,34 @@ OUTPUT FORMAT — reply with ONE JSON object and nothing else (no prose, no code
         "has_dialogue": false, "dialogue_speaker": "", "dialogue_line": ""}
      ],
      "forward_pull": "the tension, question or forward pull this clip closes on",
-     "state_changes": [{"entity": "an entity id", "axis": "one of its axes", "to": "one of that axis's options", "shot": 2}]}
+     "state_changes": [{"entity": "an entity id", "axis": "one of its axes", "to": "one of that axis's options", "shot": 2}],
+     "end_state": {"location": "where the last frame is, with the spot in the set", "time_light": "time of day and light at the last frame",
+                   "end_action": "the exact physical action or pose of the last shot's last second",
+                   "characters": [{"name": "...", "position": "where in the set, facing which way", "wardrobe": "the full outfit, or: as on the reference",
+                                   "props": "held, worn or carried objects, or: none", "state": "visible emotion or condition"}]}}
   ]
 }
 Each clip has 3-6 shots whose seconds sum to 15. "ledger.entities" may be an empty array when nothing visibly changes."""
+
+
+# Kept out of prompts/planner.md (the Studio's template) like REFS_RULE. The template tells each clip to be
+# "visually self-contained"; this is the one place the plan says the clips are a single continuous film.
+CONTINUITY_RULE = (
+    "CONTINUITY STATE \u2014 these rules sit on top of the template and win over its 'visually self-contained' line. The clips "
+    "play back to back as ONE continuous film: clip N opens exactly where clip N-1 ended. For EVERY clip add \"end_state\": the "
+    "state at that clip's FINAL frame \u2014 location (the spot inside the set), time_light, end_action (the exact physical "
+    "action or pose of the last shot's last second) and, for every character on screen at that moment, position (where in the "
+    "set, facing which way), wardrobe, props and state. Carry every field forward unchanged into the next clip unless a shot of "
+    "that clip changes it: nobody changes clothes, loses a prop, heals, or moves between clips off screen. Only an explicit "
+    "time or location cut that the beat itself names may open a clip somewhere else, and then say so in the beat. "
+    "WARDROBE comes from the STORY, never from a reference picture: when the story says what a character wears at that point "
+    "(or changes into), write the full outfit \u2014 garment, colour, fabric, trim, accessories \u2014 in every clip's end_state "
+    "until the story changes it; when the story says nothing about that character's clothing, write exactly: as on the reference. "
+    "A reference picture tells you who a character is (face, build, hair), not what they wear in the film."
+)
+
+OPENS_MARK = "CONTINUITY \u2014 THIS CLIP OPENS EXACTLY WHERE CLIP {n} ENDED:"
+ENDS_MARK = "AT THE END OF THIS CLIP (the next clip opens exactly here):"
 
 
 def output_shape(start: int = 1, second: int | None = None) -> str:
@@ -123,7 +147,7 @@ def output_shape(start: int = 1, second: int | None = None) -> str:
 def build_user_message(story: str, target_clips: int, numbers: list[int] | None = None) -> str:
     first = numbers[0] if numbers else 1
     second = numbers[1] if numbers and len(numbers) > 1 else None
-    return fill_template(load_prompt("planner"), story, "target", target_clips) + output_shape(first, second)
+    return fill_template(load_prompt("planner"), story, "target", target_clips) + "\n\n" + CONTINUITY_RULE + output_shape(first, second)
 
 
 def _spans(numbers: list[int]) -> str:
@@ -189,9 +213,10 @@ def more_block(more: dict) -> str:
 # Studio's drift test. This rule exists only when the run has reference pictures.
 REFS_RULE = (
     "REFERENCE RULE — These are the only characters, props and locations that have a reference picture. "
-    "Stage the story with them, matching how they actually look (wardrobe, material, layout). Anything without a "
-    "picture stays off screen or unseen. Name a subject by its Picture number the first time it appears in a "
-    "clip's shots."
+    "Stage the story with them: a character keeps the face, build and hair of their picture, a prop or location keeps its "
+    "material and layout. A character's clothing comes from the story, not from the picture (the picture's outfit is only "
+    "the fallback when the story is silent). Anything without a picture stays off screen or unseen. Name a subject by its "
+    "Picture number the first time it appears in a clip's shots."
 )
 REFS_HEADER = "REFERENCES — the only subjects that have a reference (labelled in slot order):"
 
@@ -303,6 +328,18 @@ def _coerce_change(v):
     return {"entity": v["entity"].strip(), "axis": v["axis"].strip(), "to": v["to"].strip(), "shot": int(_num(v.get("shot"), 0))}
 
 
+def _coerce_end_state(v):
+    if not isinstance(v, dict):
+        return None
+    characters = []
+    for c in (v.get("characters") if isinstance(v.get("characters"), list) else []):
+        if isinstance(c, dict) and _text(c.get("name")):
+            characters.append({k: _text(c.get(k)) for k in ("name", "position", "wardrobe", "props", "state")})
+    state = {"location": _text(v.get("location")), "time_light": _text(v.get("time_light")),
+             "end_action": _text(v.get("end_action")), "characters": characters}
+    return state if state["end_action"] or characters or state["location"] else None
+
+
 def _coerce_clip(v, fallback: int):
     if not isinstance(v, dict) or not isinstance(v.get("shots"), list) or not v["shots"]:
         return None
@@ -311,7 +348,8 @@ def _coerce_clip(v, fallback: int):
         return None
     changes = [c for c in (_coerce_change(c) for c in (v.get("state_changes") if isinstance(v.get("state_changes"), list) else [])) if c]
     return {"clip": int(_num(v.get("clip"), fallback)), "beat": _text(v.get("beat")), "shots": shots,
-            "forward_pull": _text(v.get("forward_pull")), "state_changes": changes}
+            "forward_pull": _text(v.get("forward_pull")), "state_changes": changes,
+            "end_state": _coerce_end_state(v.get("end_state"))}
 
 
 def _coerce_axis(v):
@@ -429,19 +467,43 @@ def format_clip_raw_ask(clip) -> str:
     return "\n".join(lines)
 
 
+def format_end_state(end_state) -> str:
+    lines = []
+    if end_state["location"]:
+        lines.append(f"Location: {end_state['location']}")
+    if end_state["time_light"]:
+        lines.append(f"Time and light: {end_state['time_light']}")
+    if end_state["end_action"]:
+        lines.append(f"Last action: {end_state['end_action']}")
+    for c in end_state["characters"]:
+        parts = [f"{label}: {c[key]}" for key, label in (("position", "position"), ("wardrobe", "wardrobe"),
+                                                           ("props", "props"), ("state", "state")) if c[key]]
+        lines.append(f"{c['name']} \u2014 " + "; ".join(parts) if parts else c["name"])
+    return "\n".join(lines)
+
+
 def raw_ask_for_clip(breakdown, clip_number: int):
-    """``format_clip_raw_ask`` with the ledger's STATE blocks prepended, as the Studio sends it to the rewriter."""
+    """``format_clip_raw_ask`` with the ledger's STATE blocks (as the Studio sends it) and the continuity blocks: the
+    previous clip's end state in front, this clip's own end state behind."""
     clip = next((c for c in breakdown["clips"] if c["clip"] == clip_number), None)
     if clip is None:
         return None
     text = format_clip_raw_ask(clip)
+    ordered = sorted(breakdown["clips"], key=lambda c: c["clip"])
+    at = ordered.index(clip)
+    before = ordered[at - 1] if at > 0 else None
+    head = []
     if breakdown["ledger"]["entities"]:
         start = fold_ledger(breakdown["ledger"], breakdown["clips"]).get(clip_number)
         if start is not None:
             blocks = format_state_blocks(breakdown["ledger"], start, clip["state_changes"], clip_number)
             if blocks:
-                text = f"{blocks}\n\n{text}"
-    return text
+                head.append(blocks)
+    if before is not None and before.get("end_state") and before["clip"] == clip["clip"] - 1:
+        head.append(f"{OPENS_MARK.format(n=before['clip'])}\n{format_end_state(before['end_state'])}")
+    if clip.get("end_state"):
+        text = f"{text}\n\n{ENDS_MARK}\n{format_end_state(clip['end_state'])}"
+    return "\n\n".join(head + [text])
 
 
 # --------------------------------------------------------------------------- checks (plain strings, never raise)
@@ -511,6 +573,11 @@ def check_breakdown(b) -> list[str]:
                 issues.append(f"clip {clip['clip']} state_changes: '{change['to']}' is not one of {entity['id']}.{axis['axis']}'s declared options ({', '.join(axis['options'])}).")
             if change["shot"] not in shot_numbers:
                 issues.append(f"clip {clip['clip']} state_changes cites shot {change['shot']}, which is not one of this clip's own shots ({', '.join(str(x) for x in sorted(shot_numbers))}).")
+    for clip in b["clips"]:
+        end = clip.get("end_state")
+        if end is None or not end["end_action"]:
+            issues.append(f"clip {clip['clip']} has no usable end_state (needs location, time_light, end_action and every on-screen "
+                          f"character's position, wardrobe, props and state).")
     ordered = sorted(b["clips"], key=lambda c: c["clip"])
     for entity in b["ledger"]["entities"]:
         for axis in entity["axes"]:

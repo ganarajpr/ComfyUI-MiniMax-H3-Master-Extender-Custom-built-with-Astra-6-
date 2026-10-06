@@ -112,8 +112,43 @@ STORY_RULE = (
     "Use it only to decide what THIS clip covers: the next beat after where the previous clips end "
     "(clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the "
     "remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless "
-    "the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree."
+    "the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe "
+    "comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip."
 )
+
+REFERENCE_RULE = (
+    "\n\nReferences, identity versus wardrobe: a reference picture line may read 'Identity: ... Outfit shown: ...'. "
+    "The picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not "
+    "decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS "
+    "the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), "
+    "e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding "
+    "saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any "
+    "'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); "
+    "(3) the story block; (4) only when none of these says what the character wears, the picture's 'Outfit shown'. Use the "
+    "same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on "
+    "the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not "
+    "wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained "
+    "from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the "
+    "one shown on the picture, use fully_preserved."
+)
+
+STATE_RULE = (
+    "\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY \u2014 THIS CLIP OPENS EXACTLY WHERE CLIP N "
+    "ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening "
+    "state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from "
+    "the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. "
+    "With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. "
+    "Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening "
+    "outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the "
+    "picture's 'Outfit shown'."
+)
+
+CAPTION_IDENTITY = (
+    "If the picture shows a person, write the answer as two labelled parts: 'Identity:' the face, build, skin tone, hair, "
+    "apparent age and distinguishing marks only, then 'Outfit shown:' the clothing, accessories and props they have on. "
+    "Otherwise answer as usual, without the labels."
+)
+CAPTION_KEY = "identity-outfit-v1"
 
 CAPTION_TOKENS = 512
 CAPTION_CTX_GUESS = 8192
@@ -203,7 +238,7 @@ def _image_key(tensor, model_path: str, length: str) -> str:
     frame = tensor[0] if tensor.dim() == 4 else tensor
     small = (frame.detach().float().clamp(0, 1) * 255).to(torch.uint8).cpu().numpy().tobytes()
     digest = hashlib.sha1(small).hexdigest()
-    return hashlib.sha1(f"{digest}|{os.path.basename(model_path)}|{length}".encode()).hexdigest()
+    return hashlib.sha1(f"{digest}|{os.path.basename(model_path)}|{length}|{CAPTION_KEY}".encode()).hexdigest()
 
 
 VIDEO_FRAMES = 8
@@ -332,6 +367,20 @@ def _raw_ask_lines(clips: list, count: int) -> list[str]:
     return lines
 
 
+_SHOT_AT = re.compile(r"^[ \t]*\[Shot \d+\]", re.MULTILINE)
+_SECTION_AFTER = re.compile(r"^[ \t]*[*_#>\-]*[ \t]*(overall_soundscape|non_diegetic_music)", re.IGNORECASE | re.MULTILINE)
+
+
+def last_shot_of(final: str) -> str:
+    """The last [Shot N] paragraph of a final prompt's detailed_description, or '' when it has none."""
+    starts = [m.start() for m in _SHOT_AT.finditer(final or "")]
+    if not starts:
+        return ""
+    tail = final[starts[-1]:]
+    end = _SECTION_AFTER.search(tail)
+    return (tail[:end.start()] if end else tail).strip()
+
+
 def continuity_block(clips: list, index: int, continuity: str) -> str:
     """What the writer is told about clips 1..index-1.
 
@@ -355,6 +404,10 @@ def continuity_block(clips: list, index: int, continuity: str) -> str:
             seconds = float(last.get("duration", 15) or 15)
             parts.append(f"Previous clip, final prompt (clip {index}, {seconds:g}s, already rendered; "
                          f"this clip starts where its last shot ends):\n{final}")
+            ending = last_shot_of(final)
+            if ending:
+                parts.append(f"Where clip {index} ends (its last shot; this clip opens from exactly this moment: same places, "
+                             f"positions, wardrobe, props and light):\n{ending}")
         return "\n\n".join(parts)
     return "\n".join(_raw_ask_lines(clips, index))
 
@@ -654,6 +707,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         rough[1]["content"] += "\n" + tail + "x" * pad + CONTINUITY_RULE_FINAL
     elif continuity != "off" and len(clips) > 1:
         rough[1]["content"] += "\n" + continuity_block(clips, len(clips) - 1, RAW_ASKS)
+    rough[0]["content"] += REFERENCE_RULE + STATE_RULE
     if story:
         rough[1]["content"] += "\nstory:\n" + story + STORY_RULE
     writer_ctx = guide_prompt.context_needed(rough, writer_budget)
@@ -703,7 +757,9 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
     with session as server:
         if to_describe:
-            question = nodes.caption_question("Picture", length)
+            question_cls = getattr(nodes, "Question", None)
+            question = (nodes.caption_question("Picture", length, question_cls(CAPTION_IDENTITY, True)) if question_cls
+                        else f"{nodes.caption_question('Picture', length)} {CAPTION_IDENTITY}")
             say("rewrite", f"describing {len(to_describe)} reference picture(s)"
                 + (f" at once on {caption_slots} slots" if server is not None and caption_slots > 1 else ""), 0.05)
 
@@ -861,6 +917,10 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                 messages[0]["content"] = messages[0]["content"].rstrip() + (CONTINUITY_RULE_FINAL if chained else CONTINUITY_RULE)
             if story:
                 messages[0]["content"] = messages[0]["content"].rstrip() + STORY_RULE
+            if task == "Ref2VA":
+                messages[0]["content"] = messages[0]["content"].rstrip() + REFERENCE_RULE
+            if story_planner.OPENS_MARK[:20] in source or story_planner.ENDS_MARK[:20] in source:
+                messages[0]["content"] = messages[0]["content"].rstrip() + STATE_RULE
             if previous or story:
                 messages[1]["content"] = with_previous(messages[1]["content"], previous, story)
 
