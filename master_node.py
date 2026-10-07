@@ -418,6 +418,7 @@ class MiniMaxH3MasterExtender:
                 "hyperflow_curve_refit": ("BOOLEAN", {"default": True, "tooltip": "HyperFlow 8-step on a pruned base: restore most of the two-time (t, r) conditioning with the bundled curve fit for that exact checkpoint (Singularity ref2va pruned v1.3 is covered). Off = LoRA-only. Ignored on a full base."}),
                 "hyperflow_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05, "tooltip": "HyperFlow adapter strength. 1.0 is the released model; the curve refit needs 1.0."}),
                 "hyperflow_lora_mode": (["bypass", "merge"], {"default": "bypass", "tooltip": "HyperFlow LoRA application. bypass (default): computed on top of the model at every step, the reference behaviour. merge: folded into the weights once, so each step costs about the same as the plain model (faster), but merging into quantized (int8) weights can change numerical results. The two small base time projections stay in bypass either way."}),
+                "spectrum_pass1": (["off", "defaults"], {"default": "off", "tooltip": "Spectrum (xmarre/ComfyUI-Spectrum-MiniMax-H3) on pass 1 only: forecasts some sampler steps instead of running the transformer. defaults = the node pack's own defaults (degree 1, blend 0.5, warmup 1, tail 1, offline smoothing replay). Pass 2 is 1 step, so there is nothing to forecast there."}),
                 # --- Audio-only refine (ComfyUI-H3-AudioRefine, optional dependency; appended last) ---
                 "audio_refine_steps": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1, "tooltip": "Extra denoising steps on the AUDIO only, run on the finished clip after pass 2 with the video frozen (needs the ComfyUI-H3-AudioRefine pack). Runs on the undistilled base model, without the acceleration LoRA / HyperFlow / PDD heads, so it recovers the audio quality a few-step pass loses. 0 = off. 4-6 typical. The refined audio also feeds the next clip's audio context."}),
                 "audio_refine_denoise": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1.0, "step": 0.01, "tooltip": "How far the audio is re-noised before refining. 0.3-0.6 keeps the pass-2 audio and cleans it up; 1.0 regenerates it against the finished video."}),
@@ -712,6 +713,7 @@ class MiniMaxH3MasterExtender:
             hyperflow_curve_refit=kwargs.get("hyperflow_curve_refit", True),
             hyperflow_strength=kwargs.get("hyperflow_strength", 1.0),
             hyperflow_lora_mode=kwargs.get("hyperflow_lora_mode") or "bypass",
+            spectrum_pass1=kwargs.get("spectrum_pass1") or "off",
             background_busy=lambda: background["worker"] is not None and background["worker"].busy(),
             wait_background=lambda: _finish_background(),
         )

@@ -188,6 +188,7 @@ class PurePDDEngine:
         hyperflow_curve_refit=True,
         hyperflow_strength=1.0,
         hyperflow_lora_mode="bypass",
+        spectrum_pass1="off",
     ):
         self.raw_model = model
         self.accel_mode = str(accel_mode)
@@ -198,6 +199,7 @@ class PurePDDEngine:
         self.hyperflow_strength = float(hyperflow_strength)
         self.hyperflow_lora_mode = "merge" if str(hyperflow_lora_mode).lower() == "merge" else "bypass"
         self.hyperflow_pruned_refit = False
+        self.spectrum_pass1 = str(spectrum_pass1 or "off")
         self.turbo_lora = turbo_lora if turbo_lora and turbo_lora != "none" else None
         self.turbo_lora_strength = float(turbo_lora_strength)
         self.sampler_name = sampler_name
@@ -284,6 +286,7 @@ class PurePDDEngine:
 
         self.accel_model = pdd_model
         pdd_model = self._finish_model(pdd_model)
+        pdd_model = self._apply_spectrum(pdd_model)
 
         self.prepared_model = pdd_model
         self.pass1_sigmas = sigmas_p1
@@ -531,6 +534,27 @@ class PurePDDEngine:
         else:
             _LOG.info("HyperFlow: sparse attention is OFF (dense recipe)")
         return hf_model, sigmas
+
+    def _apply_spectrum(self, model):
+        """Spectrum feature forecasting on the pass-1 model, last on the chain (after SigmaShift,
+        LoRAs / HyperFlow and attention patches), as its README orders it. Errors are raised:
+        a silent native fallback would hide the A/B."""
+        if self.spectrum_pass1 == "off":
+            return model
+        apply_cls = nodes.NODE_CLASS_MAPPINGS.get("SpectrumApplyMiniMaxH3")
+        if apply_cls is None:
+            raise RuntimeError("spectrum_pass1 needs the ComfyUI-Spectrum-MiniMax-H3 node pack in custom_nodes.")
+        res = apply_cls().apply(
+            model, enabled=True, blend_weight=0.5, degree=1, ridge_lambda=0.1, window_size=2.0,
+            flex_window=0.75, warmup_steps=1, tail_actual_steps=1, max_history=8,
+            debug=os.environ.get("H3_SPECTRUM_DEBUG", "") not in ("", "0"),
+        )
+        out = _safe_get_output(res, 0, "model")
+        if out is None:
+            raise RuntimeError("SpectrumApplyMiniMaxH3 returned no model")
+        _LOG.info("Spectrum on pass 1: %s (degree 1, blend 0.5, warmup 1, tail 1, offline replay on)",
+                  self.spectrum_pass1)
+        return out
 
     def _apply_sla(self, model):
         """Block-sparse attention for both passes. On long sequences it roughly
