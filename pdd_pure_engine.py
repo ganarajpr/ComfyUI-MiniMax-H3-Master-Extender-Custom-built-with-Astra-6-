@@ -259,7 +259,11 @@ class PurePDDEngine:
         if self.turbo_mode:
             pdd_model, sigmas_p1 = self._prepare_turbo_model(shifted_model)
         elif self.hyperflow_mode:
-            pdd_model, sigmas_p1 = self._prepare_hyperflow_model(shifted_model)
+            # Spectrum goes UNDER HyperFlow here: HyperFlow's block patch reads minimax_h3_layout from the
+            # transformer_options dict its wrapper captured, while Spectrum's wrapper hands the model a
+            # copy (local_options). With Spectrum outermost, HyperFlow captures the copy H3 writes into.
+            # (Spectrum outermost-last -> KeyError 'minimax_h3_layout' in hyperflow_h3/embedder.py.)
+            pdd_model, sigmas_p1 = self._prepare_hyperflow_model(self._apply_spectrum(shifted_model))
         else:
             pdd_apply_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3PDDAccApply")
             if pdd_apply_cls:
@@ -286,7 +290,8 @@ class PurePDDEngine:
 
         self.accel_model = pdd_model
         pdd_model = self._finish_model(pdd_model)
-        pdd_model = self._apply_spectrum(pdd_model)
+        if not self.hyperflow_mode:
+            pdd_model = self._apply_spectrum(pdd_model)
 
         self.prepared_model = pdd_model
         self.pass1_sigmas = sigmas_p1
