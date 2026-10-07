@@ -543,6 +543,8 @@ class PurePDDEngine:
         three selection methods (sla / sol-attn / vsa)."""
         if not self.sla_enabled:
             return model
+        if str(getattr(self, "sparse_method", "")) == "veda":
+            return self._apply_veda(model)
         native = nodes.NODE_CLASS_MAPPINGS.get("BlockSparseAttention")
         if native is None:
             _LOG.warning("Sparse attention requested but core BlockSparseAttention is unavailable "
@@ -574,6 +576,36 @@ class PurePDDEngine:
         except Exception as exc:
             _LOG.warning("Core BlockSparseAttention could not be applied (%s); continuing dense", exc)
         return model
+
+    VEDA_PREDICTOR = "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"
+
+    def _apply_veda(self, model):
+        """Veda learned sparse attention (custom_nodes/veda-sparse-attention, predictor in
+        models/veda). An optimized_attention override, so it stacks on HyperFlow / LoRAs as
+        long as it is applied last, and replaces core BlockSparseAttention rather than
+        joining it. sla_sparsity drives both its generated and reference sparsity. Errors
+        are raised, not swallowed: a silent dense fallback would hide the A/B."""
+        veda_cls = nodes.NODE_CLASS_MAPPINGS.get("VedaSparseAttention")
+        if veda_cls is None:
+            raise RuntimeError("sparse_method 'veda' needs the veda-sparse-attention node pack "
+                               "(github.com/veda-sparse/Veda-on-ComfyUI) in custom_nodes.")
+        percent = f"{max(0.0, min(99.0, self.sla_sparsity * 100.0)):g}%"
+        verbose = os.environ.get("H3_VEDA_VERBOSE", "") not in ("", "0")
+        res = veda_cls.execute(
+            model, predictor=os.environ.get("H3_VEDA_PREDICTOR", self.VEDA_PREDICTOR),
+            generated_sparsity=percent, reference_sparsity=percent,
+            full_attention_layers=os.environ.get("H3_VEDA_DENSE_LAYERS", ""),
+            full_attention_steps=os.environ.get("H3_VEDA_DENSE_STEPS", ""),
+            verbose=verbose,
+        )
+        out = _safe_get_output(res, 0, "model")
+        if out is None:
+            raise RuntimeError("VedaSparseAttention returned no model")
+        _LOG.info("Sparse attention (Veda): generated/reference sparsity %s, dense layers [%s], "
+                  "dense steps [%s], fall-through = %s", percent,
+                  os.environ.get("H3_VEDA_DENSE_LAYERS", ""), os.environ.get("H3_VEDA_DENSE_STEPS", ""),
+                  self.attention_backend)
+        return out
 
     def _pass2_sigmas(self, model, pass2_denoise):
         """Quality-tail schedule for pass 2: PDD's own tail, or the last
