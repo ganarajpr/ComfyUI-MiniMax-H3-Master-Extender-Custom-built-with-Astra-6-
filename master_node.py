@@ -423,7 +423,6 @@ class MiniMaxH3MasterExtender:
                 "audio_refine_denoise": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1.0, "step": 0.01, "tooltip": "How far the audio is re-noised before refining. 0.3-0.6 keeps the pass-2 audio and cleans it up; 1.0 regenerates it against the finished video."}),
                 "audio_refine_cache": ("BOOLEAN", {"default": True, "tooltip": "Use the pack's H3 Frozen Video Cache (hidden / int4, RAM or VRAM, freed after each clip): the first refine step builds it, later steps are ~5x cheaper. Costs about 1 GB of RAM per clip-second at 720p-1344p. Off = exact but every step costs a full model pass."}),
                 # --- One text-encoder pass per clip (appended last) ---
-                "single_text_encode": ("BOOLEAN", {"default": False, "tooltip": "Run the text encoder once per clip instead of twice: the pass-2 encode is reused for pass 1, and only the reference-image latents are re-encoded at the pass-1 size. Saves several seconds per clip; pass 1 then sees the prompt embedding computed with the pass-2-sized reference images. Off = the exact two-encode behaviour."}),
                 # --- X2 detail final decode (appended last) ---
                 "final_decode": (final_decode_options(), {"default": "standard", "tooltip": "standard = decode with the connected VAE. A 2x VAE (e.g. MiniMax-H3-X2-Detail) decodes the final video at 2x resolution, ~+23 s per 15 s clip; needs ComfyUI-MiniMaxH3_LatentUpscaler."}),
                 # --- Film story for the rewriter (appended last; old workflows' trailing master_ui '' lands here = empty) ---
@@ -729,7 +728,9 @@ class MiniMaxH3MasterExtender:
             kwargs.get("audio_refine_denoise", 0.5),
             kwargs.get("audio_refine_cache", True),
         )
-        single_te = bool(kwargs.get("single_text_encode", False))
+        # Always one text-encoder pass per clip (founder 2026-10-07; the input was removed). Pass 1 reuses the
+        # pass-2 text embedding and only its reference latents are re-encoded at the pass-1 size.
+        single_te = True
         engine.single_text_encode = single_te
         engine.configure_semantic_bridge(
             kwargs.get("semantic_bridge", "none"),

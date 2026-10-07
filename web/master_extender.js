@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { createProjectControls } from "./master_projects.js";
-import { dropCaptionModelValue, normalizeReasoningBudget } from "./widget_migration.js";
+import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget } from "./widget_migration.js";
 
 const TARGET_NODE = "MiniMaxH3MasterExtender";
 const EVENT_PROGRESS = "master_extender_progress";
@@ -246,8 +246,11 @@ function repairReasoningBudget(node) {
 // rewrite_caption_model was merged into rewrite_writer_model. LiteGraph has already put the old array's values
 // into the widgets by index, so re-seat them from the array with the caption model's value removed.
 function repairMergedRewriterModel(node, info) {
+    const names = (node.widgets || []).map(w => w.name);
     const values = info?.widgets_values;
-    const migrated = dropCaptionModelValue((node.widgets || []).map(w => w.name), values);
+    const afterCaption = dropCaptionModelValue(names, values);
+    const afterSingle = dropSingleTextEncodeValue(names, afterCaption ?? values);
+    const migrated = afterSingle ?? afterCaption;
     if (!migrated) return;
     info.widgets_values = migrated;
     migrated.forEach((value, i) => { if (node.widgets[i]) node.widgets[i].value = value; });

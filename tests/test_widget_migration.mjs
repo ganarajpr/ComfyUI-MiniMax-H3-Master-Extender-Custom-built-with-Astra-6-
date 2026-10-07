@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { dropCaptionModelValue, normalizeReasoningBudget } from "../web/widget_migration.js";
+import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget } from "../web/widget_migration.js";
 
 const workflows = fs.readdirSync(new URL("../example_workflows/", import.meta.url)).filter(f => f.endsWith(".json"));
 assert(workflows.length >= 5);
@@ -13,6 +13,16 @@ for (const file of workflows) {
     const current = node.widgets_values;
     assert.equal(names.length, current.length, file);
     assert.equal(dropCaptionModelValue(names, current), null, `${file}: current layout is left alone`);
+    assert.equal(dropSingleTextEncodeValue(names, current), null, `${file}: no single_text_encode value to drop`);
+
+    // the same workflow as saved before single_text_encode was removed: one boolean right after audio_refine_cache
+    const cache = names.indexOf("audio_refine_cache");
+    for (const flag of [true, false]) {
+        const withFlag = [...current];
+        withFlag.splice(cache + 1, 0, flag);
+        const fixed = dropSingleTextEncodeValue(names, withFlag);
+        assert.deepEqual(fixed, current, `${file}: single_text_encode=${flag} dropped, later widgets re-seated`);
+    }
 
     // the same workflow as saved before the merge: one extra value right after the writer, an INT budget
     const w = names.indexOf("rewrite_writer_model");
