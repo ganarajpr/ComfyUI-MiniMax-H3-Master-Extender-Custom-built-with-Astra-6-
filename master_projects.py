@@ -174,7 +174,7 @@ async def cache_status(request):
     if not isinstance(clips, list) or not clips or not all(isinstance(c, dict) for c in clips):
         return web.json_response({"states": [], "videos": []})
     refine = body.get("audio_refine")
-    states, videos = clip_cache_states(clips, _audio_refine_signature(*refine) if isinstance(refine, list) and len(refine) == 3 else None, bool(body.get("single_text_encode")))
+    states, videos = clip_cache_states(clips, _audio_refine_signature(*refine) if isinstance(refine, list) and len(refine) == 3 else None, True)  # one text-encoder pass is always on
     return web.json_response({"states": states, "videos": videos})
 
 
