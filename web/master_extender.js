@@ -255,6 +255,14 @@ function repairMergedRewriterModel(node, info) {
     migrated.forEach((value, i) => { if (node.widgets[i]) node.widgets[i].value = value; });
 }
 
+// BUNNY ActionLogic Bridge V1 was deleted from the box (2026-10-07); saved workflows that pick it load on V2.
+const RETIRED_BRIDGES = { "BUNNY_H3_ActionLogic_Bridge_V1.safetensors": "BUNNY_H3_ActionLogic_Bridge_V2.safetensors" };
+function repairSemanticBridge(node) {
+    const w = node.widgets?.find(x => x.name === "semantic_bridge");
+    const replacement = w && RETIRED_BRIDGES[w.value];
+    if (replacement && comboValues(w).includes(replacement)) w.value = replacement;
+}
+
 function repairHyperflowWidgets(node, defaults) {
     repairFinalDecode(node);
     repairReasoningBudget(node);
@@ -650,6 +658,7 @@ app.registerExtension({
                 const result = originalConfigure?.apply(this, arguments);
                 repairMergedRewriterModel(node, info);
                 repairHyperflowWidgets(node, hyperflowDefaults);
+                repairSemanticBridge(node);
                 // Older workflows stored the empty master_ui value in this slot.
                 const attentionWidget = node.widgets?.find(w => w.name === "attention_backend");
                 if (attentionWidget && attentionWidget.value === "") {

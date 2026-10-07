@@ -258,6 +258,12 @@ def _send_rewrite(owner, index, clip_id, phase, text, source=""):
         pass
 
 
+SEMANTIC_BRIDGE_DEFAULT = "BUNNY_H3_ActionLogic_Bridge_V2.safetensors"
+# Retired adapters (deleted from the box, founder 2026-10-07): saved workflows and API graphs that still name them
+# run on the replacement instead of failing the combo check.
+SEMANTIC_BRIDGE_RETIRED = {"BUNNY_H3_ActionLogic_Bridge_V1.safetensors": SEMANTIC_BRIDGE_DEFAULT}
+
+
 def _semantic_bridge_adapters():
     """Adapter files known to the BUNNY H3 Conditioning Bridge pack (optional dependency):
     its bundled models/ folder plus the `semantic_bridge` model category."""
@@ -378,7 +384,7 @@ class MiniMaxH3MasterExtender:
                 "pass2_lora_mode": (["stack on engine LoRA", "replace engine LoRA"], {"default": "stack on engine LoRA", "tooltip": "stack: pass-2 LoRA on top of the PDD heads / turbo LoRA. replace: pass 2 samples base model + pass-2 LoRA only (use for step-distilled LoRAs, e.g. a 3-step turbo)."}),
                 "pass2_steps": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1, "tooltip": "Full schedule length pass 2's tail is cut from when a pass-2 LoRA is set (tail = round(steps x pass2_denoise)). 0 = same as the engine steps."}),
                 # --- Semantic bridge (BUNNY H3 Conditioning Bridge, optional dependency) ---
-                "semantic_bridge": (["none"] + _semantic_bridge_adapters(), {"default": "none", "tooltip": "BUNNY H3 Conditioning Bridge adapter applied to the text conditioning of both passes (needs the BUNNY_H3_Conditioning_Bridge custom node). Improves who-does-what-to-whom, object ownership and state continuity in complex multi-character action. none = off."}),
+                "semantic_bridge": (["none"] + _semantic_bridge_adapters(), {"default": SEMANTIC_BRIDGE_DEFAULT if SEMANTIC_BRIDGE_DEFAULT in _semantic_bridge_adapters() else "none", "tooltip": "BUNNY H3 Conditioning Bridge adapter applied to the text conditioning of both passes (needs the BUNNY_H3_Conditioning_Bridge custom node). Improves who-does-what-to-whom, object ownership and state continuity in complex multi-character action. Default: ActionLogic V2 (V1 is retired; workflows naming it run on V2). none = off."}),
                 "semantic_bridge_alpha": ("FLOAT", {"default": 0.12, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Residual strength of the semantic bridge. 0.10-0.15 recommended by the author; higher is not better."}),
                 "semantic_bridge_match": (["per_token", "global", "none"], {"default": "per_token", "tooltip": "How the bridge output is rescaled to the original conditioning magnitude before blending. per_token is the recommended setting."}),
                 # --- External prompt inputs: wire a STRING into a clip instead of typing it ---
@@ -446,7 +452,13 @@ class MiniMaxH3MasterExtender:
     OUTPUT_NODE = False
 
     @classmethod
-    def VALIDATE_INPUTS(cls, hyperflow_file=None, final_decode=None, rewrite_reasoning_budget=None):
+    def VALIDATE_INPUTS(cls, hyperflow_file=None, final_decode=None, rewrite_reasoning_budget=None, semantic_bridge=None):
+        # semantic_bridge: a retired adapter (V1) is accepted and mapped to its replacement at run time. Naming the
+        # input here skips core's combo check, so an unknown adapter is rejected below instead.
+        if semantic_bridge is not None and semantic_bridge != "none" and semantic_bridge not in SEMANTIC_BRIDGE_RETIRED:
+            adapters = _semantic_bridge_adapters()
+            if semantic_bridge not in adapters:
+                return f"semantic_bridge: '{semantic_bridge}' not in {['none'] + adapters}"
         # rewrite_reasoning_budget was an INT: API graphs (render_clip.py) still send 4096 as a number, which the
         # combo check would reject. Naming it here skips that check; prompt_rewriter.reasoning_budget maps it.
         # Workflows saved before HyperFlow existed can load with hyperflow_file == "";
@@ -732,8 +744,12 @@ class MiniMaxH3MasterExtender:
         # pass-2 text embedding and only its reference latents are re-encoded at the pass-1 size.
         single_te = True
         engine.single_text_encode = single_te
+        bridge = kwargs.get("semantic_bridge", "none")
+        if bridge in SEMANTIC_BRIDGE_RETIRED:
+            _LOG.info("Semantic bridge %s is retired; using %s", bridge, SEMANTIC_BRIDGE_RETIRED[bridge])
+            bridge = SEMANTIC_BRIDGE_RETIRED[bridge]
         engine.configure_semantic_bridge(
-            kwargs.get("semantic_bridge", "none"),
+            bridge,
             kwargs.get("semantic_bridge_alpha", 0.12),
             kwargs.get("semantic_bridge_match", "per_token"),
         )

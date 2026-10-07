@@ -1326,7 +1326,7 @@
         1.0,
         "replace engine LoRA",
         0,
-        "none",
+        "BUNNY_H3_ActionLogic_Bridge_V2.safetensors",
         0.12,
         "per_token",
         "pending clips",
