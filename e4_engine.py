@@ -48,8 +48,9 @@ PLAN_BUDGET = 4096          # planner, bible and writer (and the repairs) think 
 PICTURE_BUDGET = 2048       # the call that binds the pictures to the entities looks at images: with thinking off it missed a character that thinking 2048 and 4096 found
 DECISION_BUDGET_DEFAULT = "off"
 BUDGET_MESSAGE = "Time to stop thinking. Give the final answer now."
-SLOT_CTX = 32768            # context of one server slot an E4 call may use (largest measured call: 15k prompt + 8k answer)
+SLOT_CTX = 65536            # context of one server slot an E4 call may use. 32768 was too small for a long non-Latin story: a 4.3k-token planner prompt got 12288 tokens for thinking AND the plan, and the plan (about 29k characters of Devanagari JSON) was cut
 SLOT_CTX_ENV = "MINIMAX_H3_E4_SLOT_CTX"
+MAX_TOKENS_ENV = "MINIMAX_H3_E4_MAX_TOKENS"   # optional hard ceiling on one reply, over the per-call cap the node computes from the prompt
 MAX_WORKERS = 4
 NODE_ENV = "MINIMAX_H3_E4_NODE"
 NODE_FILE = "e4_node.txt"
@@ -61,6 +62,15 @@ NOTE_LINE = re.compile(r"^\s*(?:picture\s*)?(\d{1,2})\s*[:.)\-]\s*(.+?)\s*$", re
 
 
 class E4Error(RuntimeError):
+    """E4 failed. ``run`` is the kept run directory and ``cause`` the one line that says why (both may be empty)."""
+
+    def __init__(self, message="", *, run=None, cause=""):
+        super().__init__(message)
+        self.run = run
+        self.cause = cause
+
+
+class E4Interrupted(E4Error):
     pass
 
 
@@ -76,8 +86,17 @@ def slot_ctx() -> int:
 
 
 def max_tokens() -> int:
-    """What one reply may use of a slot: the slot minus the longest prompt E4 sends (about 20k tokens)."""
-    return max(4096, slot_ctx() - 20480)
+    """The most one reply may ever use: the slot minus the margin. The node (e4/planpath48/transport.mjs ``outputRoom``) lowers it per request to the slot minus
+    the estimated prompt minus the margin, so a 4.3k-token planner prompt gets about 60k of a 65536 slot, not a fixed share."""
+    return max(4096, slot_ctx() - 1024)
+
+
+def hard_max_tokens() -> int:
+    """The optional ceiling from MINIMAX_H3_E4_MAX_TOKENS (0 = none)."""
+    try:
+        return max(0, int(os.environ.get(MAX_TOKENS_ENV, "0")))
+    except ValueError:
+        return 0
 
 
 def decision_budget(value) -> int:
@@ -225,9 +244,11 @@ def build_env(endpoint: dict, *, decision: int, score: str, budget_message: str 
         "E4_LLM_BUDGET_PLANNER": str(PLAN_BUDGET), "E4_LLM_BUDGET_BIBLE": str(PLAN_BUDGET), "E4_LLM_BUDGET_WRITER": str(PLAN_BUDGET),
         "E4_LLM_BUDGET_REPAIR": str(PLAN_BUDGET), "E4_LLM_BUDGET_PICTURE_MAP": str(PICTURE_BUDGET),
         "E4_DECISION_THINKING": str(decision) if decision else "off",
-        "E4_LLM_MAX_TOKENS": str(max_tokens()), "E4_LLM_BUDGET_MESSAGE": budget_message or BUDGET_MESSAGE,
+        "E4_LLM_SLOT_CTX": str(slot_ctx()), "E4_LLM_BUDGET_MESSAGE": budget_message or BUDGET_MESSAGE,
         "E4_SCORE": score, "NODE_NO_WARNINGS": "1",
     })
+    if hard_max_tokens():
+        env["E4_LLM_MAX_TOKENS"] = str(hard_max_tokens())
     return env
 
 
@@ -344,7 +365,7 @@ def plan_film(*, story: str, language: str, score: str, labels: list[int], pictu
                 try:
                     import comfy.model_management as mm
                 except ImportError:
-                    raise E4Error("interrupted") from None
+                    raise E4Interrupted("interrupted") from None
                 raise mm.InterruptProcessingException()
             if time.time() - started > TIMEOUT_SECONDS:
                 proc.kill()
@@ -366,7 +387,9 @@ def plan_film(*, story: str, language: str, score: str, labels: list[int], pictu
         say(message, fraction)
     if proc.returncode != 0:
         last = [line for line in list(stderr)[-12:] if line.strip()] or list(stdout)[-6:]
-        raise E4Error(f"{ENGINE_NAME} failed (exit {proc.returncode}); the run is kept in {run} and resumes when the same story is run again:\n" + "\n".join(last))
+        cause = next((line.strip() for line in reversed(last) if re.search(r"Error\b|failed|cut", line)), (last[-1].strip() if last else ""))
+        raise E4Error(f"{ENGINE_NAME} failed (exit {proc.returncode}); the run is kept in {run} and resumes when the same story is run again:\n" + "\n".join(last),
+                      run=str(run), cause=cause[:400])
     try:
         result = json.loads((run / "clips.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:

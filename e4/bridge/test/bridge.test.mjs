@@ -233,3 +233,117 @@ test('a bad first reply gets one retry that names the failure, and a second clai
     assert.ok(readFileSync(join(out, 'calls.jsonl'), 'utf8').trim().split('\n').length === 2);
   });
 });
+
+// ---- the per-call output cap and truncated replies
+import { estimatePromptTokens, outputRoom, outputCap } from '../../planpath48/transport.mjs';
+import { planStory, PlanError } from '../../planpath48/planner.mjs';
+
+const withEnv = (env, fn) => {
+  const saved = { E4_LLM_SLOT_CTX: process.env.E4_LLM_SLOT_CTX, E4_LLM_MAX_TOKENS: process.env.E4_LLM_MAX_TOKENS };
+  for (const k of Object.keys(saved)) delete process.env[k];
+  Object.assign(process.env, env);
+  try { return fn(); } finally { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
+};
+const user = (text) => [{ role: 'system', content: 'S' }, { role: 'user', content: text }];
+const devanagari = (n) => 'कहानीकासंवाद'.repeat(Math.ceil(n / 12)).slice(0, n);
+
+test('the prompt estimate counts non-Latin characters at one token each and Latin at 2.5 characters', () => {
+  assert.equal(estimatePromptTokens(user('a'.repeat(1000))), Math.ceil((1000 + 1 + 20) / 2.5));
+  const hi = estimatePromptTokens(user(devanagari(7000)));
+  assert.ok(hi >= 7000 && hi < 7300, `7000 Devanagari characters estimate ${hi}`);
+  assert.equal(estimatePromptTokens([{ role: 'user', content: [{ type: 'text', text: 'abc' }, { type: 'image', source: {} }, { type: 'image_url', image_url: {} }] }]), Math.ceil(13 / 2.5 + 2200));
+});
+
+test('the output cap is the slot minus the prompt minus a margin, under the call\'s own setting, above 4096, under the optional hard ceiling', () => {
+  // the failed real call: a 4.3k-token prompt (7023 characters of Hindi story in an English template) on a 32768 slot got a fixed 12288
+  const story = user(devanagari(7000) + ' '.repeat(1) + 'x'.repeat(3000));
+  const est = estimatePromptTokens(story);
+  withEnv({ E4_LLM_SLOT_CTX: '32768' }, () => {
+    assert.equal(outputRoom(story), 32768 - Math.ceil(est * 1.05) - 1024);
+    assert.ok(outputRoom(story) > 20000, `room ${outputRoom(story)}`);
+    assert.equal(outputCap(story, 32000), outputRoom(story));
+    assert.equal(outputCap(story, 8000), 8000, 'never above the call\'s own setting');
+    assert.equal(outputCap(user('x'), 4000000), outputRoom(user('x')));
+    assert.equal(outputCap(user('x'.repeat(200000)), 32000), 4096, 'a huge prompt still leaves the floor');
+    assert.equal(outputCap(user('x'.repeat(200000)), 2000), 2000, 'the floor never raises a smaller setting');
+  });
+  withEnv({ E4_LLM_SLOT_CTX: '65536' }, () => {
+    assert.equal(outputCap(story, 32000), 32000);
+    assert.equal(outputRoom(story), 65536 - Math.ceil(est * 1.05) - 1024);
+  });
+  withEnv({ E4_LLM_SLOT_CTX: '65536', E4_LLM_MAX_TOKENS: '12288' }, () => assert.equal(outputCap(story, 32000), 12288, 'the hard ceiling wins'));
+  withEnv({}, () => { assert.equal(outputRoom(story), Infinity); assert.equal(outputCap(story, 32000), 32000, 'no slot, no change'); });
+});
+
+test('a Devanagari-heavy prompt leaves less room than the same number of Latin characters', () => {
+  withEnv({ E4_LLM_SLOT_CTX: '32768' }, () => assert.ok(outputRoom(user(devanagari(10000))) < outputRoom(user('a'.repeat(10000))) - 4000));
+});
+
+// chatWith reads its endpoint when lib.mjs is imported: one child process per scenario, against a canned server that stops replies at max_tokens.
+async function cutScenario(cutBelow, env = {}, settings = { max_tokens: 6000, reasoning: { max_tokens: 4096 }, temperature: 0 }) {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const b = JSON.parse(body);
+      seen.push(b.max_tokens);
+      const cut = b.max_tokens < cutBelow;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ content: [{ type: 'thinking', thinking: 't' }, { type: 'text', text: cut ? '{"a": [' : '{"a": []}' }], stop_reason: cut ? 'max_tokens' : 'end_turn', usage: { input_tokens: 900, output_tokens: b.max_tokens, output_tokens_details: { thinking_tokens: 4121 } } }));
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const code = `import { chatWith, cutNote } from ${JSON.stringify(new URL('../../planpath48/lib.mjs', import.meta.url).href)};
+      const c = await chatWith([{ role: 'user', content: 'hello' }], ${JSON.stringify(settings)}, { kind: 'planner' });
+      console.log(JSON.stringify({ finish: c.finish, content: c.content, cut: c.cut, escalated: c.escalated, note: cutNote(c.cut) }));`;
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code],
+      { env: { ...process.env, E4_LLM_API_STYLE: 'ninfer-messages', E4_LLM_URL: `http://127.0.0.1:${server.address().port}`, E4_LLM_MODEL: 'm', E4_LLM_SLOT_CTX: '32768', ...env }, timeout: 60000 });
+    return { ...JSON.parse(stdout), seen };
+  } finally { server.close(); }
+}
+
+test('a reply cut at max_tokens is not resent with the same cap: it is sent again with a larger one, up to the slot', async () => {
+  const r = await cutScenario(12000);
+  assert.equal(r.seen.length, 2);
+  assert.equal(r.seen[0], 6000);
+  assert.equal(r.seen[1], 12000, 'doubled');
+  assert.equal(r.finish, 'stop');
+  assert.equal(r.content, '{"a": []}');
+  assert.deepEqual(r.escalated, { from: 6000, to: 12000, firstOutputTokens: 6000, firstThinkingTokens: 4121 });
+  assert.equal(r.cut, null);
+});
+
+test('a reply that is still cut at the largest cap says why: "reply cut at max_tokens N (thinking T)"', async () => {
+  const r = await cutScenario(1e9);
+  assert.equal(r.seen.length, 2);
+  assert.deepEqual(r.cut, { max_tokens: 12000, thinking: 4121, output: 12000 });
+  assert.equal(r.note, 'reply cut at max_tokens 12000 (thinking 4121)');
+});
+
+test('with no room left in the slot a cut reply is not resent at all', async () => {
+  const r = await cutScenario(1e9, {}, { max_tokens: 32000, reasoning: { max_tokens: 4096 }, temperature: 0 });
+  assert.equal(r.seen.length, 1, 'the first request already had all the room the slot leaves');
+  assert.ok(r.cut && r.cut.max_tokens > 30000);
+  const hard = await cutScenario(1e9, { E4_LLM_MAX_TOKENS: '6000' });
+  assert.equal(hard.seen.length, 1, 'nor past the hard ceiling');
+});
+
+test('without E4_LLM_SLOT_CTX (an OpenRouter-style run) a cut reply is not escalated', async () => {
+  const r = await cutScenario(1e9, { E4_LLM_SLOT_CTX: '' });
+  assert.equal(r.seen.length, 1);
+});
+
+test('the planner asks again for shorter field values when its reply was cut, and the error names the cut', async () => {
+  const asked = [];
+  const cut = { note: 'reply cut at max_tokens 12288 (thinking 4121)', max_tokens: 12288 };
+  const chat = async (messages) => { asked.push(messages[0].content); return { text: '{"clips": [{"clip": 1,', cut }; };
+  await assert.rejects(() => planStory(chat, 'A short story.'), (e) => e instanceof PlanError && /no usable JSON twice \(reply cut at max_tokens 12288 \(thinking 4121\)\)/.test(e.message));
+  assert.equal(asked.length, 2);
+  assert.match(asked[1], /cut off at the output limit \(max_tokens 12288\)/);
+  assert.match(asked[1], /shorter field values/);
+  const plain = [];
+  await assert.rejects(() => planStory(async (m) => { plain.push(m[0].content); return 'not json'; }, 'A short story.'), (e) => e instanceof PlanError && e.message === 'the story planner returned no usable JSON twice');
+  assert.match(plain[1], /not one valid JSON object/);
+});

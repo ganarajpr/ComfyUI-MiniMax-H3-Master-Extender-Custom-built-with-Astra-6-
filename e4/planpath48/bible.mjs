@@ -219,7 +219,7 @@ export async function makeBible(chat, story, plan, rawAsks, { score = 'off' } = 
     const msgs = attempt && issues.length ? [{ role: 'user', content: `${messages[0].content}\n\nYOUR PREVIOUS REPLY FAILED THESE CHECKS — CORRECT EXACTLY THESE AND KEEP EVERYTHING ELSE:\n${issues.slice(0, 25).join('\n')}` }] : messages;
     const reply = await chat(msgs, attempt);
     parsed = reply.ok ? normalizeBible(reply.value) : null;
-    issues = parsed ? validateBible(parsed, plan, { score }) : ['the reply was not one valid JSON object'];
+    issues = parsed ? validateBible(parsed, plan, { score }) : [reply.cut ? `the reply was not one valid JSON object: ${reply.cut.note}; write the SAME structure with shorter field values and close every brace` : 'the reply was not one valid JSON object'];
     attempts.push({ attempt: attempt + 1, issues: [...issues], ...(reply.repaired ? { repaired: reply.repaired } : {}) });
     if (!issues.length) break;
   }

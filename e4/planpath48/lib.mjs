@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { SETTINGS, MODEL, BASE, API_STYLE, normalizeResponse, parseJsonReply, wr, rj } from '../hybrid3/lib.mjs';
-import { buildRequest } from './transport.mjs';
+import { buildRequest, outputRoom } from './transport.mjs';
 
 import { repairJson } from './jsonrepair.mjs';
 export { SETTINGS, MODEL, BASE, API_STYLE, parseJsonReply, wr, rj };
@@ -27,7 +27,23 @@ const KEY = ['LLM_JUDGE_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'].map(en
 export const DECISION_SETTINGS = { max_tokens: 16000, reasoning: { max_tokens: 4096 }, temperature: 0 };
 
 // One chat-completions call on the normal OpenRouter endpoint with explicit settings; transient errors retried.
-export async function chatWith(messages, settings = SETTINGS, { retries = 3, kind = 'writer' } = {}) {
+export async function chatWith(messages, settings = SETTINGS, opts = {}) {
+  const first = await chatWithOnce(messages, settings, opts);
+  const cap = first.body?.max_tokens || 0;
+  if (first.finish !== 'length') return first;
+  // The reply was cut at max_tokens: do not send the same request again. Send it once with a larger cap, up to the room the slot leaves (at most double).
+  const limit = outputRoom(messages);
+  const room = Number.isFinite(limit) ? Math.min(limit, cap * 2) : 0;
+  if (!(room > cap * 1.05)) return { ...first, cut: cutOf(first) };
+  const second = await chatWithOnce(messages, { ...settings, max_tokens: Math.floor(room) }, opts);
+  const escalated = { from: cap, to: second.body?.max_tokens ?? Math.floor(room), firstOutputTokens: first.usage?.completion_tokens ?? null, firstThinkingTokens: thinkingOf(first) };
+  return { ...second, escalated, cut: second.finish === 'length' ? cutOf(second) : null };
+}
+export const thinkingOf = (c) => c?.usage?.completion_tokens_details?.reasoning_tokens ?? null;
+// Why a reply is unusable when the server stopped it at max_tokens: "reply cut at max_tokens 12288 (thinking 4121)".
+export const cutOf = (c) => ({ max_tokens: c.body?.max_tokens ?? null, thinking: thinkingOf(c), output: c.usage?.completion_tokens ?? null });
+export const cutNote = (cut) => (cut ? `reply cut at max_tokens ${cut.max_tokens}${cut.thinking != null ? ` (thinking ${cut.thinking})` : ''}` : '');
+async function chatWithOnce(messages, settings = SETTINGS, { retries = 3, kind = 'writer' } = {}) {
   const { url, headers, body } = buildRequest(messages, settings, kind);
   let last = null;
   for (let a = 1; a <= retries; a++) {
@@ -70,6 +86,8 @@ export async function call({ outRoot, dir, name, kind, story, clip, messages, se
   wr(join(dir, `${name}.request.json`), c.body);
   wr(join(dir, `${name}.response.raw.txt`), c.raw || c.error || '');
   const meta = { kind, story, clip: clip ?? null, name, usage: c.usage, cost: c.cost, finish: c.finish, secs: c.secs, status: c.status, attempt: c.attempt, model: c.resp?.model || null };
+  if (c.cut) meta.cut = c.cut;
+  if (c.escalated) meta.escalated = c.escalated;
   wr(join(dir, `${name}.meta.json`), meta);
   mkdirSync(outRoot, { recursive: true });
   appendFileSync(join(outRoot, 'calls.jsonl'), `${JSON.stringify(meta)}\n`);

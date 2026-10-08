@@ -941,47 +941,63 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                 say("rewrite", message, 0.2 + 0.7 * max(0.0, min(1.0, fraction)))
 
             t_e4 = time.time()
-            result = e4_engine.plan_film(
-                story=story, language=str(settings.get("e4_language") or ""), score=str(settings.get("e4_score", "off")), labels=labels, pictures=by_label,
-                notes=e4_engine.parse_notes(settings.get("e4_picture_notes")), sees=sees, endpoint=endpoint,
-                decision=e4_engine.decision_budget(settings.get("e4_decision_budget", e4_engine.DECISION_BUDGET_DEFAULT)), workers=e4_workers,
-                say=e4_say, interrupted=interrupted)
-            positions = e4_engine.apply_clips(clips, result, model=os.path.basename(writer_file or writer_label))
-            current, _pending = assess(clips)
-            for position in positions:
-                meta = clips[position].get("rewrite_meta")
-                if isinstance(meta, dict) and "fingerprint" in meta:
-                    meta["fingerprint"] = current.get(position)
-            for position in positions:
-                _LOG.info("Rewriter plan clip %d (e4, %s s):\n%s", position + 1, clips[position].get("duration"), clips[position].get("prompt_raw") or clips[position].get("prompt"))
-            mapping = result.get("mapping") or {}
-            bound = [f"Picture {p['picture']} = {p['entity']}" for p in mapping.get("pictures", []) if p.get("entity")]
-            _LOG.info("Rewriter: e4 bound the pictures (%s): %s; unused: %s", mapping.get("mode"), ", ".join(bound) or "none", mapping.get("unused") or "none")
-            if mapping.get("issues"):
-                _LOG.warning("Rewriter: e4 picture binding: %s", " | ".join(mapping["issues"]))
-            written_clips = [c for c in result["clips"] if c.get("prompt")]
-            for position in positions:
-                clip = clips[position]
-                if clip.get("prompt_rewritten") and stream_cb is not None:
+            e4_failed = None
+            try:
+                result = e4_engine.plan_film(
+                    story=story, language=str(settings.get("e4_language") or ""), score=str(settings.get("e4_score", "off")), labels=labels, pictures=by_label,
+                    notes=e4_engine.parse_notes(settings.get("e4_picture_notes")), sees=sees, endpoint=endpoint,
+                    decision=e4_engine.decision_budget(settings.get("e4_decision_budget", e4_engine.DECISION_BUDGET_DEFAULT)), workers=e4_workers,
+                    say=e4_say, interrupted=interrupted)
+            except e4_engine.E4Interrupted:
+                raise
+            except e4_engine.E4Error as error:
+                e4_failed = error
+            if e4_failed is not None:
+                cause = e4_failed.cause or str(e4_failed).splitlines()[0]
+                kept = e4_failed.run or "the e4 run folder"
+                warning = f"story_engine=e4.8 FAILED and is NOT used for this run: {cause} (run kept in {kept}); planning with the builder planner instead"
+                _LOG.warning("Rewriter: %s\n%s", warning, e4_failed)
+                say("rewrite", "WARNING: " + warning, 0.2)
+                notes.append("WARNING: " + warning)
+                e4_plan = False
+                plan_budget = plan_tokens + e4_engine.PLAN_BUDGET
+            else:
+                positions = e4_engine.apply_clips(clips, result, model=os.path.basename(writer_file or writer_label))
+                current, _pending = assess(clips)
+                for position in positions:
+                    meta = clips[position].get("rewrite_meta")
+                    if isinstance(meta, dict) and "fingerprint" in meta:
+                        meta["fingerprint"] = current.get(position)
+                for position in positions:
+                    _LOG.info("Rewriter plan clip %d (e4, %s s):\n%s", position + 1, clips[position].get("duration"), clips[position].get("prompt_raw") or clips[position].get("prompt"))
+                mapping = result.get("mapping") or {}
+                bound = [f"Picture {p['picture']} = {p['entity']}" for p in mapping.get("pictures", []) if p.get("entity")]
+                _LOG.info("Rewriter: e4 bound the pictures (%s): %s; unused: %s", mapping.get("mode"), ", ".join(bound) or "none", mapping.get("unused") or "none")
+                if mapping.get("issues"):
+                    _LOG.warning("Rewriter: e4 picture binding: %s", " | ".join(mapping["issues"]))
+                written_clips = [c for c in result["clips"] if c.get("prompt")]
+                for position in positions:
+                    clip = clips[position]
+                    if clip.get("prompt_rewritten") and stream_cb is not None:
+                        try:
+                            stream_cb(position, clip.get("id"), "done", clip["prompt"], clip.get("prompt_raw") or "")
+                        except Exception:
+                            _LOG.debug("stream callback failed", exc_info=True)
+                notes.append(f"e4: planned and wrote {len(written_clips)} of {len(result['clips'])} clip(s) from the story in {time.time() - t_e4:.0f} s"
+                             + (f", {len(result['clips']) - len(written_clips)} left for the builder" if len(written_clips) < len(result["clips"]) else "")
+                             + f" (run kept in {result['run_dir']})")
+                if len(clips) > len(positions):
+                    notes.append(f"e4: {len(clips) - len(positions)} empty clip(s) are left after the film's {len(positions)}; delete them")
+                if plan_cb is not None:
                     try:
-                        stream_cb(position, clip.get("id"), "done", clip["prompt"], clip.get("prompt_raw") or "")
+                        plan_cb(clips, positions)
                     except Exception:
-                        _LOG.debug("stream callback failed", exc_info=True)
-            notes.append(f"e4: planned and wrote {len(written_clips)} of {len(result['clips'])} clip(s) from the story in {time.time() - t_e4:.0f} s"
-                         + (f", {len(result['clips']) - len(written_clips)} left for the builder" if len(written_clips) < len(result["clips"]) else "")
-                         + f" (run kept in {result['run_dir']})")
-            if len(clips) > len(positions):
-                notes.append(f"e4: {len(clips) - len(positions)} empty clip(s) are left after the film's {len(positions)}; delete them")
-            if plan_cb is not None:
-                try:
-                    plan_cb(clips, positions)
-                except Exception:
-                    _LOG.debug("plan callback failed", exc_info=True)
-            planning = False
-            current, todo = assess(clips)
-            if not todo:
-                return notes
-            log_reasons(clips, todo)
+                        _LOG.debug("plan callback failed", exc_info=True)
+                planning = False
+                current, todo = assess(clips)
+                if not todo:
+                    return notes
+                log_reasons(clips, todo)
 
         # ---- planning: the film story into the clip list, once ----------------
         if planning:

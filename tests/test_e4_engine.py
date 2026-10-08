@@ -374,6 +374,55 @@ class EngineTests(unittest.TestCase):
         self.assertIn("interrupted", str(ctx.exception))
         self.assertLess(time.time() - started, 20)
 
+    def test_a_cut_planner_reply_falls_back_to_the_builder_planner_and_says_why(self):
+        """Every reply is stopped at max_tokens: the planner is asked again with a larger cap and the complaint 'shorter field values', fails again, E4 exits
+        non-zero, and the node does not raise: the builder planner plans, with a loud warning that names the cut and the kept run."""
+        user = Path(tempfile.mkdtemp(dir=self.user))
+        with e4_mock_llm.MockLLM(REPLAY, cut_all=True) as llm:
+            rec, notes, done = stub_pack.run_rewrite(ROOT, settings_for(self.story, auto_clips=2), builder_scenario.clips_empty(1), refs=stub_pack.make_pictures((0, 1)), writer_suffix=".ninfer",
+                                                    server_base=llm.url, user_dir=user)
+        planner = [r["body"] for r in llm.requests]
+        self.assertEqual(4, len(planner), "two planner attempts, each resent once with a larger cap")
+        caps = [b["max_tokens"] for b in planner]
+        self.assertGreater(max(caps), min(caps), "a cut reply is not resent with the same cap")
+        self.assertIn("cut off at the output limit", json.dumps(planner[-1]["messages"]), "the retry says the reply was cut and asks for shorter field values")
+        warnings = [m for _s, m, _p in rec.progress if m.startswith("WARNING")]
+        self.assertTrue(warnings, "a loud status line")
+        self.assertIn("reply cut at max_tokens", warnings[0])
+        self.assertIn("thinking 4121", warnings[0])
+        self.assertIn(str(user), warnings[0], "the kept run directory is named")
+        self.assertTrue(any(n.startswith("WARNING: story_engine=e4.8 FAILED") for n in notes))
+        self.assertTrue(rec.chats, "the builder planner ran instead")
+        self.assertTrue(all(c.get("rewrite_meta", {}).get("engine") != "e4" for c in done))
+
+    def test_a_failed_bible_is_regenerated_on_resume_not_reused(self):
+        import hashlib
+        out = Path(tempfile.mkdtemp(dir=self.user))
+        job = {"name": "drama_two_hander", "story": self.story, "language": "English", "score": "off", "workers": 3, "resume": False, "out": str(out), "vision": False,
+               "pictures": [], "notes": {}}
+        (out / "job.json").write_text(json.dumps(job), encoding="utf-8")
+
+        def run():
+            with e4_mock_llm.MockLLM(REPLAY) as llm:
+                env = dict(os.environ, E4_LLM_URL=llm.url, E4_LLM_MODEL="mock", E4_LLM_API_STYLE="ninfer-messages")
+                proc = subprocess.run([NODE, str(ROOT / "e4" / "bridge" / "run.mjs"), str(out / "job.json")], env=env, capture_output=True, text=True, cwd=str(ROOT))
+            self.assertEqual(0, proc.returncode, proc.stderr[-1500:])
+            return llm
+
+        run()
+        bible_file = out / "drama_two_hander" / "bible.json"
+        good = bible_file.read_bytes()
+        stored = json.loads(good)
+        stored["bibleMeta"]["issues"] = ["a check failed in the earlier run"]
+        bible_file.write_text(json.dumps(stored), encoding="utf-8")
+        job["resume"] = True
+        (out / "job.json").write_text(json.dumps(job), encoding="utf-8")
+        llm = run()
+        asked = [r for r in llm.requests if "bible" in json.dumps(request_head(r["body"])).lower() or "BIBLE" in json.dumps(r["body"]["messages"])]
+        self.assertTrue(asked, "the bible was asked for again")
+        self.assertEqual([], json.loads(bible_file.read_text(encoding="utf-8"))["bibleMeta"]["issues"])
+        self.assertEqual(hashlib.sha256(good).hexdigest(), hashlib.sha256(bible_file.read_bytes()).hexdigest(), "and it is the stored run's bible again")
+
     def test_node_missing_is_a_clear_error(self):
         saved = dict(os.environ)
         os.environ[e4_engine.NODE_ENV] = str(self.user / "no-such-node")
@@ -396,6 +445,10 @@ class EngineTests(unittest.TestCase):
                 stub_pack.run_rewrite(ROOT, settings_for(self.story), builder_scenario.clips_empty(1), refs=stub_pack.make_pictures((0, 1)), writer_suffix=".gguf", vision=False,
                                       server_base=llm.url, user_dir=Path(tempfile.mkdtemp(dir=self.user)))
         self.assertIn("server", str(ctx.exception))
+
+
+def request_head(body):
+    return (body.get("system") or "")[:300]
 
 
 def e4_pending(clips):
@@ -558,6 +611,23 @@ class PythonSide(unittest.TestCase):
         self.assertEqual("on", env["E4_SCORE"])
         off = e4_engine.build_env({"url": "u", "model": "m", "style": "llama-chat"}, decision=0, score="off")
         self.assertEqual("off", off["E4_DECISION_THINKING"])
+
+    def test_env_sends_the_slot_context_and_no_fixed_reply_cap(self):
+        saved = os.environ.pop(e4_engine.MAX_TOKENS_ENV, None)
+        try:
+            env = e4_engine.build_env({"url": "u", "model": "m", "style": "ninfer-messages"}, decision=0, score="off")
+            self.assertEqual("65536", env["E4_LLM_SLOT_CTX"])
+            self.assertEqual(65536, e4_engine.slot_ctx())
+            self.assertNotIn("E4_LLM_MAX_TOKENS", env, "the cap is computed per request from the prompt now")
+            os.environ[e4_engine.MAX_TOKENS_ENV] = "20000"
+            self.assertEqual("20000", e4_engine.build_env({"url": "u", "model": "m", "style": "ninfer-messages"}, decision=0, score="off")["E4_LLM_MAX_TOKENS"])
+            os.environ[e4_engine.SLOT_CTX_ENV] = "40000"
+            self.assertEqual("40000", e4_engine.build_env({"url": "u", "model": "m", "style": "ninfer-messages"}, decision=0, score="off")["E4_LLM_SLOT_CTX"])
+        finally:
+            os.environ.pop(e4_engine.SLOT_CTX_ENV, None)
+            os.environ.pop(e4_engine.MAX_TOKENS_ENV, None)
+            if saved is not None:
+                os.environ[e4_engine.MAX_TOKENS_ENV] = saved
 
     def test_find_node_prefers_env_then_file_then_path(self):
         if not NODE:

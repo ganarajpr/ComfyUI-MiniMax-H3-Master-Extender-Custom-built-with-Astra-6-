@@ -7,9 +7,44 @@
 //     a budget N: thinking enabled with budget_tokens N (ninfer), reasoning_budget_tokens N (llama), reasoning {max_tokens: N} (openrouter)
 //   - the wire 'llama-chat' (E4_LLM_API_STYLE): llama.cpp / Strata chat completions, no key, the thinking budget as the TOP-LEVEL fields reasoning_budget_tokens and
 //     reasoning_budget_message (E4_LLM_BUDGET_MESSAGE), the same per-kind budgets as ninfer-messages
-//   - E4_LLM_MAX_TOKENS caps max_tokens of every call to what the server's context slot holds
+//   - E4_LLM_SLOT_CTX (the context of one server slot) caps max_tokens of every call per request: the slot minus the estimated prompt minus a margin (outputRoom), never above
+//     the call's own setting and never below 4096. E4_LLM_MAX_TOKENS stays an optional hard ceiling over that.
 // Every other call kind, on the two E4.6 wires, builds exactly the request E4.6 builds (test/e47.test.mjs and replay-check.mjs prove it).
 import { API_STYLE, BASE, MODEL, buildRequest as buildRequest46, thinkBudget } from '../hybrid3/lib.mjs';
+
+const MIN_OUTPUT = 4096;          // a reply always gets this much, whatever the prompt
+const MARGIN = 1024;              // slack for the chat template and the estimate's error
+const IMAGE_TOKENS = 1100;        // a reference picture is sent at most 1,024 tokens
+const LATIN_CHARS_PER_TOKEN = 2.5; // English is nearer 4; this over-counts on purpose
+
+// Conservative prompt size in tokens: Latin text at 2.5 characters a token, every character outside Latin (Devanagari, Kannada, CJK ...) at one token, a picture at 1100.
+export function estimatePromptTokens(messages) {
+  let latin = 0, wide = 0, images = 0;
+  const count = (text) => { for (const ch of String(text ?? '')) { if (ch.codePointAt(0) < 0x250) latin += 1; else wide += 1; } };
+  for (const m of messages || []) {
+    if (typeof m.content === 'string') count(m.content);
+    else for (const part of m.content || []) {
+      if (part.type === 'text') count(part.text);
+      else if (part.type === 'image' || part.type === 'image_url') images += 1;
+      else count(JSON.stringify(part));
+    }
+    latin += 10;
+  }
+  return Math.ceil(latin / LATIN_CHARS_PER_TOKEN + wide + images * IMAGE_TOKENS);
+}
+
+// The most a reply to these messages may use: the slot (E4_LLM_SLOT_CTX) minus the prompt minus a margin, under the optional hard ceiling E4_LLM_MAX_TOKENS.
+// Infinity when neither is set.
+export function outputRoom(messages) {
+  const slot = Number(process.env.E4_LLM_SLOT_CTX) || 0, hard = Number(process.env.E4_LLM_MAX_TOKENS) || 0;
+  let room = Infinity;
+  if (slot) { const prompt = estimatePromptTokens(messages); room = Math.max(MIN_OUTPUT, slot - Math.ceil(prompt * 1.05) - MARGIN); }
+  if (hard) room = Math.min(room, hard);
+  return room;
+}
+
+// The max_tokens of a call: its own setting, lowered to the room the prompt leaves.
+export const outputCap = (messages, requested) => Math.min(requested, outputRoom(messages));
 
 export const DEFAULT_BUDGET_MESSAGE = 'Time to stop thinking. Give the final answer now.';
 
@@ -36,7 +71,6 @@ export function buildRequest(messages, settings, kind) {
       else if (API_STYLE === 'openrouter') r.body.reasoning = think === 0 ? { enabled: false } : { max_tokens: think };
     }
   }
-  const cap = Number(process.env.E4_LLM_MAX_TOKENS) || 0;
-  if (cap && r.body.max_tokens > cap) r.body.max_tokens = cap;
+  if (r.body.max_tokens > 0) r.body.max_tokens = outputCap(messages, r.body.max_tokens);
   return r;
 }

@@ -374,21 +374,26 @@ export class PlanError extends Error {}
 
 // One call; on an unparseable reply or any failed check, exactly one retry with the complaint appended (the Studio's own discipline).
 // After the retry soft issues are kept (and returned); an unparseable reply twice raises PlanError.
-// `chat(messages, attempt) -> reply text`.
+// `chat(messages, attempt) -> reply text`, or `{ text, cut: { note, max_tokens } }` when the server stopped the reply at max_tokens (the retry then asks for shorter field values).
 export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () => {} } = {}) {
   const user = buildUserContent(story, null, seconds);
   let complaint = [], parsed = null, issues = [];
-  const attempts = [];
+  const attempts = [], cuts = [];
   // E4.6: the plan checks of issue #7 (speech in prose, sequence continuity) get one more retry, and so do E4.8's visible-state checks (option wording, state changes against end_state); every other failure keeps the single retry of E4.2.
   for (let attempt = 0; attempt < 3; attempt++) {
     const content = complaint.length ? `${user}\n\nYOUR PREVIOUS REPLY FAILED THESE CHECKS — CORRECT EXACTLY THIS AND NOTHING ELSE:\n${complaint.join('\n')}` : user;
-    const reply = await chat([{ role: 'user', content }], attempt);
+    const got = await chat([{ role: 'user', content }], attempt);
+    const reply = typeof got === 'string' ? got : got.text;
+    const cut = typeof got === 'string' ? null : got.cut || null;
+    if (cut) cuts.push(cut.note);
     parsed = parseBreakdown(reply);
     let rebalanced = [];
     if (parsed) { renumber(parsed); rebalanced = rebalanceDialogue(parsed); }
     if (!parsed) {
-      if (attempt >= 1) { attempts.push({ attempt: attempt + 1, parsed: false, issues: ['not parseable'] }); break; }
-      complaint = ['Your reply was not one valid JSON object in the OUTPUT FORMAT above (or had no clips). Reply with that JSON object only.'];
+      if (attempt >= 1) { attempts.push({ attempt: attempt + 1, parsed: false, issues: ['not parseable', ...(cut ? [cut.note] : [])] }); break; }
+      complaint = cut
+        ? [`Your reply was cut off at the output limit (max_tokens ${cut.max_tokens}) before the JSON object was complete. Write the SAME structure with shorter field values (fewer words in every description, one short sentence per shot where you can), and close every brace.`]
+        : ['Your reply was not one valid JSON object in the OUTPUT FORMAT above (or had no clips). Reply with that JSON object only.'];
       issues = [...complaint];
       attempts.push({ attempt: attempt + 1, parsed: false, issues });
       log(`attempt ${attempt + 1}: reply not parseable`);
@@ -402,6 +407,6 @@ export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () 
     complaint = issues;
     log(`attempt ${attempt + 1}: ${issues.length} issue(s): ${issues.slice(0, 4).join(' | ')}`);
   }
-  if (!parsed) throw new PlanError('the story planner returned no usable JSON twice');
+  if (!parsed) throw new PlanError(`the story planner returned no usable JSON twice${cuts.length ? ` (${[...new Set(cuts)].join('; ')})` : ''}`);
   return { breakdown: parsed, issues, attempts, rawAsks: [...parsed.clips].sort((a, b) => a.clip - b.clip).map((c) => rawAskForClip(parsed, c.clip)) };
 }

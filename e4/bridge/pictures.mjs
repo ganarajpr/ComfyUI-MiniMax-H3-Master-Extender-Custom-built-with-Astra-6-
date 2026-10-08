@@ -6,6 +6,7 @@ import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL } from '../planpath48/lib.mjs';
+import { outputCap } from '../planpath48/transport.mjs';
 
 // Its own call kind, not 'decision': the decision calls think off (E4.7 onward), but this one looks at pictures, and on the lane thinking off missed a character
 // (Pramod) that thinking 2048 and 4096 both found. E4_LLM_BUDGET_PICTURE_MAP sets its budget (2048 here).
@@ -142,10 +143,10 @@ export function redact(value) {
 }
 
 // One chat-completions request with the pictures as OpenAI image_url parts (the way the extender itself sends pictures to its ninfer-serve), used when
-// the Anthropic-style wire does not take them. The thinking is then the server's launch default, so max_tokens leaves room for it.
+// the Anthropic-style wire does not take them. The thinking is then the server's launch default, so max_tokens leaves room for it (ninfer's launch default thinking is 16384).
 async function chatCompletions(messages) {
   const base = process.env.E4_LLM_URL;
-  const body = { model: MODEL, messages, max_tokens: Number(process.env.E4_LLM_MAX_TOKENS) || 12288, temperature: 0, stream: false };
+  const body = { model: MODEL, messages, max_tokens: outputCap(messages, 22000), temperature: 0, stream: false };
   const t0 = Date.now();
   let res = null, raw = '', error = null;
   try {

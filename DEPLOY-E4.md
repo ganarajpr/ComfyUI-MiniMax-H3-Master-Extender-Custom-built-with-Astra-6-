@@ -41,7 +41,7 @@ Order of lookup: `MINIMAX_H3_E4_NODE`, then `e4_node.txt`, then `node` on PATH. 
 ```
 "C:\Users\user\tools\node-v20.20.2-win-x64\node.exe" e4\verify-frozen.mjs
 ```
-Expected last line: `e4 E4.8 (e4.8-frozen): 91 files checked, 3 patched (patches reversed), 88 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The three patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.8-frozen`.
+Expected last line: `e4 E4.8 (e4.8-frozen): 91 files checked, 7 patched (patches reversed), 88 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The three patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.8-frozen`.
 
 The tests need the embedded Python of ComfyUI (numpy and Pillow are there), Node, and no GPU (they use their own throw-away folders, so the node path comes from the environment, not from `e4_node.txt`):
 ```

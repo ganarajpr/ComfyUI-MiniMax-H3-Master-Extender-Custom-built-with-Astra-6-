@@ -1,7 +1,7 @@
 // E4 for one story: story -> plan (LLM 1) -> bible (LLM 2) -> per-clip decisions + code ledger -> clip writer (LLM 3, + repair only when a check fails).
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { call, parseJsonReply, parseJsonLoose, wr, rj, SETTINGS, MODEL, exists } from './lib.mjs';
+import { call, parseJsonReply, parseJsonLoose, wr, rj, SETTINGS, MODEL, exists, cutNote } from './lib.mjs';
 import { planStory, CAMERA_LABELS, parseBreakdown } from './planner.mjs';
 import { repairJson } from './jsonrepair.mjs';
 import { makeBible, entityList } from './bible.mjs';
@@ -32,7 +32,9 @@ export async function planAndBible({ name, story, outRoot, resume, language = 'E
   if (resume && existsSync(pf)) ({ plan, planMeta } = rj(pf));
   else {
     const chat = async (messages, attempt) => {
-      const text = (await call({ outRoot, dir: join(dir, 'planner'), name: attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages })).content;
+      const c = await call({ outRoot, dir: join(dir, 'planner'), name: attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages });
+      const text = c.content;
+      if (c.cut) return { text, cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };
       if (parseBreakdown(text)) return text;
       const r = repairJson(text);
       return r.ok ? JSON.stringify(r.value) : text;
@@ -42,9 +44,13 @@ export async function planAndBible({ name, story, outRoot, resume, language = 'E
     wr(pf, { plan, planMeta });
   }
   const bf = join(dir, 'bible.json');
-  if (resume && existsSync(bf)) ({ bible, bibleMeta } = rj(bf));
+  if (resume && existsSync(bf) && rj(bf).bible && !rj(bf).bibleMeta?.issues?.length) ({ bible, bibleMeta } = rj(bf));
   else {
-    const chat = async (messages, attempt) => parseJsonLoose((await call({ outRoot, dir: join(dir, 'bible'), name: attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages })).content);
+    const chat = async (messages, attempt) => {
+      const c = await call({ outRoot, dir: join(dir, 'bible'), name: attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages });
+      if (c.cut) return { ...parseJsonReply(c.content), cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };
+      return parseJsonLoose(c.content);
+    };
     const r = await makeBible(chat, story, plan, planMeta.rawAsks, { score });
     bible = r.bible; bibleMeta = { issues: r.issues, attempts: r.attempts };
     wr(bf, { bible, bibleMeta });
@@ -104,7 +110,7 @@ async function writeClip({ name, outRoot, plan, bible, story, rawAsks, fix, shot
   };
   let { c: gen, prose } = await gen1('round0.write', 'writer', prompt);
   if (!prose) ({ c: gen, prose } = await gen1('round0.write.resample', 'repair', prompt));
-  if (!prose) return { rec: { clip: rec.clip.clip, shotId: shot.id, failed: 'no parseable reply', cost: calls.reduce((a, c) => a + c.cost, 0) } };
+  if (!prose) return { rec: { clip: rec.clip.clip, shotId: shot.id, failed: `no parseable reply${gen?.cut ? ` (${cutNote(gen.cut)})` : ''}`, cost: calls.reduce((a, c) => a + c.cost, 0) } };
   prose = { ...prose, duration: rec.geom.duration };
   const masters = fix.film.masters;
   let ens = ensureLines(prose, shot, masters, fix);

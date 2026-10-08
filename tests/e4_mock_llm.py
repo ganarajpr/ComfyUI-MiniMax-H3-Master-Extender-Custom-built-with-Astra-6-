@@ -83,7 +83,7 @@ def record(run_dir: Path, out: Path) -> dict:
 class MockLLM:
     """``with MockLLM(fixture, mapping=fn) as llm:`` then ``llm.url``; ``llm.requests`` holds every body seen, ``llm.misses`` the unanswered ones."""
 
-    def __init__(self, fixture: dict | Path | None = None, mapping=None, port: int = 0, refuse_images_on_messages: bool = False):
+    def __init__(self, fixture: dict | Path | None = None, mapping=None, port: int = 0, refuse_images_on_messages: bool = False, cut_all: bool = False):
         if isinstance(fixture, (str, Path)):
             with gzip.open(fixture, "rt", encoding="utf-8") as handle:
                 fixture = json.load(handle)
@@ -91,6 +91,7 @@ class MockLLM:
         self.served = {}
         self.mapping = mapping
         self.refuse_images_on_messages = refuse_images_on_messages
+        self.cut_all = cut_all
         self.requests = []
         self.misses = []
         self.lock = threading.Lock()
@@ -123,6 +124,16 @@ class MockLLM:
                     with outer.lock:
                         outer.requests.append({"wire": wire, "key": "refused-images", "body": body})
                     return self._send(400, {"type": "error", "error": {"type": "invalid_request_error", "message": "image content is not supported on this wire"}})
+                if outer.cut_all:
+                    with outer.lock:
+                        outer.requests.append({"wire": wire, "key": "cut", "body": body})
+                    used = int(body.get("max_tokens") or 0)
+                    if wire == "messages":
+                        return self._send(200, {"id": "mock", "type": "message", "role": "assistant", "model": MODEL_ID,
+                                                "content": [{"type": "thinking", "thinking": "(cut)"}, {"type": "text", "text": '{"clips": [{"clip": 1, "beat": "a'}], "stop_reason": "max_tokens",
+                                                "usage": {"input_tokens": 1000, "output_tokens": used, "output_tokens_details": {"thinking_tokens": 4121}}})
+                    return self._send(200, {"id": "mock", "model": MODEL_ID, "choices": [{"index": 0, "finish_reason": "length", "message": {"role": "assistant", "content": '{"clips": [{"clip": 1, "beat": "a'}}],
+                                            "usage": {"prompt_tokens": 1000, "completion_tokens": used}})
                 text = outer.answer(body, wire)
                 if text is None:
                     return self._send(599, {"error": "no recording for this request"})
