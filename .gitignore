@@ -21,3 +21,4 @@ dist/
 .env
 .env.*
 *.log
+!e4/audit/dist/
