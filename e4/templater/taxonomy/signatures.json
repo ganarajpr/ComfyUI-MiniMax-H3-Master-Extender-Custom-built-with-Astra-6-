@@ -1,0 +1,121 @@
+{
+ "_sources": [
+  "Keyword -> code table written for this project from the unit definitions in facs.json and bap.json. A master-profile entry (a character tell) is matched by regex on its text; each match contributes its codes. Generic anatomy words only, no story words. Matches are logged per run in _provenance.json."
+ ],
+ "rules": [
+  {
+   "match": "jaw (?:sets?|clench\\w*|tight\\w*)|clench\\w*",
+   "codes": [
+    "AD31",
+    "AU24"
+   ],
+   "cat": null
+  },
+  {
+   "match": "swallow\\w*|throat working",
+   "codes": [
+    "AD80"
+   ],
+   "cat": null
+  },
+  {
+   "match": "pocket|double[- ]tap|\\btaps?\\b|thumb",
+   "codes": [
+    "BAP:Touch",
+    "BAP:Right finger(s) articulation"
+   ],
+   "cat": "BAP:Manipulator"
+  },
+  {
+   "match": "gaze (?:that )?slid\\w*|slides|eyes? lead\\w*|roam\\w*|dart\\w*",
+   "codes": [
+    "Gaze:Averted sideways",
+    "AU61",
+    "AU62"
+   ],
+   "cat": null
+  },
+  {
+   "match": "blink\\w*",
+   "codes": [
+    "AU45",
+    "AU43"
+   ],
+   "cat": null
+  },
+  {
+   "match": "pupils?|catchlights?",
+   "codes": [
+    "AU5"
+   ],
+   "cat": null
+  },
+  {
+   "match": "fixed|freez\\w*|still|locked",
+   "codes": [
+    "BAP:Head action hold",
+    "BAP:Trunk action hold"
+   ],
+   "cat": null
+  },
+  {
+   "match": "upward|eyes? going fixed",
+   "codes": [
+    "AU63"
+   ],
+   "cat": null
+  },
+  {
+   "match": "breath\\w*|ribs",
+   "codes": [
+    "CD-PU"
+   ],
+   "cat": null
+  },
+  {
+   "match": "center of gravity|centre of gravity",
+   "codes": [
+    "SE-PU",
+    "LSU+RSU"
+   ],
+   "cat": null
+  },
+  {
+   "match": "shoulders?[^.]*(?:up|drawn|forward|into)|shoulders? (?:up|drawn)",
+   "codes": [
+    "LSU+RSU",
+    "LSF+RSF"
+   ],
+   "cat": null
+  },
+  {
+   "match": "shrug\\w*",
+   "codes": [
+    "AD82"
+   ],
+   "cat": null
+  },
+  {
+   "match": "\\bnod\\b",
+   "codes": [
+    "BAP:Up-down head shake"
+   ],
+   "cat": null
+  },
+  {
+   "match": "neck|head (?:turn|lead)",
+   "codes": [
+    "HTuL-PU",
+    "NF-PU"
+   ],
+   "cat": null
+  },
+  {
+   "match": "hands?\\b[^.]*(?:slow|deliberate|steady)",
+   "codes": [
+    "BAP:Right finger(s) articulation"
+   ],
+   "cat": "BAP:Manipulator"
+  }
+ ]
+}

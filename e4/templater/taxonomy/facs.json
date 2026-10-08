@@ -1,0 +1,525 @@
+{
+ "_sources": [
+  "Ekman, P., & Friesen, W. V. (1978). Facial Action Coding System. Consulting Psychologists Press.",
+  "Ekman, P., Friesen, W. V., & Hager, J. C. (2002). Facial Action Coding System: The Manual (and Investigator's Guide). Research Nexus.",
+  "AU names, muscles and the AD/head/eye numbering were cross-checked on 2026-10-05 against https://en.wikipedia.org/wiki/Facial_Action_Coding_System (secondary source mirroring the 2002 manual); the FACS manual itself is commercial and was not accessed.",
+  "Intensity scale A (trace) to E (maximum): Ekman, Friesen & Hager (2002). The render adverbs and the per-unit 'render' phrases and 'minCloseness' are this project's own wording, not FACS text."
+ ],
+ "_note": "Unit codes are FACS codes. 'render' is neutral physical prose with {poss}/{adv} placeholders; it never contains the code or the word AU. 'minCloseness': 0 wide, 1 medium/OTS, 2 medium close-up, 3 close-up/ECU; a facial unit is on offer only when the shot is at least this close. Several descriptions read clinical (AU20, AU28, AU14, AU9, AU27): see README.",
+ "intensity": {
+  "A": {
+   "label": "trace",
+   "render": null
+  },
+  "B": {
+   "label": "slight",
+   "render": [
+    "slightly",
+    "a fraction",
+    "faintly"
+   ]
+  },
+  "C": {
+   "label": "marked",
+   "render": [
+    "visibly",
+    "noticeably",
+    "clearly"
+   ]
+  },
+  "D": {
+   "label": "severe",
+   "render": [
+    "sharply",
+    "hard",
+    "strongly"
+   ]
+  },
+  "E": {
+   "label": "maximum",
+   "render": null
+  }
+ },
+ "units": [
+  {
+   "code": "AU1",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Inner brow raiser",
+   "muscle": "frontalis, pars medialis",
+   "render": "the inner ends of {poss} brows lift {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "inner brows?|brows? (?:knit|lift|rise)|worried brow",
+   "region": "brow"
+  },
+  {
+   "code": "AU2",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Outer brow raiser",
+   "muscle": "frontalis, pars lateralis",
+   "render": "the outer ends of {poss} brows arch {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "brows? arch|raised brows?",
+   "region": "brow"
+  },
+  {
+   "code": "AU4",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Brow lowerer",
+   "muscle": "depressor glabellae, depressor supercilii, corrugator supercilii",
+   "render": "{poss} brows draw down and together {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "furrow\\w*|frown\\w*|brows? (?:draw|knit|lower)",
+   "region": "brow"
+  },
+  {
+   "code": "AU5",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Upper lid raiser",
+   "muscle": "levator palpebrae superioris, superior tarsal muscle",
+   "render": "{poss} upper lids lift, widening the eyes {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "eyes? widen\\w*|wide[- ]eyed|pupils? (?:seem to )?widen",
+   "region": "eye"
+  },
+  {
+   "code": "AU6",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Cheek raiser",
+   "muscle": "orbicularis oculi, pars orbitalis",
+   "render": "{poss} cheeks rise under the eyes {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "cheeks? rise|crow'?s feet",
+   "region": "eye"
+  },
+  {
+   "code": "AU7",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Lid tightener",
+   "muscle": "orbicularis oculi, pars palpebralis",
+   "render": "{poss} lower lids tighten, narrowing the eyes {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "eyes? narrow\\w*|narrowed eyes|squint\\w*",
+   "region": "eye"
+  },
+  {
+   "code": "AU9",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Nose wrinkler",
+   "muscle": "levator labii superioris alaeque nasi",
+   "render": "{poss} nose wrinkles {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "nose wrinkl\\w*",
+   "region": "nose"
+  },
+  {
+   "code": "AU10",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Upper lip raiser",
+   "muscle": "levator labii superioris, caput infraorbitalis",
+   "render": "{poss} upper lip lifts {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "upper lip lifts?|sneer\\w*",
+   "region": "mouth"
+  },
+  {
+   "code": "AU12",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Lip corner puller",
+   "muscle": "zygomaticus major",
+   "render": "the corners of {poss} mouth pull up and back {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "smil\\w+|mouth corners? (?:pull|lift)",
+   "region": "mouth"
+  },
+  {
+   "code": "AU14",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Dimpler",
+   "muscle": "buccinator",
+   "render": "the corners of {poss} mouth tighten into small hollows {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "dimpl\\w+",
+   "region": "mouth"
+  },
+  {
+   "code": "AU15",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Lip corner depressor",
+   "muscle": "depressor anguli oris",
+   "render": "the corners of {poss} mouth sink {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "mouth corners? (?:sink|drop|pull down)|frown\\w* mouth",
+   "region": "mouth"
+  },
+  {
+   "code": "AU17",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Chin raiser",
+   "muscle": "mentalis",
+   "render": "{poss} chin pushes up and {poss} lower lip rises {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "chin (?:pushes|rises|lifts)",
+   "region": "mouth"
+  },
+  {
+   "code": "AU20",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Lip stretcher",
+   "muscle": "risorius with platysma",
+   "render": "{poss} lips stretch back toward the ears {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "lips? stretch\\w*",
+   "region": "mouth"
+  },
+  {
+   "code": "AU23",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Lip tightener",
+   "muscle": "orbicularis oris",
+   "render": "{poss} lips tighten and narrow {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "lips? tighten\\w*",
+   "region": "mouth"
+  },
+  {
+   "code": "AU24",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Lip pressor",
+   "muscle": "orbicularis oris",
+   "render": "{poss} lips press together {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "lips? press\\w*|presses? (?:his|her|their) lips|lips? (?:seal|close)",
+   "region": "mouth"
+  },
+  {
+   "code": "AU25",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Lips part",
+   "muscle": "depressor labii inferioris, or relaxation of mentalis or orbicularis oris",
+   "render": "{poss} lips part {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "lips? part\\w*|mouth (?:opens|parts)",
+   "region": "mouth"
+  },
+  {
+   "code": "AU26",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Jaw drop",
+   "muscle": "masseter; relaxed temporalis and internal pterygoid",
+   "render": "{poss} jaw drops open {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "jaw drops?|jaw slack\\w*|jaw loosens?",
+   "region": "jaw"
+  },
+  {
+   "code": "AU27",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Mouth stretch",
+   "muscle": "pterygoids, digastric",
+   "render": "{poss} mouth stretches wide open {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "mouth stretch\\w*|gasp\\w*",
+   "region": "jaw"
+  },
+  {
+   "code": "AU28",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Lip suck",
+   "muscle": "orbicularis oris",
+   "render": "{poss} lips draw into the mouth {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "lips? (?:suck|draw in)",
+   "region": "mouth"
+  },
+  {
+   "code": "AU41",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Lid droop",
+   "muscle": "levator palpebrae superioris (relaxation)",
+   "render": "{poss} upper lids sag {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "lids? (?:droop|sag)|heavy[- ]lidded",
+   "region": "eye"
+  },
+  {
+   "code": "AU43",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Eyes closed",
+   "muscle": "relaxation of levator palpebrae superioris",
+   "render": "{poss} eyes close {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "eyes? clos\\w+|closes? (?:his|her|their) eyes|lids? (?:fall|lower)",
+   "region": "eye"
+  },
+  {
+   "code": "AU45",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Blink",
+   "muscle": "relaxation of levator palpebrae superioris; contraction of orbicularis oculi, pars palpebralis",
+   "render": "{poss} eyes blink, the lids lingering {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "blink\\w*",
+   "region": "eye"
+  },
+  {
+   "code": "AU46",
+   "system": "FACS",
+   "kind": "AU",
+   "name": "Wink",
+   "muscle": "orbicularis oculi",
+   "render": "one of {poss} eyes closes briefly",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "wink\\w*",
+   "region": "eye"
+  },
+  {
+   "code": "AU51",
+   "system": "FACS",
+   "kind": "HEAD",
+   "name": "Head turn left",
+   "muscle": "",
+   "render": "{poss} head turns toward frame left {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "head turns? (?:to )?(?:the )?left",
+   "region": "head"
+  },
+  {
+   "code": "AU52",
+   "system": "FACS",
+   "kind": "HEAD",
+   "name": "Head turn right",
+   "muscle": "",
+   "render": "{poss} head turns toward frame right {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "head turns? (?:to )?(?:the )?right",
+   "region": "head"
+  },
+  {
+   "code": "AU53",
+   "system": "FACS",
+   "kind": "HEAD",
+   "name": "Head up",
+   "muscle": "",
+   "render": "{poss} head lifts {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "head (?:lifts?|rises?|raises?)",
+   "region": "head"
+  },
+  {
+   "code": "AU54",
+   "system": "FACS",
+   "kind": "HEAD",
+   "name": "Head down",
+   "muscle": "",
+   "render": "{poss} head lowers {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "head (?:lowers?|drops?|bows?|dips?)",
+   "region": "head"
+  },
+  {
+   "code": "AU55",
+   "system": "FACS",
+   "kind": "HEAD",
+   "name": "Head tilt left",
+   "muscle": "",
+   "render": "{poss} head tilts toward frame left {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "head tilts? (?:to )?(?:the )?left",
+   "region": "head"
+  },
+  {
+   "code": "AU56",
+   "system": "FACS",
+   "kind": "HEAD",
+   "name": "Head tilt right",
+   "muscle": "",
+   "render": "{poss} head tilts toward frame right {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "head tilts? (?:to )?(?:the )?right",
+   "region": "head"
+  },
+  {
+   "code": "AU57",
+   "system": "FACS",
+   "kind": "HEAD",
+   "name": "Head forward",
+   "muscle": "",
+   "render": "{poss} head pushes forward {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "head (?:pushes|juts|moves) forward",
+   "region": "head"
+  },
+  {
+   "code": "AU58",
+   "system": "FACS",
+   "kind": "HEAD",
+   "name": "Head back",
+   "muscle": "",
+   "render": "{poss} head draws back {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "head (?:draws|pulls|moves) back",
+   "region": "head"
+  },
+  {
+   "code": "AU61",
+   "system": "FACS",
+   "kind": "EYE",
+   "name": "Eyes turn left",
+   "muscle": "",
+   "render": "{poss} eyes turn toward frame left {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "eyes? (?:turn|move|slide)s? (?:to )?(?:the )?left",
+   "region": "eye"
+  },
+  {
+   "code": "AU62",
+   "system": "FACS",
+   "kind": "EYE",
+   "name": "Eyes turn right",
+   "muscle": "",
+   "render": "{poss} eyes turn toward frame right {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "eyes? (?:turn|move|slide)s? (?:to )?(?:the )?right",
+   "region": "eye"
+  },
+  {
+   "code": "AU63",
+   "system": "FACS",
+   "kind": "EYE",
+   "name": "Eyes up",
+   "muscle": "",
+   "render": "{poss} eyes rise {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "eyes? (?:rise|lift|go up|look up)\\w*|eyes? (?:fixed )?upward",
+   "region": "eye"
+  },
+  {
+   "code": "AU64",
+   "system": "FACS",
+   "kind": "EYE",
+   "name": "Eyes down",
+   "muscle": "",
+   "render": "{poss} eyes drop {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 4,
+   "lexical": "eyes? (?:drop|lower|go down|look down)\\w*|eyes? downcast",
+   "region": "eye"
+  },
+  {
+   "code": "AD31",
+   "system": "FACS",
+   "kind": "AD",
+   "name": "Jaw clencher",
+   "muscle": "masseter",
+   "render": "{poss} jaw sets hard {adv}",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "jaw (?:sets?|clench\\w*|tighten\\w*)|clench\\w* (?:his|her|their) jaw",
+   "region": "jaw"
+  },
+  {
+   "code": "AD80",
+   "system": "FACS",
+   "kind": "AD",
+   "name": "Swallow",
+   "muscle": "",
+   "render": "{poss} throat works in a single swallow",
+   "minCloseness": 3,
+   "maxCloseness": 4,
+   "lexical": "swallow\\w*|throat working",
+   "region": "jaw"
+  },
+  {
+   "code": "AD82",
+   "system": "FACS",
+   "kind": "AD",
+   "name": "Shoulder shrug",
+   "muscle": "",
+   "render": "{poss} shoulders shrug {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "shrug\\w*",
+   "region": "shoulder"
+  },
+  {
+   "code": "AD85",
+   "system": "FACS",
+   "kind": "AD",
+   "name": "Head nod up and down",
+   "muscle": "",
+   "render": "{poss} head nods {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "\\bnods?\\b|nodding",
+   "region": "head"
+  },
+  {
+   "code": "AD84",
+   "system": "FACS",
+   "kind": "AD",
+   "name": "Head shake back and forth",
+   "muscle": "",
+   "render": "{poss} head shakes {adv}",
+   "minCloseness": 1,
+   "maxCloseness": 3,
+   "lexical": "head shakes?|shakes? (?:his|her|their) head",
+   "region": "head"
+  }
+ ]
+}

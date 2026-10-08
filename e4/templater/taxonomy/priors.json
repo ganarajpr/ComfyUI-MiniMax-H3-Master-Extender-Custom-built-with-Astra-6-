@@ -1,0 +1,276 @@
+{
+ "_sources": [
+  "Ekman, P., & Friesen, W. V. (1978). Facial Action Coding System; EMFACS prototype AU sets as tabulated at https://en.wikipedia.org/wiki/Facial_Action_Coding_System (fetched 2026-10-05): happiness 6+12; sadness 1+4+15; surprise 1+2+5B+26; fear 1+2+4+5+7+20+26; anger 4+5+7+23; disgust 9+15+17; contempt R12A+R14A.",
+  "Matsumoto, D., & Ekman, P. (2008). Facial expression analysis. Scholarpedia, 3(5):4237 (prototype AU configurations; 'major variants' not used).",
+  "The acting-state map is this project's own SHORTLIST generator: a state word selects candidate FACS/BAP codes by analogy to the prototypes above and to BAP posture literature (Dael, Mortillaro & Scherer 2012; Wallbott 1998 on posture/movement features by emotion). It is never a decision: Jev confirms each candidate per shot, and a code the shot size cannot show is dropped."
+ ],
+ "emotions": {
+  "happiness": [
+   "AU6",
+   "AU12"
+  ],
+  "sadness": [
+   "AU1",
+   "AU4",
+   "AU15"
+  ],
+  "surprise": [
+   "AU1",
+   "AU2",
+   "AU5",
+   "AU26"
+  ],
+  "fear": [
+   "AU1",
+   "AU2",
+   "AU4",
+   "AU5",
+   "AU7",
+   "AU20",
+   "AU26"
+  ],
+  "anger": [
+   "AU4",
+   "AU5",
+   "AU7",
+   "AU23"
+  ],
+  "disgust": [
+   "AU9",
+   "AU15",
+   "AU17"
+  ],
+  "contempt": [
+   "AU12",
+   "AU14"
+  ]
+ },
+ "states": [
+  {
+   "name": "composed",
+   "words": "compos\\w*|calm\\w*|steady|controlled|measured|even",
+   "units": [
+    "BAP:Spine straightening",
+    "BAP:Head action hold",
+    "AU24"
+   ],
+   "note": "low arousal, held"
+  },
+  {
+   "name": "alert",
+   "words": "alert\\w*|attentive|aware|notic\\w*|startl\\w*",
+   "units": [
+    "AU1",
+    "AU2",
+    "AU5",
+    "AU25",
+    "AU53",
+    "AU58",
+    "NB-PU",
+    "SE-PU"
+   ],
+   "note": "surprise-lite plus orienting"
+  },
+  {
+   "name": "recognizing",
+   "words": "recogni\\w*|realis\\w*|realiz\\w*|understand\\w*|dawn\\w*",
+   "units": [
+    "AU1",
+    "AU2",
+    "AU5",
+    "AU25",
+    "AU53",
+    "BAP:Head action hold"
+   ],
+   "note": "surprise prototype, low"
+  },
+  {
+   "name": "wary",
+   "words": "wary|tense\\w*|brac\\w*|guard\\w*|rattled|unnerv\\w*|uneasy|edgy|anxious",
+   "units": [
+    "AU4",
+    "AU7",
+    "AU23",
+    "AU24",
+    "LSU+RSU",
+    "NB-PU",
+    "AU5"
+   ],
+   "note": "anger/fear blend, low"
+  },
+  {
+   "name": "searching",
+   "words": "search\\w*|scan\\w*|seek\\w*|look\\w* for|hunt\\w*|prob\\w*",
+   "units": [
+    "AU61",
+    "AU62",
+    "AU63",
+    "AU64",
+    "AU51",
+    "AU52",
+    "AU5",
+    "Gaze:Averted sideways",
+    "BAP:Head action hold"
+   ],
+   "note": "gaze and head orienting"
+  },
+  {
+   "name": "verifying",
+   "words": "verif\\w*|confirm\\w*|check\\w*|test\\w*|certain|sure",
+   "units": [
+    "AU4",
+    "AU7",
+    "AU23",
+    "AU54",
+    "AU64",
+    "BAP:Touch",
+    "AD80",
+    "AU55"
+   ],
+   "note": "concentration plus self-touch"
+  },
+  {
+   "name": "surrendered",
+   "words": "surrender\\w*|resign\\w*|defeat\\w*|yield\\w*|submit\\w*|give[ns]? up|accept\\w*|settl\\w*",
+   "units": [
+    "AU1",
+    "AU15",
+    "AU17",
+    "AU43",
+    "AU54",
+    "LSD+RSD",
+    "CD-PU",
+    "SB-PU",
+    "HVD-PU"
+   ],
+   "note": "sadness prototype plus drop in posture"
+  },
+  {
+   "name": "anticipating",
+   "words": "anticipat\\w*|wait\\w*|expect\\w*|brac\\w*|poised|hold\\w*",
+   "units": [
+    "AU5",
+    "AU23",
+    "BAP:Head action hold",
+    "BAP:Trunk action hold",
+    "SE-PU",
+    "AU61",
+    "AU64"
+   ],
+   "note": "still, orienting"
+  },
+  {
+   "name": "afraid",
+   "words": "afraid|fear\\w*|terrif\\w*|dread\\w*|panic\\w*",
+   "units": [
+    "AU1",
+    "AU2",
+    "AU4",
+    "AU5",
+    "AU7",
+    "AU20",
+    "AU26",
+    "NB-PU"
+   ],
+   "note": "fear prototype"
+  },
+  {
+   "name": "angry",
+   "words": "ang\\w*|furious|enrag\\w*|hostile|defian\\w*",
+   "units": [
+    "AU4",
+    "AU5",
+    "AU7",
+    "AU23",
+    "AD31",
+    "LSF+RSF"
+   ],
+   "note": "anger prototype"
+  },
+  {
+   "name": "sad",
+   "words": "sad\\w*|grief\\w*|sorrow\\w*|mourn\\w*|despair\\w*|hopeless",
+   "units": [
+    "AU1",
+    "AU4",
+    "AU15",
+    "AU17",
+    "AU54",
+    "CD-PU"
+   ],
+   "note": "sadness prototype"
+  },
+  {
+   "name": "disgusted",
+   "words": "disgust\\w*|repuls\\w*|revolt\\w*",
+   "units": [
+    "AU9",
+    "AU10",
+    "AU15",
+    "AU17"
+   ],
+   "note": "disgust prototype"
+  },
+  {
+   "name": "contemptuous",
+   "words": "contempt\\w*|scorn\\w*|disdain\\w*",
+   "units": [
+    "AU12",
+    "AU14",
+    "AU58"
+   ],
+   "note": "contempt prototype (unilateral in the source; rendered bilaterally here)"
+  },
+  {
+   "name": "relieved",
+   "words": "reliev\\w*|exhal\\w*|ease[ds]?",
+   "units": [
+    "AU25",
+    "AU26",
+    "AU43",
+    "LSD+RSD",
+    "BAP:Downward/inward chest movement"
+   ],
+   "note": "release after tension"
+  },
+  {
+   "name": "determined",
+   "words": "determin\\w*|resolv\\w*|resolute|set on|firm",
+   "units": [
+    "AU4",
+    "AU23",
+    "AU24",
+    "AD31",
+    "SE-PU",
+    "BAP:Head action hold"
+   ],
+   "note": "anger-lite plus erect"
+  },
+  {
+   "name": "pressured",
+   "words": "pressur\\w*|strain\\w*|stress\\w*|overwhelm\\w*|trapped|cornered",
+   "units": [
+    "AU4",
+    "AU7",
+    "AU24",
+    "LSU+RSU",
+    "AD31",
+    "CD-PU"
+   ],
+   "note": "strain"
+  },
+  {
+   "name": "startled",
+   "words": "startl\\w*|jolt\\w*|flinch\\w*",
+   "units": [
+    "AU1",
+    "AU2",
+    "AU5",
+    "AU25",
+    "NB-PU",
+    "AD82"
+   ],
+   "note": "startle"
+  }
+ ]
+}

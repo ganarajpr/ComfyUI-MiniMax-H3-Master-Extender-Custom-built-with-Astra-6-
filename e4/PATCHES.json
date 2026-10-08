@@ -1,0 +1,70 @@
+[
+ {
+  "file": "hybrid3/lib.mjs",
+  "why": "(1) the dhee-core .env is optional (a local endpoint needs no key); (2) transport style 'llama-chat': llama.cpp chat completions with the top-level reasoning_budget_tokens and reasoning_budget_message fields; (3) E4_LLM_MAX_TOKENS caps max_tokens to what the server's per-slot context holds.",
+  "replacements": [
+   {
+    "find": "const env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8');",
+    "replace": "let env = ''; try { env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8'); } catch { /* no .env file: a local endpoint needs no key */ }"
+   },
+   {
+    "find": "  if (API_STYLE !== 'ninfer-messages') throw new Error(`E4_LLM_API_STYLE must be openrouter or ninfer-messages, got ${API_STYLE}`);",
+    "replace": "  if (API_STYLE === 'llama-chat') return { url: `${BASE}/v1/chat/completions`, headers: { 'Content-Type': 'application/json' }, body: { model: MODEL, messages, max_tokens: Math.min(settings.max_tokens, Number(process.env.E4_LLM_MAX_TOKENS) || settings.max_tokens), temperature: settings.temperature, reasoning_budget_tokens: thinkBudget(kind, settings), reasoning_budget_message: process.env.E4_LLM_BUDGET_MESSAGE || 'Time to stop thinking. Give the final answer now.' } };\n  if (API_STYLE !== 'ninfer-messages') throw new Error(`E4_LLM_API_STYLE must be openrouter, ninfer-messages or llama-chat, got ${API_STYLE}`);"
+   },
+   {
+    "find": "const body = { model: MODEL, max_tokens: settings.max_tokens, temperature: settings.temperature, thinking:",
+    "replace": "const body = { model: MODEL, max_tokens: Math.min(settings.max_tokens, Number(process.env.E4_LLM_MAX_TOKENS) || settings.max_tokens), temperature: settings.temperature, thinking:"
+   }
+  ]
+ },
+ {
+  "file": "planpath46/lib.mjs",
+  "why": "the dhee-core .env is optional (a local endpoint needs no key); HERE is a real file path (fileURLToPath), not URL.pathname, which is '/C:/...' on Windows.",
+  "replacements": [
+   {
+    "find": "const env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8');",
+    "replace": "let env = ''; try { env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8'); } catch { /* no .env file: a local endpoint needs no key */ }"
+   },
+   {
+    "find": "import { homedir } from 'node:os';",
+    "replace": "import { homedir } from 'node:os';\nimport { fileURLToPath } from 'node:url';"
+   },
+   {
+    "find": "export const HERE = dirname(new URL(import.meta.url).pathname);",
+    "replace": "export const HERE = dirname(fileURLToPath(import.meta.url));"
+   }
+  ]
+ },
+ {
+  "file": "planpath46/hybrid46/validate.mjs",
+  "why": "the h3-audit runner is vendored under e4/audit instead of ~/.kshana/runners.",
+  "replacements": [
+   {
+    "find": "import { auditShot } from '/Users/ganaraj/.kshana/runners/dhee-runner-h3-audit/dist/index.js';",
+    "replace": "import { auditShot } from '../../audit/dist/index.js';"
+   }
+  ]
+ },
+ {
+  "file": "planpath46/film.mjs",
+  "why": "hook for the Master Extender: bindPictures replaces the reference-image stage (buildRefs) when the user's own pictures are connected. Everything else is untouched.",
+  "replacements": [
+   {
+    "find": "export async function planAndBible({ name, story, outRoot, resume, language = 'English', refwriter = 'default', score = 'off' }) {",
+    "replace": "export async function planAndBible({ name, story, outRoot, resume, language = 'English', refwriter = 'default', score = 'off', bindPictures = null }) {"
+   },
+   {
+    "find": "  const rf = join(dir, 'refs', 'refs.json');",
+    "replace": "  if (bindPictures) { const refs = await bindPictures({ name, story, outRoot, bible, plan, planMeta }); wr(bf, { bible, bibleMeta }); return { plan, planMeta, bible, bibleMeta, refs }; }\n  const rf = join(dir, 'refs', 'refs.json');"
+   },
+   {
+    "find": "refwriter = 'default', refsOnly = false, score = 'off' }) {",
+    "replace": "refwriter = 'default', refsOnly = false, score = 'off', bindPictures = null }) {"
+   },
+   {
+    "find": "await planAndBible({ name, story, outRoot, resume, language, refwriter, score });",
+    "replace": "await planAndBible({ name, story, outRoot, resume, language, refwriter, score, bindPictures });"
+   }
+  ]
+ }
+]

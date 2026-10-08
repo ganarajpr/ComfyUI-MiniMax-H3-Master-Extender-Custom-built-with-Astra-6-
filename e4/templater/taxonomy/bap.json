@@ -1,0 +1,500 @@
+{
+ "_sources": [
+  "Dael, N., Mortillaro, M., & Scherer, K. R. (2012). The Body Action and Posture coding system (BAP): Development and reliability. Journal of Nonverbal Behavior, 36, 97-121. doi:10.1007/s10919-012-0130-0.",
+  "Unit names are the behavior variables of the BAP scheme as listed in the public supplementary material 'Appendix A: Complete List of Behavioral Variables of the BAP Coding Scheme' (BAP variables and reliability.pdf), downloaded from https://www.unige.ch/cisa/gemep/bap-coding on 2026-10-05.",
+  "Posture-unit codes (HVD-PU, SE-PU, CD-PU, LSU, A_hold_A_front, LH_pocket, ...) and the functional categories (Emblem, Illustrator, Manipulator, Beat, Deictic) are the track names in the public BAP manual (BAP Manual.zip, same page). The BAP XML scheme itself is password-gated and restricted from redistribution; it was not accessed and nothing from it is reproduced here.",
+  "Action units have no short code in the public material (the manual defines them through Head-AU/Trunk-AU/arm AU form attributes), so their code here is 'BAP:' + the official variable name. The paper PDF (doc.rero.ch) returned HTTP 410 and Springer is paywalled; the paper text was not read. The renderable descriptions and closeness limits are this project's own wording."
+ ],
+ "_note": "maxCloseness: the unit is on offer only when the shot is at most this close (0 wide only, 1 medium, 2 medium close-up, 3 close-up). An object insert (closeness 4) offers only units whose region is 'hand'. functionalCategories annotate signature entries (they are not rendered on their own).",
+ "units": [
+  {
+   "code": "HVD-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Vertical head tilt towards a downward position",
+   "render": "{poss} head tips down {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "head (?:tips|tilts) down|chin (?:drops|dips|tucks)",
+   "region": "head"
+  },
+  {
+   "code": "HVU-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Vertical head tilt towards an upward position",
+   "render": "{poss} head tips up {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "head (?:tips|tilts) up|chin lifts",
+   "region": "head"
+  },
+  {
+   "code": "HTuL-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Lateral head turn towards a left position",
+   "render": "{poss} head is turned toward frame left",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "head (?:turned|turns) (?:to )?(?:the )?left",
+   "region": "head"
+  },
+  {
+   "code": "HTuR-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Lateral head turn towards a right position",
+   "render": "{poss} head is turned toward frame right",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "head (?:turned|turns) (?:to )?(?:the )?right",
+   "region": "head"
+  },
+  {
+   "code": "HTiL-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Lateral head tilt towards a left position",
+   "render": "{poss} head tilts to one side {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "head tilts? (?:to )?(?:the )?left",
+   "region": "head"
+  },
+  {
+   "code": "NF-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Neck extension towards a forward head position",
+   "render": "{poss} neck extends, pushing the head forward {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "neck (?:extends|stretches)|head (?:juts|pushes) forward",
+   "region": "head"
+  },
+  {
+   "code": "NB-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Neck retraction towards a backward head position",
+   "render": "{poss} neck draws back, pulling the head away {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "neck (?:draws|pulls) back|recoil\\w*",
+   "region": "head"
+  },
+  {
+   "code": "SE-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Spine movement toward an erected position",
+   "render": "{poss} spine straightens, drawing {obj} upright {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "spine straighten\\w*|draws? (?:himself|herself|themselves) up|stiffen\\w*",
+   "region": "trunk"
+  },
+  {
+   "code": "SB-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Spine movement toward a bent position",
+   "render": "{poss} spine curves, the trunk sagging inward {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "spine (?:bends|curves)|slump\\w*|sag\\w*|sinks? (?:down )?into",
+   "region": "trunk"
+  },
+  {
+   "code": "CU-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Chest movement towards an upward or forward position",
+   "render": "{poss} chest lifts and opens {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "chest (?:lifts|rises|opens)",
+   "region": "trunk"
+  },
+  {
+   "code": "CD-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Chest movement towards a downward or inward position",
+   "render": "{poss} chest sinks inward {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "chest (?:sinks|drops|caves)|breath\\w* shallow\\w*|shallow breath\\w*",
+   "region": "trunk"
+  },
+  {
+   "code": "TLF-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Trunk lean towards a forward position",
+   "render": "{poss} upper body leans forward {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "leans? forward|leaning forward",
+   "region": "trunk"
+  },
+  {
+   "code": "TLB-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Trunk lean towards a backward position",
+   "render": "{poss} upper body leans back {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "leans? back\\w*",
+   "region": "trunk"
+  },
+  {
+   "code": "BF-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Whole body moves or leans towards a forward position",
+   "render": "{poss} whole body leans forward {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 0,
+   "lexical": "whole body (?:leans|moves) forward",
+   "region": "body"
+  },
+  {
+   "code": "BB-PU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Whole body moves or leans towards a backward position",
+   "render": "{poss} whole body leans back {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 0,
+   "lexical": "whole body (?:leans|moves) back",
+   "region": "body"
+  },
+  {
+   "code": "LSU+RSU",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Left shoulder up + Right shoulder up",
+   "render": "{poss} shoulders rise toward {poss} ears {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "shoulders? (?:rise|up|raised|drawn up|hunch\\w*)",
+   "region": "shoulder"
+  },
+  {
+   "code": "LSD+RSD",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Left shoulder down + Right shoulder down",
+   "render": "{poss} shoulders drop {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "shoulders? (?:drop|fall|sag|ease down|come down)",
+   "region": "shoulder"
+  },
+  {
+   "code": "LSF+RSF",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Left shoulder to the front + Right shoulder to the front",
+   "render": "{poss} shoulders roll forward {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "shoulders? (?:roll|curl|drawn)[^.]*forward|shoulders? forward",
+   "region": "shoulder"
+  },
+  {
+   "code": "LSB+RSB",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Left shoulder to the back + Right shoulder to the back",
+   "render": "{poss} shoulders pull back {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "shoulders? (?:pull|draw|squared) back",
+   "region": "shoulder"
+  },
+  {
+   "code": "AA_crossed",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Arms crossed",
+   "render": "{poss} arms are crossed over {poss} chest",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "arms? cross\\w*|folded arms|arms folded",
+   "region": "arms"
+  },
+  {
+   "code": "AA_front",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Both arms held in front",
+   "render": "{poss} hands are held together in front of {obj}",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "hands? (?:clasp\\w*|together|folded) (?:in front)?",
+   "region": "arms"
+  },
+  {
+   "code": "A_hold_A_back",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "One arm holds other in back",
+   "render": "{poss} hands are clasped behind {poss} back",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "hands? (?:clasped )?behind (?:his|her|their) back",
+   "region": "arms"
+  },
+  {
+   "code": "RA_side+LA_side",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Right arm at side + Left arm at side",
+   "render": "{poss} arms hang at {poss} sides",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "arms? (?:hang|hanging) (?:at|by)",
+   "region": "arms"
+  },
+  {
+   "code": "RH_pocket",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Right hand in pocket",
+   "render": "{poss} right hand sits in a pocket",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "hand (?:in|into|slides? into) (?:a |his |her )?pocket",
+   "region": "hand"
+  },
+  {
+   "code": "LH_neck",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Left hand at back of head/neck",
+   "render": "{poss} hand rests at the back of {poss} neck",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "hand (?:at|on|behind) (?:the back of )?(?:his|her|their) neck",
+   "region": "hand"
+  },
+  {
+   "code": "RH_waist",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Right hand at waist",
+   "render": "{poss} hand rests on {poss} hip",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "hand (?:on|at) (?:his|her|their) (?:hip|waist)",
+   "region": "hand"
+  },
+  {
+   "code": "Gaze:Upward",
+   "system": "BAP",
+   "kind": "gaze",
+   "name": "Gaze: Upward",
+   "render": "{poss} gaze lifts {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 3,
+   "lexical": "gaze (?:lifts|rises|upward)",
+   "region": "eye"
+  },
+  {
+   "code": "Gaze:Downward",
+   "system": "BAP",
+   "kind": "gaze",
+   "name": "Gaze: Downward",
+   "render": "{poss} gaze lowers {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 3,
+   "lexical": "gaze (?:lowers|drops|downward|falls)",
+   "region": "eye"
+  },
+  {
+   "code": "Gaze:Averted sideways",
+   "system": "BAP",
+   "kind": "gaze",
+   "name": "Gaze: Averted sideways",
+   "render": "{poss} gaze slips sideways {adv}",
+   "minCloseness": 2,
+   "maxCloseness": 3,
+   "lexical": "gaze (?:slides|slips|averts)|glances? (?:aside|away)",
+   "region": "eye"
+  },
+  {
+   "code": "Head orientation:Averted",
+   "system": "BAP",
+   "kind": "posture",
+   "name": "Head orientation: Averted",
+   "render": "{poss} face angles away {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "face angles? away|turns? away",
+   "region": "head"
+  },
+  {
+   "code": "BAP:Up-down head shake",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Up-down head shake",
+   "render": "{poss} head dips in a slow nod",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "\\bnods?\\b",
+   "region": "head"
+  },
+  {
+   "code": "BAP:Left-right head shake",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Left-right head shake",
+   "render": "{poss} head turns slowly from side to side",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "shakes? (?:his|her|their) head",
+   "region": "head"
+  },
+  {
+   "code": "BAP:Head action hold",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Head action hold",
+   "render": "{poss} head holds at one angle",
+   "minCloseness": 0,
+   "maxCloseness": 3,
+   "lexical": "head (?:holds|stills|freezes)|holds? (?:his|her|their) head",
+   "region": "head"
+  },
+  {
+   "code": "BAP:Forward trunk lean",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Forward trunk lean",
+   "render": "{poss} upper body leans in {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "leans? in\\b",
+   "region": "trunk"
+  },
+  {
+   "code": "BAP:Spine straightening",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Spine straightening",
+   "render": "{poss} spine straightens {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "straightens?",
+   "region": "trunk"
+  },
+  {
+   "code": "BAP:Downward/inward chest movement",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Downward/inward chest movement",
+   "render": "{poss} chest settles downward {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "chest (?:settles|falls)",
+   "region": "trunk"
+  },
+  {
+   "code": "BAP:Trunk action hold",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Trunk action hold",
+   "render": "{poss} torso holds still",
+   "minCloseness": 0,
+   "maxCloseness": 2,
+   "lexical": "torso (?:holds|stills)|body (?:stills|freezes|goes still)",
+   "region": "trunk"
+  },
+  {
+   "code": "BAP:Right finger(s) articulation",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Right finger(s) articulation",
+   "render": "the fingers of {poss} right hand shift {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "fingers? (?:shift|drum|flex|curl)\\w*",
+   "region": "hand"
+  },
+  {
+   "code": "BAP:Right wrist articulation",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Right wrist articulation",
+   "render": "{poss} right wrist turns {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "wrist (?:turns|rotates|flexes)",
+   "region": "hand"
+  },
+  {
+   "code": "BAP:Touch",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Touch (self-touch or object-touch)",
+   "render": "{poss} hand touches {poss} own mouth",
+   "minCloseness": 0,
+   "maxCloseness": 1,
+   "lexical": "touches? (?:his|her|their) (?:own )?(?:mouth|lips|face|neck)|hand (?:to|at) (?:his|her|their) (?:mouth|lips)",
+   "region": "hand"
+  },
+  {
+   "code": "BAP:Knee bend",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Knee bend",
+   "render": "{poss} knees bend {adv}",
+   "minCloseness": 0,
+   "maxCloseness": 0,
+   "lexical": "knees? bend\\w*",
+   "region": "legs"
+  },
+  {
+   "code": "BAP:Leg movement",
+   "system": "BAP",
+   "kind": "action",
+   "name": "Leg movement",
+   "render": "{poss} feet shift on the floor",
+   "minCloseness": 0,
+   "maxCloseness": 0,
+   "lexical": "feet shift\\w*|shifts? (?:his|her|their) weight",
+   "region": "legs"
+  }
+ ],
+ "functionalCategories": [
+  {
+   "code": "BAP:Manipulator",
+   "name": "Manipulator",
+   "definition": "An action in which one part of the body manipulates another body part (self manipulator) or an object (object manipulator) for some type of body contact or care (BAP manual, track Action_function.Manipulator, paraphrased)."
+  },
+  {
+   "code": "BAP:Illustrator",
+   "name": "Illustrator",
+   "definition": "A conversational action that supports accompanying speech by illustrating its rhythm or content (BAP manual, paraphrased)."
+  },
+  {
+   "code": "BAP:Emblem",
+   "name": "Emblem",
+   "definition": "A conventionalized body action with a culturally fixed form-meaning relationship (BAP manual, paraphrased)."
+  },
+  {
+   "code": "BAP:Beat",
+   "name": "Beat",
+   "definition": "A repetitive flicking or striking movement accentuating points in time (subtype of illustrator; BAP manual, paraphrased)."
+  },
+  {
+   "code": "BAP:Deictic",
+   "name": "Deictic",
+   "definition": "A referential movement indicating an object, person, event or location in space (subtype of illustrator; BAP manual, paraphrased)."
+  }
+ ]
+}
