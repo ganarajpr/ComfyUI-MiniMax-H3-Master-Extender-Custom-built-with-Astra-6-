@@ -36,7 +36,7 @@ try:
 except ImportError:
     HAVE_IMAGING = False
 
-NODE = shutil.which("node")
+NODE = os.environ.get(e4_engine.NODE_ENV) or shutil.which("node")
 FIXTURES = ROOT / "tests" / "fixtures"
 REPLAY = FIXTURES / "e4_replay.json.gz"
 META = json.loads((FIXTURES / "e4_replay_meta.json").read_text(encoding="utf-8")) if (FIXTURES / "e4_replay_meta.json").is_file() else None

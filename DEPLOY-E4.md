@@ -43,12 +43,14 @@ Order of lookup: `MINIMAX_H3_E4_NODE`, then `e4_node.txt`, then `node` on PATH. 
 ```
 Expected last line: `e4 E4.6 (e4.6-frozen): 89 files checked, 4 patched (patches reversed), 74 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The four patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.6-frozen`.
 
-The tests need the embedded Python of ComfyUI (numpy and Pillow are there) and no GPU:
+The tests need the embedded Python of ComfyUI (numpy and Pillow are there), Node, and no GPU (they use their own throw-away folders, so the node path comes from the environment, not from `e4_node.txt`):
 ```
 cd <ext>
+set MINIMAX_H3_E4_NODE=C:\Users\user\tools\node-v20.20.2-win-x64\node.exe
 ..\..\..\python_embeded\python.exe -m unittest discover -s tests -p "test_e4_engine.py"
 "C:\Users\user\tools\node-v20.20.2-win-x64\node.exe" --test e4\bridge\test\bridge.test.mjs
 ```
+(The module takes about 40 s: one test makes the model server refuse pictures, to prove the fallback wire, and waits out three transport retries.)
 `BuilderUnchanged` in that module is the proof that `story_engine=builder` makes the same requests as `b12b03d`.
 
 ## It takes effect when ComfyUI is restarted
