@@ -48,6 +48,7 @@ try:
 except Exception:  # static tests outside ComfyUI
     folder_paths = None
 
+from . import vram_release
 from .motion_context_ram import (
     FPS,
     _audio_exact_frames,
@@ -1372,6 +1373,7 @@ def normalize_final_decode(value):
 
 
 _FINAL_VAE_CACHE = {}
+vram_release.register(_FINAL_VAE_CACHE.clear)
 
 
 def load_final_vae(name):
