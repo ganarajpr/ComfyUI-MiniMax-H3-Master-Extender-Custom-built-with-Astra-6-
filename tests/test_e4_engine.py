@@ -442,6 +442,15 @@ class FrozenCopy(unittest.TestCase):
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
         self.assertIn("0 problem(s)", r.stdout)
 
+    def test_every_vendored_file_is_in_git(self):
+        """A .gitignore rule (dist/) once kept the vendored audit runner out of every commit, so a checkout could not run E4."""
+        git = shutil.which("git")
+        if not git or not (ROOT / ".git").exists():
+            self.skipTest("not a git checkout")
+        tracked = set(subprocess.run([git, "ls-files", "e4"], capture_output=True, text=True, cwd=str(ROOT)).stdout.split())
+        manifest = json.loads((ROOT / "e4" / "MANIFEST.json").read_text(encoding="utf-8"))
+        self.assertEqual([], sorted(f["path"] for f in manifest["files"] if f["path"] not in tracked))
+
     def tree(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
