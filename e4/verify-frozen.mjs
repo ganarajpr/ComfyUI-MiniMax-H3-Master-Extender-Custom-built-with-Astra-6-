@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Prove that the vendored E4.6 copy under e4/ is the frozen one.
+// Prove that the vendored E4.7 copy under e4/ is the frozen one.
 //   node e4/verify-frozen.mjs                          offline: every vendored file against MANIFEST.json, patches reversed, and against the
-//                                                      hashes of the freeze record (planpath46/E4.6-FROZEN.md) where the record lists the file
-//   node e4/verify-frozen.mjs --eval-repo DIR [--ref e4.6-frozen]
+//                                                      hashes of the freeze record (planpath47/E4.7-FROZEN.md) where the record lists the file
+//   node e4/verify-frozen.mjs --eval-repo DIR [--ref e4.7-frozen]
 //                                                      also: every file the git tag holds, read from the tag (git show), reversed the same way
 // A file is "frozen" when, with the declared replacements of PATCHES.json reversed, its bytes equal the source's. Exit 1 on any difference.
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
@@ -16,9 +16,9 @@ const ROOT = join(HERE, '..');
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
 const evalRepo = opt('eval-repo', null) && resolve(opt('eval-repo'));
-const ref = opt('ref', 'e4.6-frozen');
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 const manifest = JSON.parse(readFileSync(join(HERE, 'MANIFEST.json'), 'utf8'));
+const ref = opt('ref', manifest.ref);
 const patches = JSON.parse(readFileSync(join(HERE, 'PATCHES.json'), 'utf8'));
 
 function unpatch(rel, bytes) {
@@ -48,7 +48,7 @@ for (const f of manifest.files) {
   if (sha(u.bytes) !== f.sourceSha256) problems.push(`DIFFERS ${f.path}: with the declared patches reversed it is not the source`);
   if (f.freezeRecordSha256) {
     recordChecked += 1;
-    if (f.freezeRecordSha256 !== f.sourceSha256) problems.push(`RECORD ${f.path}: the source hash is not the one in E4.6-FROZEN.md`);
+    if (f.freezeRecordSha256 !== f.sourceSha256) problems.push(`RECORD ${f.path}: the source hash is not the one in E4.7-FROZEN.md`);
   }
   if (evalRepo && f.inTag) {
     const rel = f.source.replace(/^h3-prompt-eval:/, '');

@@ -34,11 +34,9 @@ export function loadFix(fixtureDir) {
 export const thinkBudget = (kind, settings) => Math.max(1024, Number(process.env[`E4_LLM_BUDGET_${String(kind || '').toUpperCase()}`] || process.env.E4_LLM_BUDGET || settings.reasoning?.max_tokens || 4096));
 export function buildRequest(messages, settings, kind) {
   if (API_STYLE === 'openrouter') return { url: `${BASE}/chat/completions`, headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' }, body: { model: MODEL, messages, ...settings } };
-  const off = String(process.env[`E4_LLM_THINKING_${String(kind || '').toUpperCase()}`] || '').toLowerCase() === 'off';
-  if (API_STYLE === 'llama-chat') return { url: `${BASE}/v1/chat/completions`, headers: { 'Content-Type': 'application/json' }, body: { model: MODEL, messages, max_tokens: Math.min(settings.max_tokens, Number(process.env.E4_LLM_MAX_TOKENS) || settings.max_tokens), temperature: settings.temperature, ...(off ? { chat_template_kwargs: { enable_thinking: false } } : { reasoning_budget_tokens: thinkBudget(kind, settings), reasoning_budget_message: process.env.E4_LLM_BUDGET_MESSAGE || 'Time to stop thinking. Give the final answer now.' }) } };
-  if (API_STYLE !== 'ninfer-messages') throw new Error(`E4_LLM_API_STYLE must be openrouter, ninfer-messages or llama-chat, got ${API_STYLE}`);
+  if (API_STYLE !== 'ninfer-messages') throw new Error(`E4_LLM_API_STYLE must be openrouter or ninfer-messages, got ${API_STYLE}`);
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
-  const body = { model: MODEL, max_tokens: Math.min(settings.max_tokens, Number(process.env.E4_LLM_MAX_TOKENS) || settings.max_tokens), temperature: settings.temperature, thinking: off ? { type: 'disabled' } : { type: 'enabled', budget_tokens: thinkBudget(kind, settings) }, messages: messages.filter((m) => m.role !== 'system') };
+  const body = { model: MODEL, max_tokens: settings.max_tokens, temperature: settings.temperature, thinking: { type: 'enabled', budget_tokens: thinkBudget(kind, settings) }, messages: messages.filter((m) => m.role !== 'system') };
   if (system) body.system = system;
   return { url: `${BASE}/v1/messages`, headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' }, body };
 }

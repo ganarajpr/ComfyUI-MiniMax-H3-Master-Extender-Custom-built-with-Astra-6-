@@ -118,34 +118,31 @@ test('E4 durations become whole seconds', () => {
 });
 
 const probe = (style, extra = {}, kind = 'decision') => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
-  `import('${new URL('../../hybrid3/lib.mjs', import.meta.url).href}').then((m) => console.log(JSON.stringify(m.buildRequest([{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], { max_tokens: 32000, reasoning: { max_tokens: 4096 }, temperature: 0.5 }, '${kind}'))))`],
-  { env: { ...process.env, E4_LLM_API_STYLE: style, E4_LLM_URL: 'http://h:1', E4_LLM_MODEL: 'm', E4_LLM_BUDGET_DECISION: '2048', E4_LLM_MAX_TOKENS: '12288', ...extra } }).toString());
+  `import('${new URL('../../planpath47/transport.mjs', import.meta.url).href}').then((m) => console.log(JSON.stringify(m.buildRequest([{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], { max_tokens: 32000, reasoning: { max_tokens: 4096 }, temperature: 0.5 }, '${kind}'))))`],
+  { env: { ...process.env, E4_LLM_API_STYLE: style, E4_LLM_URL: 'http://h:1', E4_LLM_MODEL: 'm', E4_LLM_MAX_TOKENS: '12288', E4_DECISION_THINKING: '', E4_LLM_BUDGET_PICTURE_MAP: '2048', ...extra } }).toString());
 
-test('the llama-chat style sends the founder\'s two top-level budget fields and the ninfer style a per-request thinking budget', () => {
-  const llama = probe('llama-chat');
+test('the vendored transport: llama-chat sends the two top-level budget fields, ninfer a per-request thinking budget, decisions think off by default', () => {
+  const llama = probe('llama-chat', {}, 'writer');
   assert.equal(llama.url, 'http://h:1/v1/chat/completions');
-  assert.equal(llama.body.reasoning_budget_tokens, 2048);
+  assert.equal(llama.body.reasoning_budget_tokens, 4096);
   assert.equal(llama.body.reasoning_budget_message, 'Time to stop thinking. Give the final answer now.');
   assert.equal(llama.body.max_tokens, 12288);
   assert.equal(llama.body.chat_template_kwargs, undefined);
-  assert.equal(llama.body.reasoning, undefined);
   assert.equal(llama.headers.Authorization, undefined);
-  const ninfer = probe('ninfer-messages');
+  const ninfer = probe('ninfer-messages', {}, 'writer');
   assert.equal(ninfer.url, 'http://h:1/v1/messages');
-  assert.deepEqual(ninfer.body.thinking, { type: 'enabled', budget_tokens: 2048 });
+  assert.deepEqual(ninfer.body.thinking, { type: 'enabled', budget_tokens: 4096 });
   assert.equal(ninfer.body.max_tokens, 12288);
   assert.equal(ninfer.body.system, 'S');
+  assert.deepEqual(probe('ninfer-messages').body.thinking, { type: 'disabled' }, 'a decision call, no E4_DECISION_THINKING: off');
+  assert.deepEqual(probe('llama-chat').body.chat_template_kwargs, { enable_thinking: false });
+  assert.deepEqual(probe('ninfer-messages', { E4_DECISION_THINKING: '2048' }).body.thinking, { type: 'enabled', budget_tokens: 2048 });
 });
 
-test('E4_LLM_THINKING_DECISION=off turns thinking off: disabled on ninfer, chat_template_kwargs on llama.cpp, never an omitted field or a top-level enable_thinking', () => {
-  const off = { E4_LLM_THINKING_DECISION: 'off' };
-  assert.deepEqual(probe('ninfer-messages', off).body.thinking, { type: 'disabled' });
-  const llama = probe('llama-chat', off);
-  assert.deepEqual(llama.body.chat_template_kwargs, { enable_thinking: false });
-  assert.equal(llama.body.reasoning_budget_tokens, undefined);
-  assert.equal(llama.body.reasoning_budget_message, undefined);
-  assert.equal(llama.body.enable_thinking, undefined);
-  assert.deepEqual(probe('ninfer-messages', off, 'writer').body.thinking, { type: 'enabled', budget_tokens: 4096 }, 'another kind keeps its budget');
+test('the picture-binding call is not a decision call: it thinks (2048) on every wire', () => {
+  assert.deepEqual(probe('ninfer-messages', {}, 'picture_map').body.thinking, { type: 'enabled', budget_tokens: 2048 });
+  assert.equal(probe('llama-chat', {}, 'picture_map').body.reasoning_budget_tokens, 2048);
+  assert.deepEqual(probe('ninfer-messages', { E4_DECISION_THINKING: 'off' }, 'picture_map').body.thinking, { type: 'enabled', budget_tokens: 2048 });
 });
 
 // ---- the binder, end to end against a canned model server

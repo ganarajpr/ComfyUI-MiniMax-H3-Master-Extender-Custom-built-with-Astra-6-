@@ -5,9 +5,11 @@
 import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL } from '../planpath46/lib.mjs';
+import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL } from '../planpath47/lib.mjs';
 
-export const MAP_KIND = 'decision';
+// Its own call kind, not 'decision': the decision calls think off (E4.7), but this one looks at pictures, and on the lane thinking off missed a character
+// (Pramod) that thinking 2048 and 4096 both found. E4_LLM_BUDGET_PICTURE_MAP sets its budget (2048 here).
+export const MAP_KIND = 'picture_map';
 export const MAP_SETTINGS = { max_tokens: 8000, reasoning: { max_tokens: 2048 }, temperature: 0 };
 
 // Characters, props and locations of the bible. A voice is never a subject, so it is never offered.
@@ -140,11 +142,10 @@ export function redact(value) {
 }
 
 // One chat-completions request with the pictures as OpenAI image_url parts (the way the extender itself sends pictures to its ninfer-serve), used when
-// the Anthropic-style wire does not take them. The thinking budget is then the server's launch default, so max_tokens leaves room for it.
+// the Anthropic-style wire does not take them. The thinking is then the server's launch default, so max_tokens leaves room for it.
 async function chatCompletions(messages) {
   const base = process.env.E4_LLM_URL;
   const body = { model: MODEL, messages, max_tokens: Number(process.env.E4_LLM_MAX_TOKENS) || 12288, temperature: 0, stream: false };
-  if (String(process.env[`E4_LLM_THINKING_${MAP_KIND.toUpperCase()}`] || '').toLowerCase() === 'off') body.chat_template_kwargs = { enable_thinking: false };
   const t0 = Date.now();
   let res = null, raw = '', error = null;
   try {

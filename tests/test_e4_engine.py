@@ -200,9 +200,10 @@ class EngineTests(unittest.TestCase):
         self.assertEqual({"messages"}, {r["wire"] for r in run.llm.requests})
         kinds = self.kinds(run)
         self.assertEqual({"decision", "map", "plan", "other"}, set(kinds))
-        for kind in ("decision", "map"):
-            for r in kinds[kind]:
-                self.assertEqual({"type": "disabled"}, r["body"]["thinking"], f"{kind}: thinking off is sent as disabled, never omitted")
+        for r in kinds["decision"]:
+            self.assertEqual({"type": "disabled"}, r["body"]["thinking"], "thinking off is sent as disabled, never omitted")
+        for r in kinds["map"]:
+            self.assertEqual({"type": "enabled", "budget_tokens": 2048}, r["body"]["thinking"], "the picture binding looks at images and thinks")
         for kind in ("plan", "other"):
             for r in kinds[kind]:
                 self.assertEqual({"type": "enabled", "budget_tokens": 4096}, r["body"]["thinking"], "planner, bible, writer and repairs think 4096 at most")
@@ -212,8 +213,8 @@ class EngineTests(unittest.TestCase):
     def test_decision_thinking_is_configurable(self):
         run = self.run_engine("ninfer-2048", settings=settings_for(self.story, e4_decision_budget="2048"))
         kinds = self.kinds(run)
-        for kind in ("decision", "map"):
-            self.assertEqual({2048}, {r["body"]["thinking"]["budget_tokens"] for r in kinds[kind]})
+        self.assertEqual({2048}, {r["body"]["thinking"]["budget_tokens"] for r in kinds["decision"]})
+        self.assertEqual({2048}, {r["body"]["thinking"]["budget_tokens"] for r in kinds["map"]})
         self.assertEqual({4096}, {r["body"]["thinking"]["budget_tokens"] for r in kinds["plan"] + kinds["other"]})
         self.assertEqual([c["prompt"] for c in self.run_engine("ninfer").clips], [c["prompt"] for c in run.clips])
 
@@ -226,10 +227,13 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(4096, r["body"]["reasoning_budget_tokens"])
             self.assertEqual("Time to stop thinking. Give the final answer now.", r["body"]["reasoning_budget_message"])
             self.assertNotIn("chat_template_kwargs", r["body"])
-        for r in kinds["decision"] + kinds["map"]:
+        for r in kinds["decision"]:
             self.assertEqual({"enable_thinking": False}, r["body"]["chat_template_kwargs"], "thinking off is chat_template_kwargs, not a top-level field")
             self.assertNotIn("reasoning_budget_tokens", r["body"])
             self.assertNotIn("enable_thinking", r["body"])
+        for r in kinds["map"]:
+            self.assertEqual(2048, r["body"]["reasoning_budget_tokens"])
+            self.assertNotIn("chat_template_kwargs", r["body"])
         for r in run.llm.requests:
             self.assertNotIn("thinking", r["body"])
         ninfer = self.run_engine("ninfer")
@@ -254,7 +258,6 @@ class EngineTests(unittest.TestCase):
         chat = [r for r in llm.requests if r["wire"] == "chat" and "binding the reference pictures" in json.dumps(r["body"]["messages"])]
         self.assertEqual(1, len(chat))
         self.assertEqual(len(self.labels), len([p for p in chat[0]["body"]["messages"][0]["content"] if p["type"] == "image_url"]))
-        self.assertEqual({"enable_thinking": False}, chat[0]["body"]["chat_template_kwargs"])
         mapping = json.loads(next(user.rglob("map.json")).read_text(encoding="utf-8"))
         self.assertIn("/v1/chat/completions", mapping["fallbackWire"])
         self.assertTrue(all(c["prompt_rewritten"] for c in clips))
@@ -416,27 +419,27 @@ class FrozenCopy(unittest.TestCase):
 
     def test_a_changed_frozen_file_is_caught(self):
         tmp = self.tree()
-        target = tmp / "e4" / "planpath46" / "planner.mjs"
+        target = tmp / "e4" / "planpath47" / "planner.mjs"
         target.write_text(target.read_text(encoding="utf-8") + "\n// edited\n", encoding="utf-8")
         r = self.verify(tmp)
         self.assertEqual(1, r.returncode)
-        self.assertIn("CHANGED e4/planpath46/planner.mjs", r.stdout)
+        self.assertIn("CHANGED e4/planpath47/planner.mjs", r.stdout)
 
     def test_an_edit_inside_a_patched_file_outside_the_patch_is_caught(self):
         tmp = self.tree()
-        target = tmp / "e4" / "planpath46" / "film.mjs"
+        target = tmp / "e4" / "planpath47" / "film.mjs"
         text = target.read_text(encoding="utf-8")
         target.write_text(text.replace("const pad = (n)", "const padd = (n)", 1), encoding="utf-8")
         r = self.verify(tmp)
         self.assertEqual(1, r.returncode)
         manifest = json.loads((tmp / "e4" / "MANIFEST.json").read_text(encoding="utf-8"))
         for f in manifest["files"]:
-            if f["path"] == "e4/planpath46/film.mjs":
+            if f["path"] == "e4/planpath47/film.mjs":
                 f["vendoredSha256"] = __import__("hashlib").sha256(target.read_bytes()).hexdigest()
         (tmp / "e4" / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
         r = self.verify(tmp)
         self.assertEqual(1, r.returncode, "even with the manifest updated, the patched file must reverse to the source")
-        self.assertIn("DIFFERS e4/planpath46/film.mjs", r.stdout)
+        self.assertIn("DIFFERS e4/planpath47/film.mjs", r.stdout)
 
     def test_an_unlisted_file_is_caught(self):
         tmp = self.tree()
@@ -457,7 +460,7 @@ class FrozenCopy(unittest.TestCase):
         home = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, home, True)
         env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
-        for entry in ("planpath46/film.mjs", "bridge/run.mjs"):
+        for entry in ("planpath47/film.mjs", "bridge/run.mjs"):
             if entry == "bridge/run.mjs":
                 continue
             r = subprocess.run([NODE, "--input-type=module", "-e", f"await import('{(ROOT / 'e4' / entry).as_uri()}'); console.log('ok')"], capture_output=True, text=True, env=env)
@@ -500,19 +503,21 @@ class PythonSide(unittest.TestCase):
 
     def test_env_carries_the_budgets_and_clears_stale_e4_variables(self):
         os.environ["E4_LLM_BUDGET"] = "999"
+        os.environ["E4_DECISION_THINKING"] = "4096"
         try:
             env = e4_engine.build_env({"url": "u", "model": "m", "style": "llama-chat"}, decision=1024, score="on")
         finally:
             del os.environ["E4_LLM_BUDGET"]
+            del os.environ["E4_DECISION_THINKING"]
         self.assertNotIn("E4_LLM_BUDGET", env)
         for kind in ("PLANNER", "BIBLE", "WRITER", "REPAIR"):
             self.assertEqual("4096", env[f"E4_LLM_BUDGET_{kind}"])
-        self.assertEqual("1024", env["E4_LLM_BUDGET_DECISION"])
-        self.assertNotIn("E4_LLM_THINKING_DECISION", env)
+        self.assertEqual("2048", env["E4_LLM_BUDGET_PICTURE_MAP"])
+        self.assertEqual("1024", env["E4_DECISION_THINKING"])
+        self.assertNotIn("E4_LLM_BUDGET_DECISION", env)
         self.assertEqual("on", env["E4_SCORE"])
         off = e4_engine.build_env({"url": "u", "model": "m", "style": "llama-chat"}, decision=0, score="off")
-        self.assertEqual("off", off["E4_LLM_THINKING_DECISION"])
-        self.assertNotIn("E4_LLM_BUDGET_DECISION", off)
+        self.assertEqual("off", off["E4_DECISION_THINKING"])
 
     def test_find_node_prefers_env_then_file_then_path(self):
         if not NODE:

@@ -1,6 +1,7 @@
 // One targeted repair call: the shot JSON goes back with the exact offending sentences and the rule each breaks;
 // the reply is accepted only if every other sentence and field is byte-identical.
-import { chat, parseJsonReply, sentences } from '../../hybrid3/lib.mjs';
+import { parseJsonReply, sentences } from '../../hybrid3/lib.mjs';
+import { chat } from '../lib.mjs';
 import { RULE } from './validate.mjs';
 
 export function buildRepairMessages(prose, sceneId, map, facts, note) {

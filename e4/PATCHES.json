@@ -1,46 +1,16 @@
 [
  {
   "file": "hybrid3/lib.mjs",
-  "why": "(1) the dhee-core .env is optional (a local endpoint needs no key); (2) transport style 'llama-chat': llama.cpp chat completions with the top-level reasoning_budget_tokens and reasoning_budget_message fields; (3) E4_LLM_MAX_TOKENS caps max_tokens to what the server's per-slot context holds; (4) E4_LLM_THINKING_<KIND>=off turns thinking off for that kind of call (ninfer: thinking {type: disabled}; llama.cpp: chat_template_kwargs {enable_thinking: false}), used for the per-clip decision calls.",
+  "why": "the dhee-core .env is optional (a local endpoint needs no key). hybrid3/lib.mjs is shared by every E4 version and frozen, so E4.7 cannot change it; E4.7's own lib.mjs is already tolerant.",
   "replacements": [
    {
     "find": "const env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8');",
     "replace": "let env = ''; try { env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8'); } catch { /* no .env file: a local endpoint needs no key */ }"
-   },
-   {
-    "find": "  if (API_STYLE !== 'ninfer-messages') throw new Error(`E4_LLM_API_STYLE must be openrouter or ninfer-messages, got ${API_STYLE}`);",
-    "replace": "  const off = String(process.env[`E4_LLM_THINKING_${String(kind || '').toUpperCase()}`] || '').toLowerCase() === 'off';\n  if (API_STYLE === 'llama-chat') return { url: `${BASE}/v1/chat/completions`, headers: { 'Content-Type': 'application/json' }, body: { model: MODEL, messages, max_tokens: Math.min(settings.max_tokens, Number(process.env.E4_LLM_MAX_TOKENS) || settings.max_tokens), temperature: settings.temperature, ...(off ? { chat_template_kwargs: { enable_thinking: false } } : { reasoning_budget_tokens: thinkBudget(kind, settings), reasoning_budget_message: process.env.E4_LLM_BUDGET_MESSAGE || 'Time to stop thinking. Give the final answer now.' }) } };\n  if (API_STYLE !== 'ninfer-messages') throw new Error(`E4_LLM_API_STYLE must be openrouter, ninfer-messages or llama-chat, got ${API_STYLE}`);"
-   },
-   {
-    "find": "const body = { model: MODEL, max_tokens: settings.max_tokens, temperature: settings.temperature, thinking:",
-    "replace": "const body = { model: MODEL, max_tokens: Math.min(settings.max_tokens, Number(process.env.E4_LLM_MAX_TOKENS) || settings.max_tokens), temperature: settings.temperature, thinking:"
-   },
-   {
-    "find": "thinking: { type: 'enabled', budget_tokens: thinkBudget(kind, settings) }",
-    "replace": "thinking: off ? { type: 'disabled' } : { type: 'enabled', budget_tokens: thinkBudget(kind, settings) }"
    }
   ]
  },
  {
-  "file": "planpath46/lib.mjs",
-  "why": "the dhee-core .env is optional (a local endpoint needs no key); HERE is a real file path (fileURLToPath), not URL.pathname, which is '/C:/...' on Windows.",
-  "replacements": [
-   {
-    "find": "const env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8');",
-    "replace": "let env = ''; try { env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8'); } catch { /* no .env file: a local endpoint needs no key */ }"
-   },
-   {
-    "find": "import { homedir } from 'node:os';",
-    "replace": "import { homedir } from 'node:os';\nimport { fileURLToPath } from 'node:url';"
-   },
-   {
-    "find": "export const HERE = dirname(new URL(import.meta.url).pathname);",
-    "replace": "export const HERE = dirname(fileURLToPath(import.meta.url));"
-   }
-  ]
- },
- {
-  "file": "planpath46/hybrid46/validate.mjs",
+  "file": "planpath47/hybrid46/validate.mjs",
   "why": "the h3-audit runner is vendored under e4/audit instead of ~/.kshana/runners.",
   "replacements": [
    {
@@ -50,7 +20,7 @@
   ]
  },
  {
-  "file": "planpath46/film.mjs",
+  "file": "planpath47/film.mjs",
   "why": "hook for the Master Extender: bindPictures replaces the reference-image stage (buildRefs) when the user's own pictures are connected. Everything else is untouched.",
   "replacements": [
    {

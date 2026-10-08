@@ -31,10 +31,11 @@ ENGINES = ["builder", "e4"]
 SCORES = ["off", "on"]
 DECISION_THINKING = ["off", "1024", "2048", "4096"]
 DECISION_BUDGETS = DECISION_THINKING
-ENGINE_NAME = "E4.6"
-ENGINE_TAG = "e4.6-frozen"
+ENGINE_NAME = "E4.7"
+ENGINE_TAG = "e4.7-frozen"
 
 PLAN_BUDGET = 4096          # planner, bible and writer (and the repairs) think at most this many tokens per call
+PICTURE_BUDGET = 2048       # the call that binds the pictures to the entities looks at images: with thinking off it missed a character that thinking 2048 and 4096 found
 DECISION_BUDGET_DEFAULT = "off"
 BUDGET_MESSAGE = "Time to stop thinking. Give the final answer now."
 SLOT_CTX = 32768            # context of one server slot an E4 call may use (largest measured call: 15k prompt + 8k answer)
@@ -205,20 +206,18 @@ def decode_picture(data_uri: str) -> bytes:
 
 
 def build_env(endpoint: dict, *, decision: int, score: str, budget_message: str = BUDGET_MESSAGE) -> dict:
+    """E4's config layer, as environment variables. ``decision`` 0 = the per-clip decision calls think off (E4_DECISION_THINKING=off), else their budget."""
     env = dict(os.environ)
-    for key in [k for k in env if k.startswith("E4_LLM_")]:
+    for key in [k for k in env if k.startswith("E4_LLM_") or k == "E4_DECISION_THINKING"]:
         del env[key]
     env.update({
         "E4_LLM_URL": endpoint["url"], "E4_LLM_MODEL": endpoint["model"] or "local", "E4_LLM_API_STYLE": endpoint["style"],
         "E4_LLM_BUDGET_PLANNER": str(PLAN_BUDGET), "E4_LLM_BUDGET_BIBLE": str(PLAN_BUDGET), "E4_LLM_BUDGET_WRITER": str(PLAN_BUDGET),
-        "E4_LLM_BUDGET_REPAIR": str(PLAN_BUDGET),
+        "E4_LLM_BUDGET_REPAIR": str(PLAN_BUDGET), "E4_LLM_BUDGET_PICTURE_MAP": str(PICTURE_BUDGET),
+        "E4_DECISION_THINKING": str(decision) if decision else "off",
         "E4_LLM_MAX_TOKENS": str(max_tokens()), "E4_LLM_BUDGET_MESSAGE": budget_message or BUDGET_MESSAGE,
         "E4_SCORE": score, "NODE_NO_WARNINGS": "1",
     })
-    if decision:
-        env["E4_LLM_BUDGET_DECISION"] = str(decision)
-    else:
-        env["E4_LLM_THINKING_DECISION"] = "off"
     return env
 
 

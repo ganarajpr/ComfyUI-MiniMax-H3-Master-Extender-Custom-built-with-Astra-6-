@@ -5,7 +5,8 @@ import { readFileSync, writeFileSync, mkdirSync, appendFileSync, existsSync } fr
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { SETTINGS, MODEL, BASE, API_STYLE, buildRequest, normalizeResponse, parseJsonReply, wr, rj } from '../hybrid3/lib.mjs';
+import { SETTINGS, MODEL, BASE, API_STYLE, normalizeResponse, parseJsonReply, wr, rj } from '../hybrid3/lib.mjs';
+import { buildRequest } from './transport.mjs';
 
 import { repairJson } from './jsonrepair.mjs';
 export { SETTINGS, MODEL, BASE, API_STYLE, parseJsonReply, wr, rj };
@@ -37,6 +38,25 @@ export async function chatWith(messages, settings = SETTINGS, { retries = 3, kin
       let resp = null; try { resp = normalizeResponse(JSON.parse(text)); } catch { /* raw kept */ }
       last = { body, status: res.status, raw: text, resp, secs: (Date.now() - t0) / 1000, attempt: a };
       if (res.ok && resp && !resp.error && resp.choices?.[0] && resp.choices[0].finish_reason !== 'error' && (resp.choices[0].message?.content || '').trim()) break;
+    } catch (e) { last = { body, error: String(e.message || e), secs: (Date.now() - t0) / 1000, attempt: a }; }
+    await new Promise((r) => setTimeout(r, 4000 * a));
+  }
+  const msg = last.resp?.choices?.[0]?.message || {};
+  return { ...last, content: msg.content || '', usage: last.resp?.usage || {}, cost: Number(last.resp?.usage?.cost || 0), finish: last.resp?.choices?.[0]?.finish_reason || null, reasoning: msg.reasoning || msg.reasoning_content || '' };
+}
+
+// One chat call of the hybrid repair (hybrid3/lib.mjs `chat`, byte for byte, but built by the E4.7 transport so every wire works for the repairs too).
+export async function chat(messages, { retries = 3 } = {}) {
+  const { url, headers, body } = buildRequest(messages, SETTINGS, 'repair');
+  let last = null;
+  for (let a = 1; a <= retries; a++) {
+    const t0 = Date.now();
+    try {
+      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(900000) });
+      const text = await res.text();
+      let resp = null; try { resp = normalizeResponse(JSON.parse(text)); } catch { /* raw kept */ }
+      last = { body, status: res.status, raw: text, resp, secs: (Date.now() - t0) / 1000, attempt: a };
+      if (res.ok && resp && !resp.error && resp.choices?.[0]) break;
     } catch (e) { last = { body, error: String(e.message || e), secs: (Date.now() - t0) / 1000, attempt: a }; }
     await new Promise((r) => setTimeout(r, 4000 * a));
   }
