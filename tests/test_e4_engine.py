@@ -301,6 +301,17 @@ class EngineTests(unittest.TestCase):
         self.assertEqual("labels", mapping["mode"])
         self.assertTrue(all("<Picture" in c["prompt"] for c in clips))
 
+    def test_an_interrupt_stops_the_subprocess(self):
+        import time
+        started = time.time()
+        with e4_mock_llm.MockLLM(REPLAY) as llm:
+            with self.assertRaises(e4_engine.E4Error) as ctx:
+                e4_engine.plan_film(story=self.story, language="English", score="off", labels=[], pictures={}, notes={}, sees=False,
+                                    endpoint={"url": llm.url, "model": "m", "style": "ninfer-messages"}, decision=2048, workers=1,
+                                    user_dir=Path(tempfile.mkdtemp(dir=self.user)), interrupted=lambda: True)
+        self.assertIn("interrupted", str(ctx.exception))
+        self.assertLess(time.time() - started, 20)
+
     def test_node_missing_is_a_clear_error(self):
         saved = dict(os.environ)
         os.environ[e4_engine.NODE_ENV] = str(self.user / "no-such-node")

@@ -316,7 +316,11 @@ def plan_film(*, story: str, language: str, score: str, labels: list[int], pictu
         while proc.poll() is None:
             if interrupted is not None and interrupted():
                 proc.kill()
-                raise E4Error("interrupted")
+                try:
+                    import comfy.model_management as mm
+                except ImportError:
+                    raise E4Error("interrupted") from None
+                raise mm.InterruptProcessingException()
             if time.time() - started > TIMEOUT_SECONDS:
                 proc.kill()
                 raise E4Error(f"E4 ran longer than {TIMEOUT_SECONDS // 3600} h and was stopped")
