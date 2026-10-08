@@ -139,6 +139,22 @@ export function redact(value) {
   return value;
 }
 
+// One chat-completions request with the pictures as OpenAI image_url parts (the way the extender itself sends pictures to its ninfer-serve), used when
+// the Anthropic-style wire does not take them. The thinking budget is then the server's launch default, so max_tokens leaves room for it.
+async function chatCompletions(messages) {
+  const base = process.env.E4_LLM_URL;
+  const body = { model: MODEL, messages, max_tokens: Number(process.env.E4_LLM_MAX_TOKENS) || 12288, temperature: 0, stream: false };
+  const t0 = Date.now();
+  let res = null, raw = '', error = null;
+  try {
+    res = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(900000) });
+    raw = await res.text();
+  } catch (e) { error = String(e.message || e); }
+  let resp = null; try { resp = JSON.parse(raw); } catch { /* raw kept */ }
+  const msg = resp?.choices?.[0]?.message || {};
+  return { body, status: res?.status ?? null, raw, error, secs: (Date.now() - t0) / 1000, attempt: 1, usage: resp?.usage || {}, cost: 0, finish: resp?.choices?.[0]?.finish_reason || null, resp, content: msg.content || '' };
+}
+
 // The binder handed to film.mjs's planAndBible (patched hook). It also stores its result in <out>/<story>/pictures/map.json.
 export function makeBinder({ pictures, notes = {}, sees, resume = false, log = () => {} }) {
   const labels = pictures.map((p) => p.label);
@@ -159,12 +175,18 @@ export function makeBinder({ pictures, notes = {}, sees, resume = false, log = (
         log(`binding ${labels.length} picture(s) to ${entities.length} entities (${result.mode})`);
         let complaint = '';
         for (let attempt = 1; attempt <= 2; attempt++) {
-          const messages = mappingMessages({ entities, pictures, notes, sees, complaint });
-          const c = await chatWith(messages, MAP_SETTINGS, { kind: MAP_KIND });
-          const base = `pictures.map${attempt > 1 ? '.retry' : ''}`;
+          let c = await chatWith(mappingMessages({ entities, pictures, notes, sees, complaint }), MAP_SETTINGS, { kind: MAP_KIND });
+          let wire = API_STYLE;
+          if (!c.content.trim() && sees && API_STYLE === 'ninfer-messages') {
+            result.fallbackWire = `the model's /v1/messages wire gave no usable reply to the pictures (HTTP ${c.status ?? c.error}); asked again on /v1/chat/completions`;
+            log(result.fallbackWire);
+            c = await chatCompletions(mappingMessages({ entities, pictures, notes, sees, complaint, style: 'llama-chat' }));
+            wire = 'chat-completions';
+          }
+          const base = `pictures.map${attempt > 1 ? '.retry' : ''}${wire === 'chat-completions' ? '.chat' : ''}`;
           wr(join(dir, `${base}.request.json`), redact(c.body));
           wr(join(dir, `${base}.response.raw.txt`), c.raw || c.error || '');
-          const meta = { kind: MAP_KIND, story: name, clip: null, name: 'pictures.map', usage: c.usage, cost: c.cost, finish: c.finish, secs: c.secs, status: c.status, attempt: c.attempt, model: c.resp?.model || null };
+          const meta = { kind: MAP_KIND, story: name, clip: null, name: 'pictures.map', wire, usage: c.usage, cost: c.cost, finish: c.finish, secs: c.secs, status: c.status, attempt: c.attempt, model: c.resp?.model || null };
           wr(join(dir, `${base}.meta.json`), meta);
           appendFileSync(join(outRoot, 'calls.jsonl'), `${JSON.stringify(meta)}\n`);
           result.attempts = attempt;

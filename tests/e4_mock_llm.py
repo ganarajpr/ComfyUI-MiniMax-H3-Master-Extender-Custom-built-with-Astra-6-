@@ -83,13 +83,14 @@ def record(run_dir: Path, out: Path) -> dict:
 class MockLLM:
     """``with MockLLM(fixture, mapping=fn) as llm:`` then ``llm.url``; ``llm.requests`` holds every body seen, ``llm.misses`` the unanswered ones."""
 
-    def __init__(self, fixture: dict | Path | None = None, mapping=None, port: int = 0):
+    def __init__(self, fixture: dict | Path | None = None, mapping=None, port: int = 0, refuse_images_on_messages: bool = False):
         if isinstance(fixture, (str, Path)):
             with gzip.open(fixture, "rt", encoding="utf-8") as handle:
                 fixture = json.load(handle)
         self.fixture = {k: list(v) for k, v in (fixture or {}).items()}
         self.served = {}
         self.mapping = mapping
+        self.refuse_images_on_messages = refuse_images_on_messages
         self.requests = []
         self.misses = []
         self.lock = threading.Lock()
@@ -118,6 +119,10 @@ class MockLLM:
                 wire = "messages" if self.path.rstrip("/") == "/v1/messages" else "chat"
                 if self.path.rstrip("/") not in ("/v1/messages", "/v1/chat/completions"):
                     return self._send(404, {"error": "not found"})
+                if wire == "messages" and outer.refuse_images_on_messages and any(p.get("type") == "image" for m in body.get("messages", []) if isinstance(m["content"], list) for p in m["content"]):
+                    with outer.lock:
+                        outer.requests.append({"wire": wire, "key": "refused-images", "body": body})
+                    return self._send(400, {"type": "error", "error": {"type": "invalid_request_error", "message": "image content is not supported on this wire"}})
                 text = outer.answer(body, wire)
                 if text is None:
                     return self._send(599, {"error": "no recording for this request"})

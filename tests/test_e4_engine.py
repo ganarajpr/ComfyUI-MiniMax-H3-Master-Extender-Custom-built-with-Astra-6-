@@ -216,6 +216,22 @@ class EngineTests(unittest.TestCase):
         content = [r for r in run.llm.requests if "binding the reference pictures" in json.dumps(r["body"]["messages"])][0]["body"]["messages"][0]["content"]
         self.assertEqual(len(self.labels), len([p for p in content if p["type"] == "image_url"]))
 
+    def test_pictures_fall_back_to_the_chat_wire_when_messages_refuses_them(self):
+        user = Path(tempfile.mkdtemp(dir=self.user))
+        with e4_mock_llm.MockLLM(REPLAY, mapping=default_mapping, refuse_images_on_messages=True) as llm:
+            rec, notes, clips = stub_pack.run_rewrite(ROOT, settings_for(self.story), builder_scenario.clips_empty(1), refs=stub_pack.make_pictures([n - 1 for n in self.labels]),
+                                                      writer_suffix=".ninfer", server_base=llm.url, user_dir=user)
+        self.assertEqual([], llm.misses)
+        refused = [r for r in llm.requests if r["key"] == "refused-images"]
+        self.assertEqual(3, len(refused), "the messages wire was tried (with its three transport retries) before the fallback")
+        chat = [r for r in llm.requests if r["wire"] == "chat" and "binding the reference pictures" in json.dumps(r["body"]["messages"])]
+        self.assertEqual(1, len(chat))
+        self.assertEqual(len(self.labels), len([p for p in chat[0]["body"]["messages"][0]["content"] if p["type"] == "image_url"]))
+        mapping = json.loads(next(user.rglob("map.json")).read_text(encoding="utf-8"))
+        self.assertIn("/v1/chat/completions", mapping["fallbackWire"])
+        self.assertTrue(all(c["prompt_rewritten"] for c in clips))
+        self.assertTrue(any("pictures" in c["rewrite_meta"] and c["rewrite_meta"]["pictures"] for c in clips))
+
     # ---- logs and progress
     def test_every_request_and_reply_is_logged(self):
         run = self.run_engine("ninfer")
