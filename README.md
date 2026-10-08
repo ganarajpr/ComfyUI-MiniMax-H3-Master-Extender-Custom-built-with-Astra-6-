@@ -76,6 +76,53 @@ Turn on `rewrite_mode` and each clip's text is rewritten into an H3 prompt on a 
 
 `prompts/builder.md` and `prompts/planner.md` are copies of the Studio's `DEFAULT_REWRITE_SYSTEM_PROMPT` and `CHAPTER_BREAKDOWN_TEMPLATE`; the canonical copy lives here, and the Studio has a test that fails when they drift.
 
+## Story engine: `story_engine` = `builder` | `e4`
+
+Story mode (`rewrite_story` + `auto_clips`) has two engines. **`builder`** (the default) is everything described above: `planner.md` plans the story, then `builder.md` writes every clip from the reference pictures. **`e4`** plans the whole film and writes every clip's FINAL prompt with the E4.6 story-to-film pipeline; `builder.md` is not run for those clips.
+
+**What E4 does that the builder does not.** Every spoken word is written verbatim into the plan, including counting and repeated calls, and checked across clips; every speaker has one id (`(S1)`, `(S2)`) for the whole film; a voice nobody sees is written as an off-screen voice, never as a `<Subject>`, and its cut either shows no face or says the visible character's lips are pressed shut; `non_diegetic_music` is `N/A` unless you ask for a score, and hum/drone/resonance words are swept out of the sound design; one film bible fixes who and what exists, with an acting profile per character; one small decision call per clip chooses who is on screen, the staging and the references, and a ledger carries state (positions, wardrobe, props) from clip to clip; the writer's draft is checked by code (lines verbatim, speakers, cut markers, durations, negations, spatial words) and repaired where it fails. The extender's `final prompts` continuity is therefore not needed for these clips. Frozen at `e4.6-frozen`; the engine is measured and described in the eval repo, not here.
+
+**Settings** (all appended last, so saved workflows keep their widget positions; old workflows load with the defaults, which are the builder):
+
+| widget | values | meaning |
+| --- | --- | --- |
+| `story_engine` | `builder` (default), `e4` | the engine of the first plan |
+| `e4_language` | text, default `English` | the language every spoken line is written in |
+| `e4_score` | `off` (default), `on` | `off`: `non_diegetic_music: N/A`. `on`: the film bible writes one instrumental score that every clip carries |
+| `e4_decision_budget` | `1024`, `2048` (default), `4096` | thinking tokens at most for each per-clip decision call. The planner, the film bible, the writer and the repairs always get 4096 |
+| `e4_picture_notes` | text, one line per picture | `2: the old tailor in a grey kurta`. A hint beside the picture for a model that sees; the only way to bind pictures for a model that cannot |
+
+**How a run goes.** With `story_engine` = `e4`, `rewrite_mode` on, a `rewrite_story`, `auto_clips` of 1 or more, an empty clip list and at least one connected reference picture, the first run does this instead of the planner and the per-clip writer calls (the panel's progress line says each step):
+1. The rewriter's model server is opened as always (a ninfer artifact, a llama.cpp model, or Strata), with thinking on and a context sized for E4 (32768 tokens per slot, `MINIMAX_H3_E4_SLOT_CTX` to change it).
+2. E4 runs as ONE Node subprocess against that same server: planner, film bible, **picture binding**, one decision call per clip, one writer call per clip (up to 4 at once, at most `rewrite_parallel`), repairs only where a check fails.
+3. Its clips are written into the clip list as finished clips; the rest of the run (motion context, rendering) is unchanged.
+
+**The model is the rewriter's model; nothing else is called.** `e4_engine.endpoint_of` reads the server the rewriter opened. A ninfer artifact is called on `/v1/messages` with `thinking.budget_tokens` (a real per-request cap). A llama.cpp server or Strata is called on `/v1/chat/completions` with the top-level fields `reasoning_budget_tokens` and `reasoning_budget_message` (not `chat_template_kwargs`), and `max_tokens` is capped to what a slot holds. The writer must run on a server: a vision model from the pack's list, or Strata (a plain GGUF that runs in-process cannot be called by a subprocess, and the run stops with that message).
+
+**Pictures.** E4 does not render reference images: yours are bound to its characters, props and locations. After the film bible, one decision call shows the model every connected picture (the same 896 px PNG data URIs, `Picture N:` first, that the extender sends everywhere; N is the slot number) with the list of entities, and asks, for each picture, which ONE entity it shows or `unused`. The reply is checked (every picture answered, every id real, an entity gets one picture; one retry with the complaint) and settled in code. The clips then cite `<Subject k> is NAME in <Picture j>, ...` with YOUR Picture numbers, not renumbered per clip, so the connected pictures match the prompts; an entity with no picture stays "described in words only" and cites none; a voice is never a subject. A model without vision binds by `e4_picture_notes`; without notes (or when its reply is unusable) a plain match of the note lines to entity names is the last resort, and without either every entity is described in words only (the log says so). The result is `story/pictures/map.json` in the run directory.
+
+*Example (the stored test, `tests/e2e`): six pictures connected in the order sherwani, shop, Pramod, button, Haroon, tea glass.* See the PR description for the produced clips; the binding was `{EXAMPLE_BINDING}`, and a clip's subject lines read `{EXAMPLE_SUBJECT}`.
+
+**What the clips look like.** Each planned clip becomes an ordinary finished clip: `prompt` is the six-section prompt, `prompt_raw` the planned ask (shots, camera, action, lines), `prompt_rewritten` and `planned` true, `title` `Clip N: <beat>`, `duration` a whole number of seconds (E4 plans on the 17k+5 frame grid, 15.08 s for a 15 s clip, which becomes 15), and `rewrite_meta` carries `engine: "e4"`, the engine version, the picture list, any citation issue and the extender's own fingerprint, so a later run does not rewrite them again. A clip E4 could not write keeps its planned ask as a pending clip and the builder writes it in the normal pass (a note says so).
+
+**Requirements.**
+- **Node.js 18 or newer** (plain executable; E4 has no npm package and needs no install). The extender looks for it in this order: the environment variable `MINIMAX_H3_E4_NODE`, the first line of `<ComfyUI>/user/minimax_h3_master/e4_node.txt`, then `node` on PATH. The error names what was tried.
+- The `e4/` folder (shipped here). `node e4/verify-frozen.mjs` proves it is the frozen E4.6: every file is hashed against `e4/MANIFEST.json` and against the freeze record `e4/planpath46/E4.6-FROZEN.md`, and the four files that had to be patched (`hybrid3/lib.mjs`: the optional dhee-core `.env`, the llama.cpp wire and a `max_tokens` cap; `planpath46/lib.mjs`: the `.env` and a Windows-safe file path; `hybrid46/validate.mjs`: the vendored audit runner; `film.mjs`: the picture-binding hook) are verified with their declared replacements (`e4/PATCHES.json`) reversed. With the eval repo, `--eval-repo <path>` also compares with the git tag `e4.6-frozen`.
+- A server-backed rewriter, at least one reference picture, and the story in `rewrite_story`.
+
+**What the first version supports, and what it does not.**
+- It plans a whole film into an EMPTY clip list: the first plan, or the first plan after "Replan from story" (which empties the planned clips as before and starts E4 again, a new sample).
+- E4 decides the number of clips from the story and plans 15 s clips. `auto_clips` only switches planning on (a different number is logged, not used) and `auto_clip_seconds` is not used (the planner is the frozen one; other lengths were never measured).
+- Typed clips and "Plan more" (a raised `auto_clips` after a plan) are not supported by E4: that run uses the builder planner, and the panel says so. The film's other clips stay as they are.
+- Clips are written into positions 1..N; empty clips beyond N are left empty (a note says how many). Every connected picture is attached to every clip's render, as for the builder; a clip's prompt cites only the pictures whose entity is on screen in it.
+- "Rewrite again" on one clip uses `builder.md` on the planned ask, not E4. To redo the film with E4, use "Replan from story".
+- The planner works from the story text; it does not see the pictures (it plans before the bible exists). Pictures bind to the entities the story names.
+- `rewrite_previous_clips` (raw asks / final prompts) is not used for E4's clips: E4's ledger carries continuity. It still applies to clips the builder writes.
+
+**Logs.** `<ComfyUI>/user/minimax_h3_master/e4/<run>/`: `job.json`, `calls.jsonl` (one line per model call), `story/` (`plan.json`, `bible.json`, `pictures/map.json`, per call `*.request.json` / `*.response.raw.txt` / `*.meta.json`, per clip `decisions.json`, `facts.txt`, `final.prose.json`, checks), `clips.json` (what was put into the clip list) and `prompts/`. Pictures are logged by hash, not as base64. A run that stops early resumes from its stored plan and bible when the same story is run again.
+
+**Tests.** `python -m unittest discover -s tests -p "test_e4_engine.py"` (Node, numpy and Pillow; no GPU, no ComfyUI) replays a stored real run through a mock model server and the real Node subprocess, and replays four story-mode scenarios to prove the builder's requests are byte for byte those of commit b12b03d; `node --test e4/bridge/test/bridge.test.mjs`; `tests/e2e/e4_outside_comfyui.py` runs one story against a real model with the extender's own code (ComfyUI and the rewriter pack stubbed). `DEPLOY-E4.md` has the steps to put this on the box.
+
 ## HyperFlow 8-step mode
 
 A third acceleration mode next to PDD and Turbo LoRA. See [HYPERFLOW.md](HYPERFLOW.md) for the node pack, weights, base/build pairing and the pass-2 rule.

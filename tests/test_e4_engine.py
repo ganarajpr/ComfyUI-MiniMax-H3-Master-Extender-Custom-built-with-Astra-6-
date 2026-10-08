@@ -276,6 +276,31 @@ class EngineTests(unittest.TestCase):
         self.assertEqual([], llm.requests)
         self.assertTrue(any("no reference picture" in m for _s, m, _p in rec.progress))
 
+    STRATA = "Strata - Qwen3.8-Flash-Next (local endpoint, 5090)"
+
+    def run_strata(self, notes, mapping=default_mapping):
+        user = Path(tempfile.mkdtemp(dir=self.user))
+        with e4_mock_llm.MockLLM(REPLAY, mapping=mapping) as llm:
+            rec, _notes, clips = stub_pack.run_rewrite(
+                ROOT, settings_for(self.story, rewrite_writer_model=self.STRATA, e4_picture_notes=notes), builder_scenario.clips_empty(1),
+                refs=stub_pack.make_pictures([n - 1 for n in self.labels]), server_base=llm.url, model_id="qwen3.8-flash-next-iq3_s", vision=False, user_dir=user, strata=True)
+        return llm, rec, clips, user
+
+    def test_a_writer_that_cannot_see_binds_by_the_picture_notes(self):
+        notes = "1: Jhanvi, the surveyor\n2: the torch\n3: the measuring tape\n4: the stepwell"
+        llm, rec, clips, user = self.run_strata(notes)
+        self.assertEqual([], llm.misses)
+        self.assertEqual({"chat"}, {r["wire"] for r in llm.requests}, "Strata is called on chat completions")
+        calls = [r for r in llm.requests if "binding the reference pictures" in json.dumps(r["body"]["messages"])]
+        self.assertEqual(1, len(calls))
+        content = calls[0]["body"]["messages"][0]["content"]
+        self.assertIsInstance(content, str, "no picture goes to a model that cannot see")
+        self.assertIn("You cannot see the pictures", content)
+        self.assertIn("Picture 2: the torch", content)
+        mapping = json.loads(next(user.rglob("map.json")).read_text(encoding="utf-8"))
+        self.assertEqual("labels", mapping["mode"])
+        self.assertTrue(all("<Picture" in c["prompt"] for c in clips))
+
     def test_node_missing_is_a_clear_error(self):
         saved = dict(os.environ)
         os.environ[e4_engine.NODE_ENV] = str(self.user / "no-such-node")

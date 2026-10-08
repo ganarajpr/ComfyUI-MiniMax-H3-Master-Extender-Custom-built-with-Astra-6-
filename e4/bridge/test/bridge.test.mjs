@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { validateMapping, settle, lexicalMap, mappingText, mappingMessages, redact, citeSubjectDefinitions, pictureList, checkCitations, pictureEntities } from '../pictures.mjs';
 import { wholeSeconds } from '../export.mjs';
 
@@ -133,4 +134,93 @@ test('the llama-chat style sends the founder\'s two top-level budget fields and 
   assert.deepEqual(ninfer.body.thinking, { type: 'enabled', budget_tokens: 2048 });
   assert.equal(ninfer.body.max_tokens, 12288);
   assert.equal(ninfer.body.system, 'S');
+});
+
+// ---- the binder, end to end against a canned model server
+import http from 'node:http';
+import { readFileSync } from 'node:fs';
+
+const bible = () => ({
+  cast: [{ id: 'haroon', name: 'Haroon', appearsAs: 'an old tailor', wardrobe: [], refImage: true }, { id: 'pramod', name: 'Pramod', appearsAs: 'a young customer', refImage: true }],
+  props: [{ id: 'tea_glass', name: 'tea glass', appearsAs: 'a glass', refImage: true }],
+  locations: [{ id: 'shop', name: 'chikankari shop', appearsAs: 'a shop', refImage: true }],
+  voices: [],
+});
+
+async function withServer(reply, fn) {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      seen.push({ url: req.url, body: JSON.parse(body) });
+      const text = typeof reply === 'function' ? reply(seen.length) : reply;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(req.url === '/v1/messages' ? { content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: {} } : { choices: [{ message: { content: text }, finish_reason: 'stop' }], usage: {} }));
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try { return await fn(`http://127.0.0.1:${server.address().port}`, seen); } finally { server.close(); }
+}
+
+// The transport reads its environment when lib.mjs is first imported, so each style is exercised in a child process of its own.
+async function runBinder(url, style, script) {
+  const code = `import { makeBinder } from ${JSON.stringify(new URL('../pictures.mjs', import.meta.url).href)}; import { readFileSync } from 'node:fs';
+    const bible = ${JSON.stringify(bible())}; ${script}`;
+  const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code], { env: { ...process.env, E4_LLM_API_STYLE: style, E4_LLM_URL: url, E4_LLM_MODEL: 'm', E4_LLM_MAX_TOKENS: '12288' }, timeout: 120000 });
+  return JSON.parse(stdout);
+}
+
+test('a writer that cannot see and has no notes binds nothing and asks nothing', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'e4-'));
+  const result = await runBinder('http://127.0.0.1:1', 'llama-chat', `
+    const bind = makeBinder({ pictures: [{ label: 1, file: null }, { label: 3, file: null }], notes: {}, sees: false });
+    const r = await bind({ name: 's', outRoot: ${JSON.stringify(out)}, bible });
+    console.log(JSON.stringify({ r, flags: [...bible.cast, ...bible.props, ...bible.locations].map((e) => [e.id, e.refImage, e.picture]) }));`);
+  assert.equal(result.r.mode, 'none');
+  assert.match(result.r.issues[0], /described in words only/);
+  assert.deepEqual(result.r.pictureOf, {});
+  assert.ok(result.flags.every(([, flag, picture]) => flag === false && picture === null));
+});
+
+test('with notes a blind writer binds by them, one call, no picture sent', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'e4-'));
+  await withServer(JSON.stringify({ pictures: [{ picture: 1, entity: 'haroon', shows: 'his label' }, { picture: 3, entity: 'shop', shows: 'its label' }] }), async (url, seen) => {
+    const result = await runBinder(url, 'llama-chat', `
+      const bind = makeBinder({ pictures: [{ label: 1, file: null }, { label: 3, file: null }], notes: { 1: 'Haroon at his machine', 3: 'the shop front' }, sees: false });
+      const r = await bind({ name: 's', outRoot: ${JSON.stringify(out)}, bible });
+      console.log(JSON.stringify({ r, flags: [...bible.cast, ...bible.props, ...bible.locations].map((e) => [e.id, e.refImage, e.picture]) }));`);
+    assert.equal(seen.length, 1);
+    assert.equal(typeof seen[0].body.messages[0].content, 'string');
+    assert.equal(result.r.mode, 'labels');
+    assert.deepEqual(result.r.pictureOf, { haroon: 1, shop: 3 });
+    assert.deepEqual(result.r.unused, []);
+    assert.deepEqual(result.flags, [['haroon', true, 1], ['pramod', false, null], ['tea_glass', false, null], ['shop', true, 3]]);
+  });
+});
+
+test('a bad first reply gets one retry that names the failure, and a second claim on an entity is settled', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'e4-'));
+  const png = join(out, 'p.png');
+  writeFileSync(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==', 'base64'));
+  const replies = [JSON.stringify({ pictures: [{ picture: 1, entity: 'nobody' }] }),
+    JSON.stringify({ pictures: [{ picture: 1, entity: 'haroon' }, { picture: 2, entity: 'haroon' }, { picture: 3, entity: 'tea_glass' }] })];
+  await withServer((n) => replies[Math.min(n, 2) - 1], async (url, seen) => {
+    const result = await runBinder(url, 'ninfer-messages', `
+      const bind = makeBinder({ pictures: [1, 2, 3].map((n) => ({ label: n, file: ${JSON.stringify(png)} })), notes: {}, sees: true });
+      const r = await bind({ name: 's', outRoot: ${JSON.stringify(out)}, bible });
+      console.log(JSON.stringify(r));`);
+    assert.equal(seen.length, 2);
+    assert.equal(seen[0].url, '/v1/messages');
+    assert.equal(seen[0].body.messages[0].content.filter((p) => p.type === 'image').length, 3);
+    const retry = JSON.stringify(seen[1].body.messages);
+    assert.match(retry, /YOUR PREVIOUS REPLY FAILED THESE CHECKS/);
+    assert.match(retry, /nobody/);
+    assert.deepEqual(result.pictureOf, { haroon: 1, tea_glass: 3 }, 'the second claim on haroon is settled to unused');
+    assert.deepEqual(result.unused, [2]);
+    assert.equal(result.attempts, 2);
+    assert.ok(result.issues.length, 'the issues that remain are recorded');
+    assert.ok(readFileSync(join(out, 's', 'pictures', 'pictures.map.request.json'), 'utf8').includes('<image base64'), 'logged by hash');
+    assert.ok(readFileSync(join(out, 'calls.jsonl'), 'utf8').trim().split('\n').length === 2);
+  });
 });
