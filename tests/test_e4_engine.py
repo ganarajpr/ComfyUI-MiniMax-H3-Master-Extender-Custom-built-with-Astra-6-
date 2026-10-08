@@ -48,11 +48,10 @@ SIX = ["subject_definitions", "summary", "retention_analysis", "detailed_descrip
 
 
 def default_mapping(text):
-    """A model that binds the entities of the list, in order, to the pictures, in order (only used when the replay has no recording of the call)."""
-    ids = re.findall(r"^- (\w+) \|", text, re.M)
+    """The binding the model gave in the stored run (tests/fixtures/e4_replay_meta.json), for a request the replay has no recording of (a blind writer, the chat wire)."""
     line = [x for x in text.splitlines() if x.startswith("Answer for EVERY picture:")][0]
     labels = [int(x) for x in re.findall(r"Picture (\d+)", line)]
-    return json.dumps({"pictures": [{"picture": n, "entity": ids[i] if i < len(ids) else "unused", "shows": "stub"} for i, n in enumerate(labels)]})
+    return json.dumps({"pictures": [{"picture": n, "entity": (META["mapping"].get(str(n)) or "unused"), "shows": "stub"} for n in labels]})
 
 
 def settings_for(story, **extra):
@@ -190,7 +189,7 @@ class EngineTests(unittest.TestCase):
         out = {}
         for r in run.llm.requests:
             text = json.dumps(r["body"]["messages"])
-            kind = "map" if "binding the reference pictures" in text else "decision" if "ref." in text and "on screen at any point" in text else "plan" if "RUNTIME" in text else "other"
+            kind = "map" if "binding the reference pictures" in text else "decision" if "You decide the filmmaking choices for ONE clip" in text else "plan" if "RUNTIME" in text else "other"
             out.setdefault(kind, []).append(r)
         return out
 
@@ -318,7 +317,7 @@ class EngineTests(unittest.TestCase):
         return llm, rec, clips, user
 
     def test_a_writer_that_cannot_see_binds_by_the_picture_notes(self):
-        notes = "1: Jhanvi, the surveyor\n2: the torch\n3: the measuring tape\n4: the stepwell"
+        notes = "1: a sherwani on a mannequin\n2: the tailor shop\n3: Pramod in a blue kurta\n4: a white button\n5: Haroon, the old tailor\n6: a glass of tea"
         llm, rec, clips, user = self.run_strata(notes)
         self.assertEqual([], llm.misses)
         self.assertEqual({"chat"}, {r["wire"] for r in llm.requests}, "Strata is called on chat completions")
@@ -327,7 +326,7 @@ class EngineTests(unittest.TestCase):
         content = calls[0]["body"]["messages"][0]["content"]
         self.assertIsInstance(content, str, "no picture goes to a model that cannot see")
         self.assertIn("You cannot see the pictures", content)
-        self.assertIn("Picture 2: the torch", content)
+        self.assertIn("Picture 6: a glass of tea", content)
         mapping = json.loads(next(user.rglob("map.json")).read_text(encoding="utf-8"))
         self.assertEqual("labels", mapping["mode"])
         self.assertTrue(all("<Picture" in c["prompt"] for c in clips))

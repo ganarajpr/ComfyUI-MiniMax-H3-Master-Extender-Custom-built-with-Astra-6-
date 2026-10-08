@@ -1,7 +1,7 @@
 {
- "labels": [1, 2, 3, 4],
- "clips": 3,
- "score": "on",
- "mapping": {"1": "jhanvi", "2": "torch", "3": "measuring_tape", "4": "stepwell"},
- "provenance": "e4_replay.json.gz holds the model replies of a real E4.6 run of the 'horror' story of the h3-prompt-eval fresh3 set on local ninfer Swift 1.5 (results/2026-10-08-e4.6-horror, score on, 3 clips): 14 requests, keyed by their text. The picture-binding call is not in it (that run rendered its own reference images); the test's mock answers it by binding the film's entities, in list order, to the four pictures."
+ "labels": [1, 2, 3, 4, 5, 6],
+ "clips": 2,
+ "score": "off",
+ "mapping": {"2": "chikankari_tailor_shop", "3": "pramod", "4": "button", "5": "haroon", "6": "tea_glass"},
+ "provenance": "e4_replay.json.gz holds the model replies of a real run of the extender's story_engine=e4 (E4.7, decisions thinking off, the picture binding thinking 2048) on the fresh3-v2 'comedy_two_hander' story (tests/fixtures/e4_story.txt) on the local ninfer Swift 1.5 lane of the 5090, 2026-10-08, made with tests/e2e/e4_outside_comfyui.py: six pictures connected in the order sherwani, shop, Pramod, button, Haroon, tea glass (the renders of results/2026-10-08-x0-vs-x1/refs/comedy_two_hander), score off, 2 clips, 9 requests (planner, bible, picture binding, 3 decision calls, 2 writers, 1 repair). The requests are keyed by their text, so the replay does not depend on the wire. The sherwani plate has no entity in the bible, so its picture is unused."
 }

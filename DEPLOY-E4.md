@@ -41,7 +41,7 @@ Order of lookup: `MINIMAX_H3_E4_NODE`, then `e4_node.txt`, then `node` on PATH. 
 ```
 "C:\Users\user\tools\node-v20.20.2-win-x64\node.exe" e4\verify-frozen.mjs
 ```
-Expected last line: `e4 E4.6 (e4.6-frozen): 89 files checked, 4 patched (patches reversed), 74 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The four patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.6-frozen`.
+Expected last line: `e4 E4.7 (e4.7-frozen): 90 files checked, 3 patched (patches reversed), 75 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The three patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.7-frozen`.
 
 The tests need the embedded Python of ComfyUI (numpy and Pillow are there), Node, and no GPU (they use their own throw-away folders, so the node path comes from the environment, not from `e4_node.txt`):
 ```
@@ -87,4 +87,4 @@ then restart ComfyUI. Notes:
 
 - Mock (replaying a stored real run through the real Node subprocess), builder-mode byte identity, the verify script, the Python and Node units: `tests/test_e4_engine.py`, `e4/bridge/test/bridge.test.mjs`.
 - One story, end to end outside ComfyUI against the lane of the 5090 (`tests/e2e/e4_outside_comfyui.py`), with the extender's own code and the pack stubbed. See the PR description for the result.
-- **Not tested here:** the extender's own private `ninfer-serve` session (the lane was used instead: same model and the same `/v1/messages` wire, but not the process the node would start), the Windows paths of the box (the Windows-sensitive spots of the vendored code are patched, see `e4\PATCHES.json`), the panel (JavaScript syntax-checked only), and rendering the produced prompts (unattached pictures that a clip does not cite are still attached to the render, see the README).
+- **Not tested here:** the extender's own private `ninfer-serve` session (the lane was used instead: same model and the same `/v1/messages` wire, but not the process the node would start), the Windows paths of the box (the one spot of E4.6 that built a file path from a URL, `HERE`, is fixed in E4.7 itself, but nothing here ran on Windows), the panel (JavaScript syntax-checked only), and rendering the produced prompts (unattached pictures that a clip does not cite are still attached to the render, see the README).
