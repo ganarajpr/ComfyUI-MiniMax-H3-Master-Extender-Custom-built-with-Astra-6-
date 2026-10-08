@@ -2,6 +2,7 @@
 import { tokensOf } from './lib.mjs';
 import { mentions, shotText, withSurfaces } from './clip.mjs';
 import { dialogueTags } from './writer.mjs';
+import { foldState } from './state.mjs';
 
 const GENERIC = new Set('the and with from that this into onto over under after before while where when then than they them their there here have has had been were was are his her its our out off who whom will would could should about above each other some such only just also very more most one two not but nor yet'.split(' '));
 const content = (s) => new Set(tokensOf(s, 3).filter((w) => !GENERIC.has(w)));
@@ -44,6 +45,12 @@ export function planContinuity(plan, bible) {
       }
     }
     out.push(row);
+  }
+  // E4.8: the plan's state_changes and the end_state of the same clip say the same (state.mjs foldState)
+  for (const c of foldState(plan, bible).conflicts) {
+    let row = out.find((r) => r.clip === c.clip);
+    if (!row) { row = { clip: c.clip, issues: [] }; out.unshift(row); }
+    row.issues.push(c.kind === 'change_not_in_end_state' ? `state_end_disagree ${c.entity}.${c.axis}: the clip's change sets "${c.value}" and its end_state does not show it` : `state_end_disagree ${c.entity}.${c.axis}: the ledger holds "${c.carriedValue}" and the end_state shows "${c.endState}"`);
   }
   return out;
 }

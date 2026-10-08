@@ -60,7 +60,9 @@ export function checkPictureCitations({ references, sections, pictures, refsJson
   });
   for (const line of Object.values(sections).join('\n').split('\n')) if (/^<Picture \d+>/.test(line.trim())) issues.push(`standalone picture line: ${line.trim().slice(0, 60)}`);
   const ret = String(sections.retention_analysis).split('\n').filter(Boolean);
-  if (ret.length !== references.length || ret.some((l, i) => !l.startsWith(`<Subject ${i + 1}>:`) || /<Picture/.test(l))) issues.push('retention_analysis is not exactly one subject line per subject');
+  // E4.8: a retention line may cite its OWN subject's picture ("... from <Picture 2>; ..."), never another one
+  const ownPic = (i) => pictures.find((p) => p.subject === i + 1)?.picture;
+  if (ret.length !== references.length || ret.some((l, i) => !l.startsWith(`<Subject ${i + 1}>:`) || [...l.matchAll(/<Picture (\d+)>/g)].some((m) => Number(m[1]) !== ownPic(i)))) issues.push('retention_analysis is not exactly one subject line per subject');
   const maxN = pictures.length;
   for (const [name, text] of Object.entries(sections)) if (name !== 'subject_definitions') for (const m of String(text).matchAll(/<Picture (\d+)>/g)) if (Number(m[1]) < 1 || Number(m[1]) > maxN) issues.push(`${name} cites <Picture ${m[1]}> outside 1..${maxN}`);
   if (refsJson) for (const p of pictures) if (!refsJson.entities?.[p.entity]) issues.push(`pictured subject ${p.entity} has no reference prompt in refs.json`);

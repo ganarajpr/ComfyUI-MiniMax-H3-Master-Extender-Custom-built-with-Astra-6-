@@ -1,6 +1,6 @@
-# Deploying `story_engine=e4` to the box
+# Deploying `story_engine=e4.8` to the box
 
-Branch `e4-story-engine` of the founder's fork (`ganarajpr/ComfyUI-MiniMax-H3-Master-Extender-Custom-built-with-Astra-6-`). It is based on `b12b03d`, the commit the box runs. **Nothing here has been done on the box.** Deployment needs the founder's OK and an empty queue.
+Branch `e4-story-engine` of the founder's fork (`ganarajpr/ComfyUI-MiniMax-H3-Master-Extender-Custom-built-with-Astra-6-`). It is based on `b12b03d`, the commit the box runs. The vendored engine is E4.8 (tag `e4.8-frozen` of the eval repo). Deployment needs an empty queue.
 
 ## Before you start
 
@@ -18,8 +18,8 @@ Branch `e4-story-engine` of the founder's fork (`ganarajpr/ComfyUI-MiniMax-H3-Ma
 ```
 ssh h3box
 cd <ext>
-git fetch origin e4-story-engine
-git checkout e4-story-engine          # or: git merge --ff-only origin/e4-story-engine from the branch the box is on
+git fetch fork e4-story-engine        # the box's remote `fork` is the founder's fork; `origin` is upstream and is never fetched or pushed
+git checkout e4-story-engine          # or: git merge --ff-only fork/e4-story-engine from the branch the box is on
 ```
 
 The branch adds `e4_engine.py`, the `e4/` folder (about 1 MB of plain JavaScript, no npm package, no build step) and changes `prompt_rewriter.py`, `master_node.py` and `web/master_extender.js`. `.gitattributes` marks `e4/**` as `-text`, so Git on Windows does not rewrite its line endings (the verify script would notice).
@@ -41,7 +41,7 @@ Order of lookup: `MINIMAX_H3_E4_NODE`, then `e4_node.txt`, then `node` on PATH. 
 ```
 "C:\Users\user\tools\node-v20.20.2-win-x64\node.exe" e4\verify-frozen.mjs
 ```
-Expected last line: `e4 E4.7 (e4.7-frozen): 90 files checked, 3 patched (patches reversed), 75 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The three patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.7-frozen`.
+Expected last line: `e4 E4.8 (e4.8-frozen): 91 files checked, 3 patched (patches reversed), 88 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The three patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.8-frozen`.
 
 The tests need the embedded Python of ComfyUI (numpy and Pillow are there), Node, and no GPU (they use their own throw-away folders, so the node path comes from the environment, not from `e4_node.txt`):
 ```
@@ -58,13 +58,13 @@ set MINIMAX_H3_E4_NODE=C:\Users\user\tools\node-v20.20.2-win-x64\node.exe
 Python and the panel's JavaScript are read when ComfyUI starts, and the browser must be refreshed. **Restart only with an empty queue and the founder's OK** (the `never-restart-comfyui-with-queue` rule). Until then the running ComfyUI is still `b12b03d` in memory, whatever is on disk.
 
 After the restart:
-- the Master node has five new widgets at the end of its list: `story_engine` (default `builder`), `e4_language`, `e4_score`, `e4_decision_budget` (default `off`: the decision calls do not think), `e4_picture_notes`. Saved workflows load with the defaults, so they behave as before.
+- the Master node has five new widgets at the end of its list: `story_engine` (`builder` (default) or `e4.8`; a saved `e4` reads as `e4.8`), `e4_language`, `e4_score`, `e4_decision_budget` (default `off`: the decision calls do not think), `e4_picture_notes`. Saved workflows load with the defaults, so they behave as before.
 - the example workflows carry the new values (`builder`).
 
 ## First real use
 
-In the Story Auto workflow: connect the reference pictures, put the story in `rewrite_story`, `auto_clips` at 1 or more (it only switches planning on), one empty clip, `rewrite_mode` = `pending clips`, the Swift 1.5 NInfer writer, `story_engine` = `e4`. Queue it. Expected:
-- the panel's progress line walks through `story_engine=e4: planning and writing the film ...`, `E4: story planned`, `E4: film bible written`, `E4: reference pictures bound to the film's entities`, `E4: clip 1/N staged and referenced`, `E4: clip 1/N written` ...
+In the Story Auto workflow: connect the reference pictures, put the story in `rewrite_story`, `auto_clips` at 1 or more (it only switches planning on), one empty clip, `rewrite_mode` = `pending clips`, the Swift 1.5 NInfer writer, `story_engine` = `e4.8`. Queue it. Expected:
+- the panel's progress line walks through `story_engine=e4.8: planning and writing the film with E4.8 ...`, `E4: story planned`, `E4: film bible written`, `E4: reference pictures bound to the film's entities`, `E4: clip 1/N staged and referenced`, `E4: clip 1/N written` ...
 - the clip list fills with N finished clips (a ✎ badge, titles `Clip 1: <beat>`, 15 s), and the note `e4: planned and wrote N of N clip(s)` is in the status.
 - every request and reply is in `ComfyUI\user\minimax_h3_master\e4\<run>\story\` (`calls.jsonl` in `<run>` lists them; `story\pictures\map.json` is the picture binding; `clips.json` is what was put into the clip list).
 - a first run of the ninfer server loads the model once (about 20 s) and the whole film takes minutes, not seconds (the planner, the bible, one decision per clip, one writer per clip with up to 4 at a time, plus repairs).
@@ -85,6 +85,12 @@ then restart ComfyUI. Notes:
 
 ## What was and was not tested
 
-- Mock (replaying a stored real run through the real Node subprocess), builder-mode byte identity, the verify script, the Python and Node units: `tests/test_e4_engine.py`, `e4/bridge/test/bridge.test.mjs`.
+- Mock (replaying a stored real E4.8 run, `drama_two_hander`, through the real Node subprocess; with no pictures it reproduces that run's plan, bible, state fold, shots and each clip's facts, writer prompt and final prose byte for byte), builder-mode byte identity, the verify script, the Python and Node units: `tests/test_e4_engine.py`, `e4/bridge/test/bridge.test.mjs`.
 - One story, end to end outside ComfyUI against the lane of the 5090 (`tests/e2e/e4_outside_comfyui.py`), with the extender's own code and the pack stubbed. See the PR description for the result.
-- **Not tested here:** the extender's own private `ninfer-serve` session (the lane was used instead: same model and the same `/v1/messages` wire, but not the process the node would start), the Windows paths of the box (the one spot of E4.6 that built a file path from a URL, `HERE`, is fixed in E4.7 itself, but nothing here ran on Windows), the panel (JavaScript syntax-checked only), and rendering the produced prompts (unattached pictures that a clip does not cite are still attached to the render, see the README).
+- **Not tested here:** the extender's own private `ninfer-serve` session (the lane was used instead: same model and the same `/v1/messages` wire, but not the process the node would start), the Windows paths of the box (the one spot of E4.6 that built a file path from a URL, `HERE`, is fixed in E4.7 and E4.8 themselves, but nothing here ran on Windows), the panel (JavaScript syntax-checked only), and rendering the produced prompts (unattached pictures that a clip does not cite are still attached to the render, see the README).
+
+## VRAM for the rewriter's own ninfer server (2026-10-08)
+
+An H3 render left about 6 GB reserved in ComfyUI, so the rewriter's in-process `ninfer-serve` died with `automatic KV capacity requires ... but only ... bytes are available after weights`.
+- **This branch** (`vram_release.py`): ComfyUI's `unload_all_models` (`POST /free` with `unload_models`, the rewriter's own pre-launch step, Strata) also drops the cached X2 final VAE, runs `gc` and empties the CUDA cache. Active after the ComfyUI restart.
+- **The rewriter pack** (`custom_nodes\MiniMax-H3-Prompt-Rewriter-ComfyUI`, a separate repo; fork `ganarajpr/MiniMax-H3-Prompt-Rewriter-ComfyUI`, branch `local-ninfer-vram-fix`): `ninfer-serve` is started with `--vram-headroom-mib 512` (env `MINIMAX_H3_NINFER_HEADROOM_MIB`) instead of its default 1024; if it still fails with the KV message, the pack releases ComfyUI's cached memory and retries once with the headroom that fits from ninfer's own numbers; a failure now says how much VRAM was free and which GPU servers were running. On the box that pack's working tree carries local edits that are not on any remote; the fork's first commit on the branch is a snapshot of exactly that tree, so the three changed files (`server_engine.py`, `mtmd_engine.py`, `runner.py`) are copied over (CRLF, as the box has them), not merged.

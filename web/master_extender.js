@@ -266,8 +266,15 @@ function repairSemanticBridge(node) {
     if (replacement && comboValues(w).includes(replacement)) w.value = replacement;
 }
 
+// The first E4 builds named the engine "e4"; it is "e4.8" now (the vendored engine is E4.8).
+function repairStoryEngine(node) {
+    const w = node.widgets?.find(x => x.name === "story_engine");
+    if (w && w.value === "e4") w.value = "e4.8";
+}
+
 function repairHyperflowWidgets(node, defaults) {
     repairFinalDecode(node);
+    repairStoryEngine(node);
     repairReasoningBudget(node);
     for (const name of REPAIRED_WIDGETS) {
         const w = node.widgets?.find(x => x.name === name);
@@ -837,8 +844,8 @@ app.registerExtension({
                             if (W("auto_clip_seconds")) wrap.appendChild(uiRow("planned clip length (s)", bindNumber("auto_clip_seconds"), { indent: true, hint: "Seconds per planned clip, 5-15 (15 = the old fixed length). The planner budgets its beats and shots to this length and the planned clips are created with it. Typed clips keep their own duration. Applies only when a plan is made; to re-plan at a new length use 'Replan from story'." }));
                             if (W("planner_refs")) wrap.appendChild(uiRow("planner sees references as", bindSelect("planner_refs"), { indent: true, hint: "images: the reference pictures themselves, as the clip writers get them (needs a rewriter model with vision, else it is the story text alone); captions: the old name for images, now the same; off: the story text alone." }));
                             if (W("story_engine")) {
-                                wrap.appendChild(uiRow("story engine", bindSelect("story_engine"), { indent: true, hint: "builder: planner.md plans, builder.md writes every clip (as before). e4: the E4.6 pipeline plans the whole film and writes every clip's final prompt (film bible, per-clip staging decisions, speaker ids, every spoken word verbatim, checked and repaired). e4 needs Node.js 18+, a server-backed rewriter, at least one reference picture and an empty clip list; it decides the number of clips itself and plans 15 s clips." }));
-                                if (String(getW("story_engine", "builder")) === "e4") {
+                                wrap.appendChild(uiRow("story engine", bindSelect("story_engine"), { indent: true, hint: "builder: planner.md plans, builder.md writes every clip (as before). e4.8: the E4.8 pipeline plans the whole film and writes every clip's final prompt (film bible, per-clip staging decisions, speaker ids, every spoken word verbatim, checked and repaired). e4.8 needs Node.js 18+, a server-backed rewriter, at least one reference picture and an empty clip list; it decides the number of clips itself and plans 15 s clips." }));
+                                if (String(getW("story_engine", "builder")) === "e4.8") {
                                     const lang = document.createElement("div");
                                     lang.style.cssText = "margin-left: 28px;";
                                     lang.appendChild(uiTextarea(getW("e4_language", "English"), (v) => setW("e4_language", v, { rerender: false }), { rows: 1, placeholder: "Dialogue language, e.g. English" }));

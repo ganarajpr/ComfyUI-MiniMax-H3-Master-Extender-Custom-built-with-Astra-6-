@@ -118,7 +118,7 @@ test('E4 durations become whole seconds', () => {
 });
 
 const probe = (style, extra = {}, kind = 'decision') => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
-  `import('${new URL('../../planpath47/transport.mjs', import.meta.url).href}').then((m) => console.log(JSON.stringify(m.buildRequest([{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], { max_tokens: 32000, reasoning: { max_tokens: 4096 }, temperature: 0.5 }, '${kind}'))))`],
+  `import('${new URL('../../planpath48/transport.mjs', import.meta.url).href}').then((m) => console.log(JSON.stringify(m.buildRequest([{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], { max_tokens: 32000, reasoning: { max_tokens: 4096 }, temperature: 0.5 }, '${kind}'))))`],
   { env: { ...process.env, E4_LLM_API_STYLE: style, E4_LLM_URL: 'http://h:1', E4_LLM_MODEL: 'm', E4_LLM_MAX_TOKENS: '12288', E4_DECISION_THINKING: '', E4_LLM_BUDGET_PICTURE_MAP: '2048', ...extra } }).toString());
 
 test('the vendored transport: llama-chat sends the two top-level budget fields, ninfer a per-request thinking budget, decisions think off by default', () => {

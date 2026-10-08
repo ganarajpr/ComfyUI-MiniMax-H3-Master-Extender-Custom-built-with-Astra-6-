@@ -654,9 +654,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     planner_refs = str(settings.get("planner_refs", "images"))
     if planner_refs not in PLANNER_REFS:
         planner_refs = "images"
-    story_engine = str(settings.get("story_engine", "builder") or "builder")
-    if story_engine not in STORY_ENGINES:
-        story_engine = "builder"
+    story_engine = e4_engine.normalize_engine(settings.get("story_engine"))
 
     if writer_label.startswith("(") or not writer_label:
         raise RuntimeError("rewrite_writer_model: pick a GGUF from the list (the rewriter pack's model list).")
@@ -722,21 +720,21 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         plan_ctx = story_planner.plan_more(clips, auto_clips)
     planning = bool(plan_slots) or bool(plan_ctx)
     plan_n = len(plan_ctx["numbers"]) if plan_ctx else auto_clips
-    # story_engine=e4 plans and writes a whole film in one run: only a first plan of a clip list that holds no text qualifies.
+    # story_engine=e4.8 plans and writes a whole film in one run: only a first plan of a clip list that holds no text qualifies.
     e4_plan, e4_why = False, ""
-    if story_engine == "e4" and planning:
+    if story_engine == e4_engine.ENGINE_ID and planning:
         if plan_ctx or any(story_planner._ask_text(c).strip() for c in clips if isinstance(c, dict)):
             e4_why = "clips are already typed or planned ('Plan more' and typed clips are not supported by the e4 engine in this version)"
         elif task != "Ref2VA" or not ordered:
             e4_why = "no reference picture is connected (e4 writes Ref2VA prompts)"
         elif not on_server:
             raise RuntimeError(
-                "story_engine=e4 needs a rewriter model that runs on a server (a vision model from the pack's list, or Strata); "
+                "story_engine=e4.8 needs a rewriter model that runs on a server (a vision model from the pack's list, or Strata); "
                 "this writer runs in-process. Pick another writer, or set story_engine to builder.")
         else:
             e4_plan = True
         if not e4_plan:
-            say("rewrite", f"story_engine=e4 is not used for this run: {e4_why}; planning with the builder planner", 0.05)
+            say("rewrite", f"story_engine=e4.8 is not used for this run: {e4_why}; planning with the builder planner", 0.05)
     if e4_plan:
         reasoning = dict(reasoning, enabled=True, budget=e4_engine.PLAN_BUDGET, message=reasoning["message"] or e4_engine.BUDGET_MESSAGE)
         writer_budget = max_new_tokens + e4_engine.PLAN_BUDGET
@@ -933,7 +931,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
         # ---- planning with E4: the whole film, planned AND written, in one subprocess ---------------------
         if e4_plan:
-            say("rewrite", f"story_engine=e4: planning and writing the film with {e4_engine.ENGINE_NAME} (planner, bible and writer think {e4_engine.PLAN_BUDGET} tokens at most, the per-clip decisions {e4_engine.decision_label(e4_engine.decision_budget(settings.get('e4_decision_budget', e4_engine.DECISION_BUDGET_DEFAULT)))})", 0.2)
+            say("rewrite", f"story_engine=e4.8: planning and writing the film with {e4_engine.ENGINE_NAME} (planner, bible and writer think {e4_engine.PLAN_BUDGET} tokens at most, the per-clip decisions {e4_engine.decision_label(e4_engine.decision_budget(settings.get('e4_decision_budget', e4_engine.DECISION_BUDGET_DEFAULT)))})", 0.2)
             endpoint = e4_engine.endpoint_of(server, model_path=model_path, strata=strata, is_ninfer=_mod("server_engine").is_ninfer)
             labels = [slot + 1 for slot, _t in ordered]
             by_label = {int(item["slot"]) + 1: item["image"] for item in pictures}

@@ -7,6 +7,7 @@ import { runValidation, strictValidation } from './hybrid46/validate.mjs';
 import { segments } from '../hybrid3/cuts.mjs';
 import { rj, wr } from './lib.mjs';
 import { CAMERA_MOVES } from './decide.mjs';
+import { stateReport } from './state.mjs';
 import { planContinuity, stagingOpening, stagingOpeningDetail, stagingVsPlan, proseContinuity, dialogueReport } from './checks.mjs';
 import { planConformance } from './writer.mjs';
 import { cutGeometry } from './clip.mjs';
@@ -54,13 +55,13 @@ export function reportStory(outDir, name) {
   const byKind = {}, costByKind = {};
   for (const c of calls) { byKind[c.kind] = (byKind[c.kind] || 0) + 1; costByKind[c.kind] = (costByKind[c.kind] || 0) + (c.cost || 0); }
   const clips = [...plan.clips].sort((a, b) => a.clip - b.clip);
-  const proseByClip = {}, rows = [], attRows = [];
+  const proseByClip = {}, proseObjs = {}, rows = [], attRows = [];
   for (const [i, clip] of clips.entries()) {
     const shot = shots[i];
     const f = join(dir, 'clips', `clip${String(clip.clip).padStart(2, '0')}`, 'final.prose.json');
     if (!existsSync(f)) { rows.push({ clip: clip.clip, present: false }); continue; }
     const prose = JSON.parse(readFileSync(f, 'utf8'));
-    proseByClip[clip.clip] = prose.detailedDescription;
+    proseByClip[clip.clip] = prose.detailedDescription; proseObjs[clip.clip] = prose;
     attRows.push(...speakerAttribution({ plan, bible, shot, prose }));
     const refShot = fix.refs.shots.find((s) => s.id === shot.id);
     const gateFindings = strictValidation(fix, shot, prose).filter((f) => f.src === 'gate');
@@ -103,6 +104,7 @@ export function reportStory(outDir, name) {
     hybrid3: { findingsBeforeRepair: summary.perClip.reduce((a, r) => a + (r.before?.v2.total || 0), 0), byCodeBeforeRepair: summary.perClip.reduce((a, r) => { for (const [k, v] of Object.entries(r.before?.v2.byCode || {})) a[k] = (a[k] || 0) + v; return a; }, {}), findingsAfterDeterministic: summary.perClip.reduce((a, r) => a + (r.afterDeterministic?.v2.total || 0), 0), repairCallsHybrid3: summary.perClip.reduce((a, r) => a + (r.repairs || 0), 0), findingsAfterRepair: present.reduce((a, r) => a + r.v3Total, 0), byCode: present.reduce((a, r) => { for (const [k, v] of Object.entries(r.v3)) a[k] = (a[k] || 0) + v; return a; }, {}), cleanClips: `${present.filter((r) => r.v3Total === 0).length}/${present.length}` },
     film46: existsSync(join(dir, 'film_checks.json')) ? rj(join(dir, 'film_checks.json')) : null,
     refPrompts: refSummary(dir),
+    state: existsSync(join(dir, 'state_fold.json')) ? stateReport({ fold: rj(join(dir, 'state_fold.json')), shots, fix, proseByClip: proseObjs }) : null,
     refs: { forced: state.reduce((a, s) => a + s.forced.length, 0), dropped: state.reduce((a, s) => a + s.dropped.length, 0) },
     words: { mean: present.length ? Number((present.reduce((a, r) => a + r.words, 0) / present.length).toFixed(0)) : 0 },
     clipsDetail: rows,

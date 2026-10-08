@@ -116,7 +116,7 @@ export function assembleReferences(bible, cand, picks, speakerIds) {
 // The hybrid3 shot object for one clip. direction/acting stay empty on purpose: staging reaches the writer as decided facts (per cut),
 // and hybrid3's spatial check reads only what the code-built subject definitions say.
 export function makeShot(index, id, refPack, lines, clip, offscreen = []) {
-  return { id, index, references: refPack.references, subjectDefinitions: refPack.subjectDefinitions, breakdown: { id, lineIds: lines.map((l) => l.id), refs: refPack.references.map((r) => r.id) }, direction: {}, acting: [], lines, clipNumber: clip.clip, offscreen };
+  return { id, index, references: refPack.references, subjectDefinitions: refPack.subjectDefinitions, breakdown: { id, lineIds: lines.map((l) => l.id), refs: refPack.references.map((r) => r.id) }, direction: {}, acting: [], lines, clipNumber: clip.clip, offscreen, ...(refPack.state ? { state: refPack.state } : {}) };
 }
 
 export function makeFix(bible, ledgerLines, shots, refPacks, { score = 'off' } = {}) {

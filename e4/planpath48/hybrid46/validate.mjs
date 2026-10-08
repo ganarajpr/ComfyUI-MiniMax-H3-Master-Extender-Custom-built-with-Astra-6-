@@ -14,6 +14,7 @@ import { extractFacts, checkSpatial } from '../../hybrid3/spatial.mjs';
 import { soundVocabFindings } from '../soundvocab.mjs';
 import { offscreenFindings } from '../offscreen.mjs';
 import { speechProse } from '../utterance.mjs';
+import { stateContradictions } from '../state.mjs';
 
 const VOCAL = /\b(?:voices?|whispers?|whispered|murmurs?|murmured|shouts?|words?)\b/i;
 
@@ -54,6 +55,7 @@ export function runValidation(fix, shot, prose) {
   sem.push(...offscreenFindings({ shot, prose, sents: sentences(prose.detailedDescription) }));
   for (const h of speechProse(prose.detailedDescription)) sem.push({ src: 'lint', code: 'speech_prose', field: 'detailedDescription', idx: h.idx, match: h.match, message: `"${h.match}" in: ${h.sentence.slice(0, 160)}` });
   const plan = derivePlan(shot);
+  if (shot.state?.items?.length) sem.push(...stateContradictions({ items: shot.state.items, references: shot.references, prose }));
   sem.push(...planFindings(prose, plan));
   sem.push(...checkSpatial(prose, shot, extractFacts(shot)));
   return { findings: [...kept, ...sem], strict, plan };
@@ -78,6 +80,7 @@ export const RULE = {
   DETAILED_DESCRIPTION_TOO_SHORT: 'is too short overall.',
   soundvocab: 'uses a word the renderer hears as music (hum, drone, resonance, resonant, tone, chord, sustained note, swell, pulse, thrum, throb). Rewrite it so every sound is named by its concrete physical source and action (rain tapping a window, a hinge creaking, a boot scuffing a floor, cloth rubbing, a switch clicking), with none of those words.',
   offscreen_framing: 'belongs to a cut where a line is spoken off-screen, and H3 lip-syncs the face it sees. Either frame this cut on the place the voice carries from with no character in view, or state in the sentence about each visible character that the lips are pressed shut, in those positive words (never that the character does not speak or is silent).',
+  state_contradiction: 'states the opposite of a visible state the subject carries into this clip from the clip before (see the VISIBLE STATE facts and the detail below). Rewrite the sentence so it shows the carried state, in positive words (for example "her cheeks still wet"), keeping the rest of the sentence.',
   speech_prose: 'describes counting, reciting, chanting, calling or whispering with no <d> line in the sentence, so the renderer would improvise the words. Rewrite it as only what is physical (breath, posture, gaze, movement); every spoken word stays inside the <d> lines.',
   DIALOGUE_VOICE_FORM: 'is the line of a voice that has no picture. Write it as one sentence "a <voice description> (Sx), off-screen, says: <d>[Language] text</d>" with the Sx given in the hint and no <Subject N> token in that sentence.',
   SOUNDSCAPE_VOCAL_WORD: 'the soundscape must not use the words voice, whisper, murmur, shout or word. Use "speech", "hushed speech", "hum", "cry", "phrase" instead.',
@@ -107,7 +110,7 @@ export function mapFindings(findings, prose, shot) {
     if (f.src === 'lint') {
       const fld = f.field === 'overallSoundscape' ? 'overallSoundscape' : f.field === 'summary' ? 'summary' : 'detailedDescription';
       const arr = fld === 'overallSoundscape' ? ss : fld === 'summary' ? su : dd;
-      const hint = f.code === 'negation' && f.message ? `clause: "${f.message}"` : ['imagined', 'spatial', 'soundvocab', 'offscreen_framing', 'speech_prose'].includes(f.code) && f.message ? `detail: ${f.message}` : '';
+      const hint = f.code === 'negation' && f.message ? `clause: "${f.message}"` : ['imagined', 'spatial', 'soundvocab', 'offscreen_framing', 'speech_prose', 'state_contradiction'].includes(f.code) && f.message ? `detail: ${f.message}` : '';
       if (f.idx !== undefined) ok = add(fld, f.idx, f.code, hint);
       else if (['negation', 'narration', 'label', 'music', 'soundvocab', 'speech_prose'].includes(f.code)) ok = add(fld, find(arr, f.match), f.code);
       else if (f.code === 'cut_plan') {

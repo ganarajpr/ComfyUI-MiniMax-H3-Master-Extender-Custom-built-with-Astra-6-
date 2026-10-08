@@ -8,6 +8,7 @@ import { HERE } from './lib.mjs';
 import { CAMERA_LABELS } from './planner.mjs';
 import { EFFORTS, UNSTATED } from './decide.mjs';
 import { voicesOf } from './speakers.mjs';
+import { stateFacts } from './state.mjs';
 
 const SEP = '================================================================';
 const HEAD = {
@@ -122,6 +123,7 @@ export function e4Facts({ fix, shot, rec }) {
   out.push(`- overall_soundscape names every ambient sound by its physical source and action (rain tapping a window, a hinge creaking, a boot scuffing a floor, cloth rubbing, a switch clicking). The renderer hears a hum, drone, resonance, tone, chord, sustained note, swell, pulse, thrum or throb as ${fix.score === 'on' ? 'part of the score, which the music field already carries' : 'a musical score, which this film does not have'}, so use none of those words in overall_soundscape or in the description; this replaces any earlier suggestion to use hum or drone.`);
   out.push('- Write every absence as a substitution: name what IS there, never what is not. Before: "He does not turn around." After: "He keeps his eyes on the water." Before: "No light reaches the corner." After: "The corner stays in shadow."');
   out.push('- If a gesture suggests an object that is not physically in the shot (a mimed, pretended or imagined one), write only the motion of the hands and body. Never name that object and never label it as imagined. Before: "her hand lifts an imagined whistle to her lips." After: "her hand curls and rises to her lips, her cheeks drawing in."');
+  out.push(...stateFacts({ shot, rec }));
   return out.join('\n');
 }
 

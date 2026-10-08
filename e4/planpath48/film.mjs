@@ -19,6 +19,7 @@ import { enforceAttribution, speakerAttribution } from './speakers.mjs';
 import { offscreenCuts } from './offscreen.mjs';
 import { soundVocabFindings, dropItems } from './soundvocab.mjs';
 import { filmChecks, clipChecks } from './filmchecks.mjs';
+import { foldState, withCarriedState } from './state.mjs';
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -61,6 +62,8 @@ export async function decideAll({ name, outRoot, plan, planMeta, bible, ledgerLi
   const dir = join(outRoot, name);
   const recs = [];
   let ledger = emptyLedger(), carried = null;
+  const fold = foldState(plan, bible);
+  wr(join(dir, 'state_fold.json'), fold);
   const clips = [...plan.clips].sort((a, b) => a.clip - b.clip);
   for (let i = 0; i < clips.length; i++) {
     const clip = clips[i], rawAsk = planMeta.rawAsks[i];
@@ -71,7 +74,7 @@ export async function decideAll({ name, outRoot, plan, planMeta, bible, ledgerLi
     const lines = ledgerLines.filter((l) => l.clip === clip.clip);
     const ledgerIn = pruneLedger(ledger, landmarks);
     const dec = await decideClip({ outRoot, dir: cdir, story: name, plan, bible, clip, rawAsk, cand, landmarks, ledger: ledgerIn, geom, lines });
-    const refPack = assembleReferences(bible, cand, dec.picks, lines.map((l) => l.speaker));
+    const refPack = withCarriedState(assembleReferences(bible, cand, dec.picks, lines.map((l) => l.speaker)), fold.byClip[clip.clip] || [], fold.changesByClip[clip.clip] || []);
     const rules = cameraRules(clip, lines, bible);
     const framing = clip.shots.map((s, k) => { const planned = CAMERA_LABELS[s.camera]; const o = rules.find((r) => r.cut === k + 1 && r.to); const final = o ? CAMERA_LABELS[o.to] : planned; return { cut: k + 1, planned, final, changed: final !== planned, rules: rules.filter((r) => r.cut === k + 1).map((r) => r.rule) }; });
     const ledgerAfter = dec.ledgerAfter;

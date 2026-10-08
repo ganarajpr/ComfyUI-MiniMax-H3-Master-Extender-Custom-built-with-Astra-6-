@@ -1,4 +1,4 @@
-"""A mock of the rewriter's model server for the story_engine=e4 tests. LOCALHOST ONLY: it calls nothing, it only answers.
+"""A mock of the rewriter's model server for the story_engine=e4.8 tests. LOCALHOST ONLY: it calls nothing, it only answers.
 
 Serves the two wires E4 speaks: Anthropic-style ``POST /v1/messages`` (ninfer-serve) and ``POST /v1/chat/completions`` (llama.cpp, Strata).
 A request is answered by REPLAY: its normalised text (system + every message's text, pictures as ``<image>``) is looked up among the

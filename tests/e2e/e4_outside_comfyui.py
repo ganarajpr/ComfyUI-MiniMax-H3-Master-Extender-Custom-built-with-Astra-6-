@@ -103,7 +103,7 @@ def main():
     for slot, p in enumerate(paths):
         array = numpy.asarray(Image.open(p).convert("RGB"), dtype=numpy.float32) / 255.0
         refs[f"ref_image_{slot}"] = stub_pack.Tensor(array[None, ...])
-    settings = dict(builder_scenario.BASE, rewrite_story=story, auto_clips=1, rewrite_parallel=min(4, max(1, a.parallel)), story_engine="e4", e4_language=a.language,
+    settings = dict(builder_scenario.BASE, rewrite_story=story, auto_clips=1, rewrite_parallel=min(4, max(1, a.parallel)), story_engine="e4.8", e4_language=a.language,
                     e4_score=a.score, e4_decision_budget=a.decision_budget, e4_picture_notes=a.notes, rewrite_thinking=False)
     t0 = time.time()
     rec, notes, clips = stub_pack.run_rewrite(ROOT, settings, builder_scenario.clips_empty(1), refs=refs, writer_suffix=".ninfer", vision=not a.no_vision,

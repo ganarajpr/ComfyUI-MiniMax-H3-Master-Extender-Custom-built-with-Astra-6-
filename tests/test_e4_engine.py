@@ -1,6 +1,6 @@
-"""story_engine=e4: the E4.6 engine inside the Master Extender's story mode.
+"""story_engine=e4.8: the E4.8 engine inside the Master Extender's story mode.
 
-  - EngineTests: ``rewrite_clips`` with story_engine=e4 runs the vendored E4 as a real Node subprocess against a mock model server that REPLAYS a
+  - EngineTests: ``rewrite_clips`` with story_engine=e4.8 runs the vendored E4 as a real Node subprocess against a mock model server that REPLAYS a
     stored real run (tests/fixtures/e4_replay.json.gz). Proves: valid clips in the extender's clip structure, the pictures bound and cited with the
     extender's own Picture numbers, integer durations, the builder not run, both wires (ninfer /v1/messages, llama.cpp chat), the logs, the progress.
   - BuilderUnchanged: story_engine absent or "builder" makes exactly the requests the base commit b12b03d made (tests/fixtures/builder_story_b12b03d.json).
@@ -55,7 +55,7 @@ def default_mapping(text):
 
 
 def settings_for(story, **extra):
-    s = dict(builder_scenario.BASE, rewrite_story=story, auto_clips=2, rewrite_parallel=2, story_engine="e4", e4_language="English", e4_score=(META or {}).get("score", "off"),
+    s = dict(builder_scenario.BASE, rewrite_story=story, auto_clips=(META or {}).get("clips", 2), rewrite_parallel=2, story_engine="e4.8", e4_language="English", e4_score=(META or {}).get("score", "off"),
              e4_decision_budget="off", e4_picture_notes="", rewrite_thinking=False)
     s.update(extra)
     return s
@@ -128,6 +128,38 @@ class EngineTests(unittest.TestCase):
                 self.assertNotEqual("N/A", music, "score on: the bible's score is every clip's non_diegetic_music")
         self.assertEqual([list(range(len(clips)))], run.rec.plans)
         self.assertEqual(len(clips), len([s for s in run.rec.streams if s[2] == "done"]))
+
+    def test_a_visible_state_change_is_carried_into_every_later_clip(self):
+        """E4.8: the boat's oil sheen (set by clip 1 in the stored plan) is in the boat's subject line of clips 2 and 3, and not in clip 1."""
+        run = self.run_engine("ninfer")
+        carried = []
+        for clip in run.clips:
+            subjects = sections_of(clip["prompt"])["subject_definitions"]
+            carried.append("now with the Mohan's wooden boat has a fresh oil sheen" in subjects)
+        self.assertEqual([False, True, True], carried)
+
+    def test_the_stored_run_is_replayed_byte_for_byte_at_engine_level(self):
+        """A job with no pictures makes the engine build its own references, as the eval run did: every stored request is then answered
+        (no miss) and plan, bible, state fold, shots, the ledgers and each clip's facts, writer prompt and final prose equal the stored run's bytes."""
+        import hashlib
+        out = Path(tempfile.mkdtemp(dir=self.user))
+        job = {"name": "drama_two_hander", "story": self.story, "language": "English", "score": "off", "workers": 3, "resume": False, "out": str(out), "vision": False,
+               "pictures": [], "notes": {}}
+        (out / "job.json").write_text(json.dumps(job), encoding="utf-8")
+        with e4_mock_llm.MockLLM(REPLAY) as llm:
+            env = dict(os.environ, E4_LLM_URL=llm.url, E4_LLM_MODEL="mock", E4_LLM_API_STYLE="ninfer-messages")
+            proc = subprocess.run([NODE, str(ROOT / "e4" / "bridge" / "run.mjs"), str(out / "job.json")], env=env, capture_output=True, text=True, cwd=str(ROOT))
+        self.assertEqual(0, proc.returncode, proc.stderr[-1500:])
+        self.assertEqual([], llm.misses)
+        for rel, want in META["story_outputs_sha256"].items():
+            self.assertEqual(want, hashlib.sha256((out / "drama_two_hander" / rel).read_bytes()).hexdigest(), f"{rel} differs from the stored run")
+
+    def test_engine_names(self):
+        self.assertEqual(["builder", "e4.8"], e4_engine.ENGINES)
+        self.assertEqual("e4.8", e4_engine.normalize_engine("e4"), "a workflow saved with the E4.6/E4.7 build says e4")
+        self.assertEqual("e4.8", e4_engine.normalize_engine("e4.8"))
+        for other in (None, "", "builder", "e4.7", "x"):
+            self.assertEqual("builder", e4_engine.normalize_engine(other))
 
     def test_the_builder_does_not_run(self):
         run = self.run_engine("ninfer")
@@ -281,7 +313,7 @@ class EngineTests(unittest.TestCase):
         run = self.run_engine("ninfer")
         messages = [m for _stage, m, _p in run.rec.progress]
         n = META["clips"]
-        for want in ("story_engine=e4", "E4: story planned", "E4: film bible written", "reference pictures bound", f"clip 1/{n} staged", f"clip {n}/{n} written"):
+        for want in ("story_engine=e4.8", "E4: story planned", "E4: film bible written", "reference pictures bound", f"clip 1/{n} staged", f"clip {n}/{n} written"):
             self.assertTrue(any(want in m for m in messages), f"no progress message with '{want}': {messages}")
         fractions = [p for _s, _m, p in run.rec.progress]
         self.assertTrue(all(0 <= p <= 1 for p in fractions))
@@ -295,13 +327,13 @@ class EngineTests(unittest.TestCase):
             rec, notes, done = stub_pack.run_rewrite(ROOT, settings_for(self.story, auto_clips=3), clips, refs=stub_pack.make_pictures((0, 1)), writer_suffix=".ninfer",
                                                     server_base=llm.url, user_dir=Path(tempfile.mkdtemp(dir=self.user)))
         self.assertEqual([], llm.requests, "E4 was not started")
-        self.assertTrue(any("story_engine=e4 is not used for this run" in m for _s, m, _p in rec.progress))
+        self.assertTrue(any("story_engine=e4.8 is not used for this run" in m for _s, m, _p in rec.progress))
         self.assertTrue(rec.chats, "the builder planner ran instead")
         self.assertTrue(all(c.get("rewrite_meta", {}).get("engine") != "e4" for c in done))
 
     def test_no_picture_falls_back_to_the_builder(self):
         with e4_mock_llm.MockLLM(REPLAY) as llm:
-            rec, notes, done = stub_pack.run_rewrite(ROOT, settings_for(self.story, rewrite_task="auto"), builder_scenario.clips_empty(1), refs={}, writer_suffix=".ninfer",
+            rec, notes, done = stub_pack.run_rewrite(ROOT, settings_for(self.story, rewrite_task="auto", auto_clips=2), builder_scenario.clips_empty(1), refs={}, writer_suffix=".ninfer",
                                                     server_base=llm.url, user_dir=Path(tempfile.mkdtemp(dir=self.user)))
         self.assertEqual([], llm.requests)
         self.assertTrue(any("no reference picture" in m for _s, m, _p in rec.progress))
@@ -418,27 +450,27 @@ class FrozenCopy(unittest.TestCase):
 
     def test_a_changed_frozen_file_is_caught(self):
         tmp = self.tree()
-        target = tmp / "e4" / "planpath47" / "planner.mjs"
+        target = tmp / "e4" / "planpath48" / "planner.mjs"
         target.write_text(target.read_text(encoding="utf-8") + "\n// edited\n", encoding="utf-8")
         r = self.verify(tmp)
         self.assertEqual(1, r.returncode)
-        self.assertIn("CHANGED e4/planpath47/planner.mjs", r.stdout)
+        self.assertIn("CHANGED e4/planpath48/planner.mjs", r.stdout)
 
     def test_an_edit_inside_a_patched_file_outside_the_patch_is_caught(self):
         tmp = self.tree()
-        target = tmp / "e4" / "planpath47" / "film.mjs"
+        target = tmp / "e4" / "planpath48" / "film.mjs"
         text = target.read_text(encoding="utf-8")
         target.write_text(text.replace("const pad = (n)", "const padd = (n)", 1), encoding="utf-8")
         r = self.verify(tmp)
         self.assertEqual(1, r.returncode)
         manifest = json.loads((tmp / "e4" / "MANIFEST.json").read_text(encoding="utf-8"))
         for f in manifest["files"]:
-            if f["path"] == "e4/planpath47/film.mjs":
+            if f["path"] == "e4/planpath48/film.mjs":
                 f["vendoredSha256"] = __import__("hashlib").sha256(target.read_bytes()).hexdigest()
         (tmp / "e4" / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
         r = self.verify(tmp)
         self.assertEqual(1, r.returncode, "even with the manifest updated, the patched file must reverse to the source")
-        self.assertIn("DIFFERS e4/planpath47/film.mjs", r.stdout)
+        self.assertIn("DIFFERS e4/planpath48/film.mjs", r.stdout)
 
     def test_an_unlisted_file_is_caught(self):
         tmp = self.tree()
@@ -450,7 +482,7 @@ class FrozenCopy(unittest.TestCase):
     def test_the_declared_patches_are_the_only_differences_to_the_tag(self):
         tag = os.environ.get("E4_EVAL_REPO")
         if not tag:
-            self.skipTest("set E4_EVAL_REPO to the h3-prompt-eval checkout to compare with the git tag e4.6-frozen")
+            self.skipTest("set E4_EVAL_REPO to the h3-prompt-eval checkout to compare with the git tag e4.8-frozen")
         r = self.verify(ROOT, "--eval-repo", tag)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
         self.assertRegex(r.stdout, r"\d+ against the git tag")
@@ -459,7 +491,7 @@ class FrozenCopy(unittest.TestCase):
         home = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, home, True)
         env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
-        for entry in ("planpath47/film.mjs", "bridge/run.mjs"):
+        for entry in ("planpath48/film.mjs", "bridge/run.mjs"):
             if entry == "bridge/run.mjs":
                 continue
             r = subprocess.run([NODE, "--input-type=module", "-e", f"await import('{(ROOT / 'e4' / entry).as_uri()}'); console.log('ok')"], capture_output=True, text=True, env=env)
@@ -543,7 +575,7 @@ class PythonSide(unittest.TestCase):
             else:
                 c.update(prompt=f"subject_definitions:\nfinal {i}", duration=15, durationExact=15.08, pictures=[{"picture": 2, "entity": "a"}], checks={"citationIssues": []})
             clips.append(c)
-        return {"version": "e4.6-frozen", "clips": clips, "stats": {"wallSecs": 60}}
+        return {"version": "e4.8-frozen", "clips": clips, "stats": {"wallSecs": 60}}
 
     def test_apply_clips_fills_empty_clips_then_appends(self):
         clips = [{"id": 7, "title": "My opening", "prompt": "", "duration": 15, "seed": 5, "loras": ["x"]}, {"id": 8, "title": "Clip 2", "prompt": "", "duration": 10}]

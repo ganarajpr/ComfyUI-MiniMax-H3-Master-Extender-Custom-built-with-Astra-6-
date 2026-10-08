@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { HERE } from './lib.mjs';
 import { sequenceIssues } from './sequence.mjs';
 import { planSpeechIssues } from './utterance.mjs';
+import { planStateIssues } from './state.mjs';
 
 export const CAMERA_SHOTS = ['wide_establishing', 'medium', 'medium_close', 'close_up', 'extreme_close_up_macro', 'tracking_following', 'over_the_shoulder', 'top_down_overhead', 'low_angle', 'high_angle'];
 export const CAMERA_LABELS = {
@@ -41,7 +42,7 @@ OUTPUT FORMAT — reply with ONE JSON object and nothing else (no prose, no code
   "ledger": {"entities": [
     {"id": "short_slug", "name": "...", "kind": "character|prop|creature|environment",
      "clip_ids": [1, 2],
-     "axes": [{"axis": "wardrobe", "options": ["least", "...", "most"], "progressive": false, "plate_visible": true}],
+     "axes": [{"axis": "wardrobe", "options": ["least", "...", "most"], "progressive": false, "plate_visible": true, "visible_trace": false}],
      "initial": [{"axis": "wardrobe", "value": "one of that axis's options"}]}
   ]},
   "clips": [
@@ -67,6 +68,9 @@ export const CONTINUITY_RULE = 'CONTINUITY STATE — these rules sit on top of t
 // and a count or a list must continue the same way across every clip.
 export const UTTERANCE_RULE = 'UTTERANCE RULE — everything a character or a voice says aloud in the story, and everything the story implies is said aloud (counting, reciting, chanting, calling out, repeating another speaker, reading aloud), is written as the EXACT WORDS in that shot\'s dialogue_line, with has_dialogue true and the speaker in dialogue_speaker. Never describe speech in subject or action ("she counts aloud", "her mouth moves in a steady count", "the voice calls back"): write the words themselves ("One. Two. Three."). A sequence (numbers, a list, a chant) is written out in full, by the speaker the story names, in the order the story gives. When the story relates what two speakers say (one repeats the other, one is a beat behind, one is a number later, the next number), the words must show exactly that relation: a repeat is the same word, "one number later" is the following number, "the next number" continues the sequence. A count goes one way (up or down) by one each time across all clips unless the story says it restarts.';
 
+// E4.8: the one planner prompt addition of the state rule (founder 2026-10-08): a visible physical trace is a ledger axis, written as what shows, and it carries into the next clips' subject lines.
+export const VISIBLE_STATE_RULE = 'VISIBLE STATE RULE — when a story event leaves a VISIBLE physical trace on a person or an object (tears, sweat, wet or muddy clothing, smudged makeup, disheveled hair, a torn or removed garment, a wound, blood, dirt, a lamp lit, a door broken, water spilled), declare it in the ledger as an axis with "visible_trace": true, and list the change in state_changes in the clip and shot where it happens. Every option of such an axis is a visible physical description that names the thing it is on (the body part, the garment or the object) and completes the words "with ..." (for example "wet tear trails down both cheeks, eyes red-rimmed", "the left sleeve torn open at the shoulder", "the left shin grazed raw, a thin line of blood", "the candle lit, a small flame on the table"), never an emotion word ("sad", "upset", "angry"), never a bare word ("lit", "unlit", "wet", "on") and never a negation. The opening value is the plain look (for example "dry cheeks, clear eyes"). A trace stays until a later state change removes it. The end_state of every clip names each trace that holds at its last frame, in the option\'s own words, in the character\'s state, wardrobe or props (or in the location for a place). Posture, position, location and mood are not traces: leave visible_trace false for them.';
+
 export const OPENS_MARK = (n) => `CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP ${n} ENDED:`;
 export const ENDS_MARK = 'AT THE END OF THIS CLIP (the next clip opens exactly here):';
 
@@ -78,7 +82,7 @@ export function outputShape(start = 1, second = null, seconds = CLIP_SECONDS) {
 }
 
 export function buildUserMessage(story, seconds = CLIP_SECONDS) {
-  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\n\n${CONTINUITY_RULE}\n\n${UTTERANCE_RULE}${outputShape(1, null, seconds)}`;
+  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\n\n${CONTINUITY_RULE}\n\n${UTTERANCE_RULE}\n\n${VISIBLE_STATE_RULE}${outputShape(1, null, seconds)}`;
 }
 
 export const REFS_RULE = 'REFERENCE RULE — These are the only characters, props and locations that have a reference picture. Stage the story with them: a character keeps the face, build and hair of their picture, a prop or location keeps its material and layout. A character\'s clothing comes from the story, not from the picture (the picture\'s outfit is only the fallback when the story is silent). Anything without a picture stays off screen or unseen. Name a subject by its Picture number the first time it appears in a clip\'s shots.';
@@ -136,7 +140,7 @@ function coerceClip(v, fallback) {
   const changes = (Array.isArray(v.state_changes) ? v.state_changes : []).map(coerceChange).filter(Boolean);
   return { clip: int(v.clip, fallback), beat: txt(v.beat), shots, forward_pull: txt(v.forward_pull), state_changes: changes, end_state: coerceEndState(v.end_state) };
 }
-const coerceAxis = (v) => (v && typeof v === 'object' && typeof v.axis === 'string' ? { axis: v.axis.trim(), options: (Array.isArray(v.options) ? v.options : []).filter((o) => typeof o === 'string'), progressive: v.progressive === true, plate_visible: v.plate_visible === true } : null);
+const coerceAxis = (v) => (v && typeof v === 'object' && typeof v.axis === 'string' ? { axis: v.axis.trim(), options: (Array.isArray(v.options) ? v.options : []).filter((o) => typeof o === 'string'), progressive: v.progressive === true, plate_visible: v.plate_visible === true, visible_trace: v.visible_trace === true } : null);
 function coerceEntity(v) {
   if (!v || typeof v !== 'object' || typeof v.id !== 'string' || !v.id.trim()) return null;
   const kind = ['character', 'prop', 'creature', 'environment'].includes(v.kind) ? v.kind : 'character';
@@ -375,7 +379,7 @@ export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () 
   const user = buildUserContent(story, null, seconds);
   let complaint = [], parsed = null, issues = [];
   const attempts = [];
-  // E4.6: the plan checks of issue #7 (speech in prose, sequence continuity) get one more retry; every other failure keeps the single retry of E4.2.
+  // E4.6: the plan checks of issue #7 (speech in prose, sequence continuity) get one more retry, and so do E4.8's visible-state checks (option wording, state changes against end_state); every other failure keeps the single retry of E4.2.
   for (let attempt = 0; attempt < 3; attempt++) {
     const content = complaint.length ? `${user}\n\nYOUR PREVIOUS REPLY FAILED THESE CHECKS — CORRECT EXACTLY THIS AND NOTHING ELSE:\n${complaint.join('\n')}` : user;
     const reply = await chat([{ role: 'user', content }], attempt);
@@ -390,7 +394,7 @@ export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () 
       log(`attempt ${attempt + 1}: reply not parseable`);
       continue;
     }
-    const base = checkBreakdown(parsed, seconds), utter = [...planSpeechIssues(parsed), ...sequenceIssues(plannedLines(parsed), story).issues];
+    const base = checkBreakdown(parsed, seconds), utter = [...planSpeechIssues(parsed), ...sequenceIssues(plannedLines(parsed), story).issues, ...planStateIssues(parsed)];
     issues = [...base, ...utter];
     attempts.push({ attempt: attempt + 1, parsed: true, issues: [...issues], rebalanced });
     if (!issues.length) break;

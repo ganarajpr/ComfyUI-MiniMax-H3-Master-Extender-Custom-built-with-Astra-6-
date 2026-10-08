@@ -5,9 +5,9 @@
 import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL } from '../planpath47/lib.mjs';
+import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL } from '../planpath48/lib.mjs';
 
-// Its own call kind, not 'decision': the decision calls think off (E4.7), but this one looks at pictures, and on the lane thinking off missed a character
+// Its own call kind, not 'decision': the decision calls think off (E4.7 onward), but this one looks at pictures, and on the lane thinking off missed a character
 // (Pramod) that thinking 2048 and 4096 both found. E4_LLM_BUDGET_PICTURE_MAP sets its budget (2048 here).
 export const MAP_KIND = 'picture_map';
 export const MAP_SETTINGS = { max_tokens: 8000, reasoning: { max_tokens: 2048 }, temperature: 0 };

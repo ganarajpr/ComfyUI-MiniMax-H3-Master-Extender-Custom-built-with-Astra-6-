@@ -1,4 +1,4 @@
-"""story_engine=e4: the E4.6 story-to-film pipeline as the Master Extender's story planner and clip writer.
+"""story_engine=e4.8: the E4.8 story-to-film pipeline as the Master Extender's story planner and clip writer.
 
 E4 is plain Node (no npm package) vendored under ``e4/`` (see ``e4/MANIFEST.json``, ``e4/verify-frozen.mjs``). Story mode runs it
 as ONE subprocess per film (``e4/bridge/run.mjs``) against the SAME model server the rewriter already opened, and puts E4's final prompts
@@ -27,12 +27,22 @@ from pathlib import Path
 
 _LOG = logging.getLogger("minimax_h3_master_extender.e4")
 
-ENGINES = ["builder", "e4"]
+ENGINES = ["builder", "e4.8"]
+ENGINE_ID = "e4.8"
+LEGACY_ENGINES = {"e4": ENGINE_ID}   # the value a workflow saved with the E4.6/E4.7 build carries
 SCORES = ["off", "on"]
 DECISION_THINKING = ["off", "1024", "2048", "4096"]
 DECISION_BUDGETS = DECISION_THINKING
-ENGINE_NAME = "E4.7"
-ENGINE_TAG = "e4.7-frozen"
+ENGINE_NAME = "E4.8"
+ENGINE_TAG = "e4.8-frozen"
+
+
+def normalize_engine(value) -> str:
+    """A story_engine value from a widget or a saved workflow: builder, e4.8, or the old name e4 (which is e4.8 now); anything else is builder."""
+    value = str(value or "builder").strip()
+    value = LEGACY_ENGINES.get(value, value)
+    return value if value in ENGINES else "builder"
+
 
 PLAN_BUDGET = 4096          # planner, bible and writer (and the repairs) think at most this many tokens per call
 PICTURE_BUDGET = 2048       # the call that binds the pictures to the entities looks at images: with thinking off it missed a character that thinking 2048 and 4096 found
@@ -146,7 +156,7 @@ def find_node(user_dir: Path | None = None) -> str:
             tried.append(f"{where}: '{path}' is Node {major}, E4 needs {MIN_NODE_MAJOR} or newer")
             continue
         return path
-    raise E4Error("story_engine=e4 needs Node.js " + str(MIN_NODE_MAJOR) + "+ (no package install, just the executable). Set "
+    raise E4Error("story_engine=e4.8 needs Node.js " + str(MIN_NODE_MAJOR) + "+ (no package install, just the executable). Set "
                   + NODE_ENV + " or write its path on the first line of " + (str(folder / NODE_FILE) if folder else NODE_FILE)
                   + (". Tried: " + "; ".join(tried) if tried else ". Nothing found on PATH."))
 

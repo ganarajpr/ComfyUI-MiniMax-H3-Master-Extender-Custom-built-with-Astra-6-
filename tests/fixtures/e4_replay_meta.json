@@ -1,7 +1,43 @@
 {
- "labels": [1, 2, 3, 4, 5, 6],
- "clips": 2,
+ "labels": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8
+ ],
+ "clips": 3,
  "score": "off",
- "mapping": {"2": "chikankari_tailor_shop", "3": "pramod", "4": "button", "5": "haroon", "6": "tea_glass"},
- "provenance": "e4_replay.json.gz holds the model replies of a real run of the extender's story_engine=e4 (E4.7, decisions thinking off, the picture binding thinking 2048) on the fresh3-v2 'comedy_two_hander' story (tests/fixtures/e4_story.txt) on the local ninfer Swift 1.5 lane of the 5090, 2026-10-08, made with tests/e2e/e4_outside_comfyui.py: six pictures connected in the order sherwani, shop, Pramod, button, Haroon, tea glass (the renders of results/2026-10-08-x0-vs-x1/refs/comedy_two_hander), score off, 2 clips, 9 requests (planner, bible, picture binding, 3 decision calls, 2 writers, 1 repair). The requests are keyed by their text, so the replay does not depend on the wire. The sherwani plate has no entity in the bible, so its picture is unused."
+ "mapping": {
+  "2": "mohan",
+  "3": "tarun",
+  "4": "boat",
+  "5": "oar",
+  "6": "oil_cloth",
+  "7": "buyers_offer",
+  "8": "varanasi_ferry_ghat"
+ },
+ "provenance": "e4_replay.json.gz holds the model replies of a real run of the E4.8 engine (e4.8-frozen: E4.7 plus the visible-state carry) on the 'drama_two_hander' story (tests/fixtures/e4_story.txt) on the local ninfer Swift 1.5 lane of the 5090, 2026-10-08, from h3-prompt-eval/results/2026-10-08-e4.8-state/drama_two_hander (decisions thinking off, planner/bible/writer thinking 4096): 12 requests (planner and its retry, bible, 3 decision calls, 3 writers, 2 repairs, 2 reference-writer repairs). Recorded with `python tests/e4_mock_llm.py record <that run dir> tests/fixtures/e4_replay.json.gz`. That run was made by the eval repo's own runner, so the extender's own picture-binding call is not in it: the mock answers it from `mapping` (eight pictures connected; picture 1 is a plate no entity shows and is unused, pictures 2-8 are mohan, tarun, boat, oar, oil_cloth, buyers_offer, varanasi_ferry_ghat). Every other request the extender makes is one the stored run made (0 misses): the extender's picture binding does not change what planner, bible, decisions and writers are asked. The story carries a visible state change (the oil sheen on the boat), so clips 2 and 3 carry it in their subject lines (tests/fixtures/e4_replay_state.json).",
+ "story_outputs_sha256": {
+  "plan.json": "821d7516a1803c74495d4274ba5b38e9a1294677b13b3653c4a926cd2f699419",
+  "bible.json": "38ce412afe19b57dd7e77d18a95ac80eed33f998c2adb42bf0592929103ea155",
+  "state_fold.json": "0367cd8f6df27d070e4177024ae9b9f84dc0ae4ab2f9e1c5493cb49f0fd0d29c",
+  "shots.json": "052e4a6e2b36348b7eda7b744ab5afa24b9cb41b36a9ac553c2458771e232e0c",
+  "fix.json": "a0b8aa2146342698ca60171c7b552080ad3bd3d53993ef67cdc469daf3511558",
+  "staging_ledger.json": "de7295b1d5263b23e43a63f73413b35748f09cbc4fb6e95b489185dc4e05484d",
+  "dialogue_ledger.json": "e5394d77b9c2de7e804886f4675564be9e12c857918acda166a6e8533a6d7137",
+  "film_checks.json": "2871fbfdee00bf8bc684a101d39ebf1ffb73ab23e64dbda32e2bcae0b019202c",
+  "clips/clip01/final.prose.json": "d19b2f2fb9f8d48c4340b34a09177e951fab6fa4dfe29b7cf31eba3e7decd5c3",
+  "clips/clip01/facts.txt": "ef11c417af10b569b82818b043ece8786e2a5081ea6903e76fed3a87be1d75ef",
+  "clips/clip01/writer.prompt.txt": "a488925abc4aa544df3bda8478c2e7dfd109a516b8ff3e2b8727e673bba8c3fe",
+  "clips/clip02/final.prose.json": "7c2e66264ff077e766db2d659336c5dbbda144368f59107cea93036556103df6",
+  "clips/clip02/facts.txt": "3032722d0493b841e98d36c7bdbf4022b649370b0fc970efea713c9f6d35f6a8",
+  "clips/clip02/writer.prompt.txt": "eb59ee56455231ce204ba51c68cde7857c46f6148fe6cbc60652f21535ccdaed",
+  "clips/clip03/final.prose.json": "b81e31f8d8738d4a92d06836361e4a1d961cb5103a838d494fc81eb942464029",
+  "clips/clip03/facts.txt": "3dabe8996e94a8430a269a60e5241bcfe504585ac4aef969eb29315efd63b02f",
+  "clips/clip03/writer.prompt.txt": "381c85817c481069d885e333483a4aa50f0787ac0a6c7d8f5e7396cea61c9512"
+ }
 }

@@ -1,7 +1,7 @@
 [
  {
   "file": "hybrid3/lib.mjs",
-  "why": "the dhee-core .env is optional (a local endpoint needs no key). hybrid3/lib.mjs is shared by every E4 version and frozen, so E4.7 cannot change it; E4.7's own lib.mjs is already tolerant.",
+  "why": "the dhee-core .env is optional (a local endpoint needs no key). hybrid3/lib.mjs is shared by every E4 version and frozen, so E4.8 cannot change it; E4.8's own lib.mjs is already tolerant.",
   "replacements": [
    {
     "find": "const env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8');",
@@ -10,7 +10,7 @@
   ]
  },
  {
-  "file": "planpath47/hybrid46/validate.mjs",
+  "file": "planpath48/hybrid46/validate.mjs",
   "why": "the h3-audit runner is vendored under e4/audit instead of ~/.kshana/runners.",
   "replacements": [
    {
@@ -20,7 +20,7 @@
   ]
  },
  {
-  "file": "planpath47/film.mjs",
+  "file": "planpath48/film.mjs",
   "why": "hook for the Master Extender: bindPictures replaces the reference-image stage (buildRefs) when the user's own pictures are connected. Everything else is untouched.",
   "replacements": [
    {

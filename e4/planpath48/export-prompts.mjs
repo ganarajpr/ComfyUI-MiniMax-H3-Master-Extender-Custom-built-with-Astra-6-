@@ -7,6 +7,7 @@
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pictureList, citeSubjectDefinitions, imageMap, checkPictureCitations } from './pictures.mjs';
+import { citeRetention } from './state.mjs';
 
 const block = (name, body) => `${name}:\n${String(body).trim()}`;
 export function exportPrompts(outDir, promptsDir = join(outDir, 'prompts'), { cite = true, images = null } = {}) {
@@ -27,14 +28,15 @@ export function exportPrompts(outDir, promptsDir = join(outDir, 'prompts'), { ci
       const prose = JSON.parse(readFileSync(f, 'utf8'));
       const ref = fix.refs.shots.find((s) => s.id === prose.id);
       const subjectDefinitions = cite ? citeSubjectDefinitions(ref.subjectDefinitions, ref.references, names) : ref.subjectDefinitions;
-      const text = [block('subject_definitions', subjectDefinitions), block('summary', prose.summary), block('retention_analysis', ref.retentionAnalysis), block('detailed_description', prose.detailedDescription), block('overall_soundscape', prose.overallSoundscape || 'N/A'), block('non_diegetic_music', prose.nonDiegeticMusic || 'N/A')].join('\n\n');
+      const retention = cite ? citeRetention(ref.retentionAnalysis, ref.references, pictureList(ref.references)) : ref.retentionAnalysis;
+      const text = [block('subject_definitions', subjectDefinitions), block('summary', prose.summary), block('retention_analysis', retention), block('detailed_description', prose.detailedDescription), block('overall_soundscape', prose.overallSoundscape || 'N/A'), block('non_diegetic_music', prose.nonDiegeticMusic || 'N/A')].join('\n\n');
       const id = `${story}__${c}`;
       writeFileSync(join(promptsDir, `${id}_e4.txt`), text);
       if (cite) {
         const pictures = pictureList(ref.references, imgs);
         writeFileSync(join(promptsDir, `${id}_e4.refs.json`), JSON.stringify({ story, clip: c, duration: prose.duration, pictures }, null, 2));
         if (images) writeFileSync(join(promptsDir, `${id}_e4.refs`), pictures.map((p) => p.image).join(','));
-        pictureChecks[id] = checkPictureCitations({ references: ref.references, sections: { subject_definitions: subjectDefinitions, summary: prose.summary, retention_analysis: ref.retentionAnalysis, detailed_description: prose.detailedDescription, overall_soundscape: prose.overallSoundscape || '', non_diegetic_music: prose.nonDiegeticMusic || '' }, pictures, refsJson, images: images ? imgs : null });
+        pictureChecks[id] = checkPictureCitations({ references: ref.references, sections: { subject_definitions: subjectDefinitions, summary: prose.summary, retention_analysis: retention, detailed_description: prose.detailedDescription, overall_soundscape: prose.overallSoundscape || '', non_diegetic_music: prose.nonDiegeticMusic || '' }, pictures, refsJson, images: images ? imgs : null });
       }
       durations[id] = prose.duration;
       jobs.push(`${id} ${Math.round(Number(prose.duration))}`);
