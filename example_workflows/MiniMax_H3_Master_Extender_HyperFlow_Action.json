@@ -1254,6 +1254,56 @@
           },
           "link": null,
           "shape": 7
+        },
+        {
+          "localized_name": "story_engine",
+          "name": "story_engine",
+          "type": "COMBO",
+          "widget": {
+            "name": "story_engine"
+          },
+          "link": null,
+          "shape": 7
+        },
+        {
+          "localized_name": "e4_language",
+          "name": "e4_language",
+          "type": "STRING",
+          "widget": {
+            "name": "e4_language"
+          },
+          "link": null,
+          "shape": 7
+        },
+        {
+          "localized_name": "e4_score",
+          "name": "e4_score",
+          "type": "COMBO",
+          "widget": {
+            "name": "e4_score"
+          },
+          "link": null,
+          "shape": 7
+        },
+        {
+          "localized_name": "e4_decision_budget",
+          "name": "e4_decision_budget",
+          "type": "COMBO",
+          "widget": {
+            "name": "e4_decision_budget"
+          },
+          "link": null,
+          "shape": 7
+        },
+        {
+          "localized_name": "e4_picture_notes",
+          "name": "e4_picture_notes",
+          "type": "STRING",
+          "widget": {
+            "name": "e4_picture_notes"
+          },
+          "link": null,
+          "shape": 7
         }
       ],
       "outputs": [
@@ -1355,6 +1405,11 @@
         0,
         "images",
         15,
+        "builder",
+        "English",
+        "off",
+        "2048",
+        "",
         ""
       ]
     }
