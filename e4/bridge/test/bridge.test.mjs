@@ -117,10 +117,11 @@ test('E4 durations become whole seconds', () => {
   assert.equal(wholeSeconds(0.2), 1);
 });
 
+const probe = (style, extra = {}, kind = 'decision') => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
+  `import('${new URL('../../hybrid3/lib.mjs', import.meta.url).href}').then((m) => console.log(JSON.stringify(m.buildRequest([{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], { max_tokens: 32000, reasoning: { max_tokens: 4096 }, temperature: 0.5 }, '${kind}'))))`],
+  { env: { ...process.env, E4_LLM_API_STYLE: style, E4_LLM_URL: 'http://h:1', E4_LLM_MODEL: 'm', E4_LLM_BUDGET_DECISION: '2048', E4_LLM_MAX_TOKENS: '12288', ...extra } }).toString());
+
 test('the llama-chat style sends the founder\'s two top-level budget fields and the ninfer style a per-request thinking budget', () => {
-  const probe = (style) => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
-    `import('${new URL('../../hybrid3/lib.mjs', import.meta.url).href}').then((m) => console.log(JSON.stringify(m.buildRequest([{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], { max_tokens: 32000, reasoning: { max_tokens: 4096 }, temperature: 0.5 }, 'decision'))))`],
-    { env: { ...process.env, E4_LLM_API_STYLE: style, E4_LLM_URL: 'http://h:1', E4_LLM_MODEL: 'm', E4_LLM_BUDGET_DECISION: '2048', E4_LLM_MAX_TOKENS: '12288' } }).toString());
   const llama = probe('llama-chat');
   assert.equal(llama.url, 'http://h:1/v1/chat/completions');
   assert.equal(llama.body.reasoning_budget_tokens, 2048);
@@ -134,6 +135,17 @@ test('the llama-chat style sends the founder\'s two top-level budget fields and 
   assert.deepEqual(ninfer.body.thinking, { type: 'enabled', budget_tokens: 2048 });
   assert.equal(ninfer.body.max_tokens, 12288);
   assert.equal(ninfer.body.system, 'S');
+});
+
+test('E4_LLM_THINKING_DECISION=off turns thinking off: disabled on ninfer, chat_template_kwargs on llama.cpp, never an omitted field or a top-level enable_thinking', () => {
+  const off = { E4_LLM_THINKING_DECISION: 'off' };
+  assert.deepEqual(probe('ninfer-messages', off).body.thinking, { type: 'disabled' });
+  const llama = probe('llama-chat', off);
+  assert.deepEqual(llama.body.chat_template_kwargs, { enable_thinking: false });
+  assert.equal(llama.body.reasoning_budget_tokens, undefined);
+  assert.equal(llama.body.reasoning_budget_message, undefined);
+  assert.equal(llama.body.enable_thinking, undefined);
+  assert.deepEqual(probe('ninfer-messages', off, 'writer').body.thinking, { type: 'enabled', budget_tokens: 4096 }, 'another kind keeps its budget');
 });
 
 // ---- the binder, end to end against a canned model server

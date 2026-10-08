@@ -211,7 +211,7 @@
    "sourceSha256": "4649f4297b1b165b02ece5e2157d286ba8076de3c788e67cdca7cc509b490e53",
    "freezeRecordSha256": "4649f4297b1b165b02ece5e2157d286ba8076de3c788e67cdca7cc509b490e53",
    "patched": true,
-   "vendoredSha256": "39ec33cc1d54830ccae8a61a16a3c1eea6149af8137208234dcedf89ae2c579d"
+   "vendoredSha256": "27e7f76e3d0ab87d2e25db6b3b1abcb8298804ad403a36996f750d217c790df6"
   },
   {
    "path": "e4/hybrid3/lint3.mjs",

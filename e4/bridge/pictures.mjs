@@ -144,6 +144,7 @@ export function redact(value) {
 async function chatCompletions(messages) {
   const base = process.env.E4_LLM_URL;
   const body = { model: MODEL, messages, max_tokens: Number(process.env.E4_LLM_MAX_TOKENS) || 12288, temperature: 0, stream: false };
+  if (String(process.env[`E4_LLM_THINKING_${MAP_KIND.toUpperCase()}`] || '').toLowerCase() === 'off') body.chat_template_kwargs = { enable_thinking: false };
   const t0 = Date.now();
   let res = null, raw = '', error = null;
   try {

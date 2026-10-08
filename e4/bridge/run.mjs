@@ -5,7 +5,7 @@
 //     pictures: [{label: <the extender's Picture number>, file: <png>}], notes: {<label>: "text"} }
 // The model endpoint, its wire and the thinking budgets come from E4's own config layer, the environment:
 //   E4_LLM_URL, E4_LLM_MODEL, E4_LLM_API_STYLE (ninfer-messages | llama-chat | openrouter), E4_LLM_BUDGET_<KIND> (PLANNER, BIBLE, DECISION, WRITER, REPAIR),
-//   E4_LLM_MAX_TOKENS, E4_LLM_BUDGET_MESSAGE.
+//   E4_LLM_MAX_TOKENS, E4_LLM_BUDGET_MESSAGE, and E4_LLM_THINKING_<KIND>=off to turn thinking off for one kind of call (the extender sets it for DECISION).
 // Progress goes to stdout as lines "E4PROGRESS {json}"; every request and reply of every call is stored under <out>/<name>/ and listed in <out>/calls.jsonl.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';

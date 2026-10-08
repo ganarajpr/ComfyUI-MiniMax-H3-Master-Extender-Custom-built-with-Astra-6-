@@ -57,7 +57,7 @@ def default_mapping(text):
 
 def settings_for(story, **extra):
     s = dict(builder_scenario.BASE, rewrite_story=story, auto_clips=2, rewrite_parallel=2, story_engine="e4", e4_language="English", e4_score=(META or {}).get("score", "off"),
-             e4_decision_budget="2048", e4_picture_notes="", rewrite_thinking=False)
+             e4_decision_budget="off", e4_picture_notes="", rewrite_thinking=False)
     s.update(extra)
     return s
 
@@ -186,35 +186,62 @@ class EngineTests(unittest.TestCase):
         self.assertEqual("base64", images[0]["source"]["type"])
 
     # ---- the wires and the budgets
-    def test_ninfer_wire_carries_per_request_budgets(self):
-        run = self.run_engine("ninfer")
-        self.assertTrue(run.llm.requests)
-        self.assertEqual({"messages"}, {r["wire"] for r in run.llm.requests})
-        budgets = {}
+    def kinds(self, run):
+        out = {}
         for r in run.llm.requests:
             text = json.dumps(r["body"]["messages"])
             kind = "map" if "binding the reference pictures" in text else "decision" if "ref." in text and "on screen at any point" in text else "plan" if "RUNTIME" in text else "other"
-            budgets.setdefault(kind, set()).add(r["body"]["thinking"]["budget_tokens"])
-            self.assertEqual("enabled", r["body"]["thinking"]["type"])
-            self.assertLessEqual(r["body"]["max_tokens"], e4_engine.max_tokens())
-        self.assertEqual({2048}, budgets["decision"])
-        self.assertEqual({2048}, budgets["map"])
-        self.assertEqual({4096}, budgets["plan"])
-        self.assertEqual({4096}, budgets["other"], "bible, writer and repairs think 4096 at most")
+            out.setdefault(kind, []).append(r)
+        return out
 
-    def test_llama_wire_carries_top_level_budget_fields(self):
+    def test_ninfer_wire_decisions_think_off_by_default_and_the_rest_carries_per_request_budgets(self):
+        run = self.run_engine("ninfer")
+        self.assertTrue(run.llm.requests)
+        self.assertEqual({"messages"}, {r["wire"] for r in run.llm.requests})
+        kinds = self.kinds(run)
+        self.assertEqual({"decision", "map", "plan", "other"}, set(kinds))
+        for kind in ("decision", "map"):
+            for r in kinds[kind]:
+                self.assertEqual({"type": "disabled"}, r["body"]["thinking"], f"{kind}: thinking off is sent as disabled, never omitted")
+        for kind in ("plan", "other"):
+            for r in kinds[kind]:
+                self.assertEqual({"type": "enabled", "budget_tokens": 4096}, r["body"]["thinking"], "planner, bible, writer and repairs think 4096 at most")
+        for r in run.llm.requests:
+            self.assertLessEqual(r["body"]["max_tokens"], e4_engine.max_tokens())
+
+    def test_decision_thinking_is_configurable(self):
+        run = self.run_engine("ninfer-2048", settings=settings_for(self.story, e4_decision_budget="2048"))
+        kinds = self.kinds(run)
+        for kind in ("decision", "map"):
+            self.assertEqual({2048}, {r["body"]["thinking"]["budget_tokens"] for r in kinds[kind]})
+        self.assertEqual({4096}, {r["body"]["thinking"]["budget_tokens"] for r in kinds["plan"] + kinds["other"]})
+        self.assertEqual([c["prompt"] for c in self.run_engine("ninfer").clips], [c["prompt"] for c in run.clips])
+
+    def test_llama_wire_carries_top_level_budget_fields_and_turns_decisions_off_with_chat_template_kwargs(self):
         run = self.run_engine("llama", suffix=".gguf")
         self.assertEqual([], run.llm.misses)
         self.assertEqual({"chat"}, {r["wire"] for r in run.llm.requests})
-        for r in run.llm.requests:
-            self.assertIn("reasoning_budget_tokens", r["body"])
+        kinds = self.kinds(run)
+        for r in kinds["plan"] + kinds["other"]:
+            self.assertEqual(4096, r["body"]["reasoning_budget_tokens"])
             self.assertEqual("Time to stop thinking. Give the final answer now.", r["body"]["reasoning_budget_message"])
             self.assertNotIn("chat_template_kwargs", r["body"])
+        for r in kinds["decision"] + kinds["map"]:
+            self.assertEqual({"enable_thinking": False}, r["body"]["chat_template_kwargs"], "thinking off is chat_template_kwargs, not a top-level field")
+            self.assertNotIn("reasoning_budget_tokens", r["body"])
+            self.assertNotIn("enable_thinking", r["body"])
+        for r in run.llm.requests:
             self.assertNotIn("thinking", r["body"])
         ninfer = self.run_engine("ninfer")
         self.assertEqual([c["prompt"] for c in ninfer.clips], [c["prompt"] for c in run.clips], "the wire changes nothing about the prompts")
-        content = [r for r in run.llm.requests if "binding the reference pictures" in json.dumps(r["body"]["messages"])][0]["body"]["messages"][0]["content"]
+        content = kinds["map"][0]["body"]["messages"][0]["content"]
         self.assertEqual(len(self.labels), len([p for p in content if p["type"] == "image_url"]))
+
+    def test_llama_wire_with_decision_budget_uses_the_top_level_fields(self):
+        run = self.run_engine("llama-1024", suffix=".gguf", settings=settings_for(self.story, e4_decision_budget="1024"))
+        for r in self.kinds(run)["decision"]:
+            self.assertEqual(1024, r["body"]["reasoning_budget_tokens"])
+            self.assertNotIn("chat_template_kwargs", r["body"])
 
     def test_pictures_fall_back_to_the_chat_wire_when_messages_refuses_them(self):
         user = Path(tempfile.mkdtemp(dir=self.user))
@@ -227,6 +254,7 @@ class EngineTests(unittest.TestCase):
         chat = [r for r in llm.requests if r["wire"] == "chat" and "binding the reference pictures" in json.dumps(r["body"]["messages"])]
         self.assertEqual(1, len(chat))
         self.assertEqual(len(self.labels), len([p for p in chat[0]["body"]["messages"][0]["content"] if p["type"] == "image_url"]))
+        self.assertEqual({"enable_thinking": False}, chat[0]["body"]["chat_template_kwargs"])
         mapping = json.loads(next(user.rglob("map.json")).read_text(encoding="utf-8"))
         self.assertIn("/v1/chat/completions", mapping["fallbackWire"])
         self.assertTrue(all(c["prompt_rewritten"] for c in clips))
@@ -450,11 +478,14 @@ class PythonSide(unittest.TestCase):
         self.assertEqual({1: "the shopkeeper, an old man", 2: "the shop with the green door", 3: "a tea glass"}, notes)
         self.assertEqual({}, e4_engine.parse_notes(None))
 
-    def test_decision_budget_maps_to_the_nearest_allowed(self):
+    def test_decision_thinking_maps_to_off_or_the_nearest_allowed(self):
+        self.assertEqual(0, e4_engine.decision_budget("off"), "off is the default")
+        self.assertEqual(0, e4_engine.decision_budget(None))
+        self.assertEqual(0, e4_engine.decision_budget("junk"))
         self.assertEqual(2048, e4_engine.decision_budget("2048"))
         self.assertEqual(1024, e4_engine.decision_budget(1))
         self.assertEqual(4096, e4_engine.decision_budget(99999))
-        self.assertEqual(2048, e4_engine.decision_budget("junk"))
+        self.assertEqual("thinking off", e4_engine.decision_label(0))
 
     def test_endpoint_styles(self):
         server = type("S", (), {"base": "http://127.0.0.1:9/", "model_id": "swift-1.5"})()
@@ -477,7 +508,11 @@ class PythonSide(unittest.TestCase):
         for kind in ("PLANNER", "BIBLE", "WRITER", "REPAIR"):
             self.assertEqual("4096", env[f"E4_LLM_BUDGET_{kind}"])
         self.assertEqual("1024", env["E4_LLM_BUDGET_DECISION"])
+        self.assertNotIn("E4_LLM_THINKING_DECISION", env)
         self.assertEqual("on", env["E4_SCORE"])
+        off = e4_engine.build_env({"url": "u", "model": "m", "style": "llama-chat"}, decision=0, score="off")
+        self.assertEqual("off", off["E4_LLM_THINKING_DECISION"])
+        self.assertNotIn("E4_LLM_BUDGET_DECISION", off)
 
     def test_find_node_prefers_env_then_file_then_path(self):
         if not NODE:

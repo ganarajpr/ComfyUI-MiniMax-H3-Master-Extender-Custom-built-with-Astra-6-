@@ -58,7 +58,7 @@ set MINIMAX_H3_E4_NODE=C:\Users\user\tools\node-v20.20.2-win-x64\node.exe
 Python and the panel's JavaScript are read when ComfyUI starts, and the browser must be refreshed. **Restart only with an empty queue and the founder's OK** (the `never-restart-comfyui-with-queue` rule). Until then the running ComfyUI is still `b12b03d` in memory, whatever is on disk.
 
 After the restart:
-- the Master node has five new widgets at the end of its list: `story_engine` (default `builder`), `e4_language`, `e4_score`, `e4_decision_budget`, `e4_picture_notes`. Saved workflows load with the defaults, so they behave as before.
+- the Master node has five new widgets at the end of its list: `story_engine` (default `builder`), `e4_language`, `e4_score`, `e4_decision_budget` (default `off`: the decision calls do not think), `e4_picture_notes`. Saved workflows load with the defaults, so they behave as before.
 - the example workflows carry the new values (`builder`).
 
 ## First real use

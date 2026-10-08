@@ -933,7 +933,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
 
         # ---- planning with E4: the whole film, planned AND written, in one subprocess ---------------------
         if e4_plan:
-            say("rewrite", f"story_engine=e4: planning and writing the film with {e4_engine.ENGINE_NAME} (thinking budgets {e4_engine.PLAN_BUDGET}, decisions {e4_engine.decision_budget(settings.get('e4_decision_budget'))})", 0.2)
+            say("rewrite", f"story_engine=e4: planning and writing the film with {e4_engine.ENGINE_NAME} (planner, bible and writer think {e4_engine.PLAN_BUDGET} tokens at most, the per-clip decisions {e4_engine.decision_label(e4_engine.decision_budget(settings.get('e4_decision_budget', e4_engine.DECISION_BUDGET_DEFAULT)))})", 0.2)
             endpoint = e4_engine.endpoint_of(server, model_path=model_path, strata=strata, is_ninfer=_mod("server_engine").is_ninfer)
             labels = [slot + 1 for slot, _t in ordered]
             by_label = {int(item["slot"]) + 1: item["image"] for item in pictures}

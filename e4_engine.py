@@ -29,12 +29,13 @@ _LOG = logging.getLogger("minimax_h3_master_extender.e4")
 
 ENGINES = ["builder", "e4"]
 SCORES = ["off", "on"]
-DECISION_BUDGETS = ["1024", "2048", "4096"]
+DECISION_THINKING = ["off", "1024", "2048", "4096"]
+DECISION_BUDGETS = DECISION_THINKING
 ENGINE_NAME = "E4.6"
 ENGINE_TAG = "e4.6-frozen"
 
 PLAN_BUDGET = 4096          # planner, bible and writer (and the repairs) think at most this many tokens per call
-DECISION_BUDGET_DEFAULT = 2048
+DECISION_BUDGET_DEFAULT = "off"
 BUDGET_MESSAGE = "Time to stop thinking. Give the final answer now."
 SLOT_CTX = 32768            # context of one server slot an E4 call may use (largest measured call: 15k prompt + 8k answer)
 SLOT_CTX_ENV = "MINIMAX_H3_E4_SLOT_CTX"
@@ -69,11 +70,22 @@ def max_tokens() -> int:
 
 
 def decision_budget(value) -> int:
+    """The thinking of the per-clip decision calls: 0 = thinking off (the default: measured 0.6 points below thinking 2048, not significant, and about
+    4.7 times faster), else the nearest of 1024 / 2048 / 4096 thinking tokens at most."""
+    text = str(value).strip().lower() if value is not None else "off"
+    if text in ("", "off", "0", "none", "false", "no"):
+        return 0
     try:
-        number = int(float(value))
-    except (TypeError, ValueError):
-        return DECISION_BUDGET_DEFAULT
-    return min((int(b) for b in DECISION_BUDGETS), key=lambda b: (abs(b - number), -b))
+        number = int(float(text))
+    except ValueError:
+        return 0
+    if number <= 0:
+        return 0
+    return min((int(b) for b in DECISION_THINKING if b != "off"), key=lambda b: (abs(b - number), -b))
+
+
+def decision_label(budget: int) -> str:
+    return "thinking off" if not budget else f"thinking {budget}"
 
 
 def parse_notes(text) -> dict[int, str]:
@@ -199,10 +211,14 @@ def build_env(endpoint: dict, *, decision: int, score: str, budget_message: str 
     env.update({
         "E4_LLM_URL": endpoint["url"], "E4_LLM_MODEL": endpoint["model"] or "local", "E4_LLM_API_STYLE": endpoint["style"],
         "E4_LLM_BUDGET_PLANNER": str(PLAN_BUDGET), "E4_LLM_BUDGET_BIBLE": str(PLAN_BUDGET), "E4_LLM_BUDGET_WRITER": str(PLAN_BUDGET),
-        "E4_LLM_BUDGET_REPAIR": str(PLAN_BUDGET), "E4_LLM_BUDGET_DECISION": str(decision),
+        "E4_LLM_BUDGET_REPAIR": str(PLAN_BUDGET),
         "E4_LLM_MAX_TOKENS": str(max_tokens()), "E4_LLM_BUDGET_MESSAGE": budget_message or BUDGET_MESSAGE,
         "E4_SCORE": score, "NODE_NO_WARNINGS": "1",
     })
+    if decision:
+        env["E4_LLM_BUDGET_DECISION"] = str(decision)
+    else:
+        env["E4_LLM_THINKING_DECISION"] = "off"
     return env
 
 
@@ -292,7 +308,7 @@ def plan_film(*, story: str, language: str, score: str, labels: list[int], pictu
             files.append({"label": n, "file": None})
     job = {"name": "story", "story": story, "language": language, "score": score, "workers": max(1, min(MAX_WORKERS, int(workers))), "resume": resume,
            "out": str(run), "vision": bool(sees), "pictures": files, "notes": {str(k): v for k, v in notes.items()},
-           "endpoint": {"style": endpoint["style"], "model": endpoint["model"]}}
+           "decision_thinking": decision_label(decision), "endpoint": {"style": endpoint["style"], "model": endpoint["model"]}}
     (run / "job.json").write_text(json.dumps(job, indent=1, ensure_ascii=False), encoding="utf-8")
     command = [node, str(e4_dir() / "bridge" / "run.mjs"), str(run / "job.json")]
     _LOG.info("E4: %s (resume=%s) -> %s", " ".join(command), resume, run)

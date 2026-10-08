@@ -80,7 +80,7 @@ def main():
     ap.add_argument("--model", default="swift-1.5-qwen3.8-27b-orcarouter", help="the lane's model id (used for the wake-up request; the lane's own id is read afterwards)")
     ap.add_argument("--language", default="English")
     ap.add_argument("--score", choices=["off", "on"], default="off")
-    ap.add_argument("--decision-budget", default="2048")
+    ap.add_argument("--decision-budget", default="off", help="off (default) or 1024 / 2048 / 4096")
     ap.add_argument("--parallel", type=int, default=3)
     ap.add_argument("--notes", default="", help="the e4_picture_notes text")
     ap.add_argument("--no-gate", action="store_true", help="skip the gateway check (the caller has made it)")
