@@ -1,0 +1,7 @@
+{
+ "labels": [1, 2, 3, 4],
+ "clips": 3,
+ "score": "on",
+ "mapping": {"1": "jhanvi", "2": "torch", "3": "measuring_tape", "4": "stepwell"},
+ "provenance": "e4_replay.json.gz holds the model replies of a real E4.6 run of the 'horror' story of the h3-prompt-eval fresh3 set on local ninfer Swift 1.5 (results/2026-10-08-e4.6-horror, score on, 3 clips): 14 requests, keyed by their text. The picture-binding call is not in it (that run rendered its own reference images); the test's mock answers it by binding the film's entities, in list order, to the four pictures."
+}
