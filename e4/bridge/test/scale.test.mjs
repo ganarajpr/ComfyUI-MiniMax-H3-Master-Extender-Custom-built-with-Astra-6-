@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtempSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -98,10 +98,12 @@ async function planScenario(storyText, { cutOver = Infinity, resumeTwice = false
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const out = mkdtempSync(join(tmpdir(), 'scale-'));
+  writeFileSync(join(out, 'story.txt'), storyText);
   try {
     const code = `import { planFilm } from ${JSON.stringify(new URL('../scale.mjs', import.meta.url).href)};
       import { join } from 'node:path';
-      const story = ${JSON.stringify(storyText)};
+      import { readFileSync } from 'node:fs';
+      const story = readFileSync(${JSON.stringify(join(out, 'story.txt'))}, 'utf8');
       const dir = join(${JSON.stringify(out)}, 's');
       const run = (resume) => planFilm({ name: 's', story, wrap: (t) => t + '\\n\\nDIALOGUE LANGUAGE: ${language}.', outRoot: ${JSON.stringify(out)}, dir, resume });
       let r = await run(false);
