@@ -9,6 +9,7 @@ import { CAMERA_LABELS } from './planner.mjs';
 import { EFFORTS, UNSTATED } from './decide.mjs';
 import { voicesOf } from './speakers.mjs';
 import { stateFacts } from './state.mjs';
+import { writerContext } from '../bridge/scale.mjs';
 
 const SEP = '================================================================';
 const HEAD = {
@@ -79,14 +80,15 @@ export function writerPrompt({ fix, shot, rec, bible, plan, rawAsks, story, carr
   t = swap(t, HEAD.act, `{{acting_scene}}`);
   t = swap(t, HEAD.screenplay, `THE FILM PLAN (this run has no screenplay; every clip's planned shot list, in order):\n\n{{screenplay}}`);
   const masters = Object.fromEntries(shot.references.filter((r) => r.type === 'character').map((r) => [r.id, bible.cast.find((c) => c.id === r.id).acting]));
+  const big = writerContext({ plan, rawAsks, story, clipNumber: rec.clip.clip });
   const vars = {
     item_id: fix.sceneId,
     shot_references: { sceneId: fix.sceneId, shots: [fix.refs.shots.find((s) => s.id === shot.id)] },
     scene_split: splitJson(bible, rec, shot),
     dialogue_ledger: fix.ledger, continuity: fix.continuity,
     world_state: worldSlot(bible, rec, carriedText), scene_direction: dirSlot(rec), acting_scene: shapingBlock(shot, rec, bible), acting_master: masters,
-    screenplay: screenplaySlot(plan, rawAsks, rec.clip.clip),
-    narrative_seed: { hasStory: true, storyText: story },
+    screenplay: big ? big.screenplay : screenplaySlot(plan, rawAsks, rec.clip.clip),
+    narrative_seed: { hasStory: true, storyText: big ? big.storyText : story },
   };
   return fill(t, vars);
 }

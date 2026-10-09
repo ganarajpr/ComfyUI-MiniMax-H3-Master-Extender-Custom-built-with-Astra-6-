@@ -21,7 +21,7 @@
  },
  {
   "file": "planpath48/film.mjs",
-  "why": "hook for the Master Extender: bindPictures replaces the reference-image stage (buildRefs) when the user's own pictures are connected. Everything else is untouched. Also (cut-reply handling): hook for truncated replies at max_tokens: planner and bible get the cut note, the failed 'no parseable reply' names it, and a bible.json that recorded issues is regenerated on resume instead of reused.",
+  "why": "hook for the Master Extender: bindPictures replaces the reference-image stage (buildRefs) when the user's own pictures are connected. Everything else is untouched. Also (cut-reply handling): hook for truncated replies at max_tokens: planner and bible get the cut note, the failed 'no parseable reply' names it, and a bible.json that recorded issues is regenerated on resume instead of reused. Also: a long film must not fail: planning and the bible go through e4/bridge/scale.mjs (one call exactly as before for a short story, parts for a long one, a failed part split smaller); the writer's story and film plan and a reference repair's context are windowed past a budget (the same text below it).",
   "replacements": [
    {
     "find": "import { existsSync } from 'node:fs';\nimport { call, parseJsonReply, parseJsonLoose, wr, rj, SETTINGS, MODEL, exists } from './lib.mjs';\nimport { planStory, CAMERA_LABELS, parseBreakdown } from './planner.mjs';\n",
@@ -54,6 +54,18 @@
    {
     "find": "  wr(join(dir, 'story.txt'), story);\n  const { plan, planMeta, bible, bibleMeta } = await planAndBible({ name, story, outRoot, resume, language, refwriter, score });\n  if (score === 'on' && !bible.score) throw new Error('score on, but the bible has no score (a resumed bible from a score-off run)');\n",
     "replace": "  wr(join(dir, 'story.txt'), story);\n  const { plan, planMeta, bible, bibleMeta } = await planAndBible({ name, story, outRoot, resume, language, refwriter, score, bindPictures });\n  if (score === 'on' && !bible.score) throw new Error('score on, but the bible has no score (a resumed bible from a score-off run)');\n"
+   },
+   {
+    "find": "    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'planner'), name: attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages });\n      const text = c.content;\n      if (c.cut) return { text, cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      if (parseBreakdown(text)) return text;\n      const r = repairJson(text);\n      return r.ok ? JSON.stringify(r.value) : text;\n    };\n    const r = await planStory(chat, withLanguage(story, language));\n    plan = r.breakdown; planMeta = { issues: r.issues, attempts: r.attempts, rawAsks: r.rawAsks };\n    wr(pf, { plan, planMeta });\n",
+    "replace": "    ({ plan, planMeta } = await planFilm({ name, story, wrap: (text) => withLanguage(text, language), outRoot, dir, resume }));\n    wr(pf, { plan, planMeta });\n"
+   },
+   {
+    "find": "    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'bible'), name: attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages });\n      if (c.cut) return { ...parseJsonReply(c.content), cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      return parseJsonLoose(c.content);\n    };\n    const r = await makeBible(chat, story, plan, planMeta.rawAsks, { score });\n",
+    "replace": "    const r = await bibleFilm({ name, story, plan, planMeta, outRoot, dir, score, resume });\n"
+   },
+   {
+    "find": "import { foldState, withCarriedState } from './state.mjs';\n",
+    "replace": "import { foldState, withCarriedState } from './state.mjs';\nimport { planFilm, bibleFilm } from '../bridge/scale.mjs';\n"
    }
   ]
  },
@@ -87,7 +99,7 @@
  },
  {
   "file": "planpath48/planner.mjs",
-  "why": "the planner takes a cut reply's note, asks again for shorter field values, and the PlanError names the cut instead of 'no usable JSON'.",
+  "why": "the planner takes a cut reply's note, asks again for shorter field values, and the PlanError names the cut instead of 'no usable JSON'. Also: a long film is planned in parts: planStory takes an optional `extra` block (the part's context: the film so far, the entity ledger, the speaker strings) placed between the visible-state rule and the output format; with no `extra` the request is byte-identical. Also: a retry whose reply cannot be parsed keeps the first reply's plan (with its issues) instead of discarding it and raising: a real run lost a plan that parsed on the first attempt (12 clips) because the retry came back unterminated.",
   "replacements": [
    {
     "find": "// After the retry soft issues are kept (and returned); an unparseable reply twice raises PlanError.\n// `chat(messages, attempt) -> reply text`.\nexport async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () => {} } = {}) {\n",
@@ -108,6 +120,30 @@
    {
     "find": "  }\n  if (!parsed) throw new PlanError('the story planner returned no usable JSON twice');\n  return { breakdown: parsed, issues, attempts, rawAsks: [...parsed.clips].sort((a, b) => a.clip - b.clip).map((c) => rawAskForClip(parsed, c.clip)) };\n",
     "replace": "  }\n  if (!parsed) throw new PlanError(`the story planner returned no usable JSON twice${cuts.length ? ` (${[...new Set(cuts)].join('; ')})` : ''}`);\n  return { breakdown: parsed, issues, attempts, rawAsks: [...parsed.clips].sort((a, b) => a.clip - b.clip).map((c) => rawAskForClip(parsed, c.clip)) };\n"
+   },
+   {
+    "find": "export function buildUserMessage(story, seconds = CLIP_SECONDS) {\n  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\\n\\n${CONTINUITY_RULE}\\n\\n${UTTERANCE_RULE}\\n\\n${VISIBLE_STATE_RULE}${outputShape(1, null, seconds)}`;\n}",
+    "replace": "export function buildUserMessage(story, seconds = CLIP_SECONDS, extra = '') {\n  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\\n\\n${CONTINUITY_RULE}\\n\\n${UTTERANCE_RULE}\\n\\n${VISIBLE_STATE_RULE}${extra ? `\\n\\n${extra}` : ''}${outputShape(1, null, seconds)}`;\n}"
+   },
+   {
+    "find": "export function buildUserContent(story, refs = null, seconds = CLIP_SECONDS) {\n  const body = buildUserMessage(story, seconds);",
+    "replace": "export function buildUserContent(story, refs = null, seconds = CLIP_SECONDS, extra = '') {\n  const body = buildUserMessage(story, seconds, extra);"
+   },
+   {
+    "find": "export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () => {} } = {}) {\n  const user = buildUserContent(story, null, seconds);",
+    "replace": "export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () => {}, extra = '' } = {}) {\n  const user = buildUserContent(story, null, seconds, extra);"
+   },
+   {
+    "find": "  const attempts = [], cuts = [];\n",
+    "replace": "  const attempts = [], cuts = [];\n  let kept = null;\n"
+   },
+   {
+    "find": "    issues = [...base, ...utter];\n    attempts.push({ attempt: attempt + 1, parsed: true, issues: [...issues], rebalanced });\n",
+    "replace": "    issues = [...base, ...utter];\n    kept = { parsed, issues };\n    attempts.push({ attempt: attempt + 1, parsed: true, issues: [...issues], rebalanced });\n"
+   },
+   {
+    "find": "      if (attempt >= 1) { attempts.push({ attempt: attempt + 1, parsed: false, issues: ['not parseable', ...(cut ? [cut.note] : [])] }); break; }\n",
+    "replace": "      if (attempt >= 1) { attempts.push({ attempt: attempt + 1, parsed: false, issues: ['not parseable', ...(cut ? [cut.note] : []), ...(kept ? ['kept the first reply'] : [])] }); if (kept) ({ parsed, issues } = kept); break; }\n"
    }
   ]
  },
@@ -122,6 +158,38 @@
    {
     "find": "  }\n  const cap = Number(process.env.E4_LLM_MAX_TOKENS) || 0;\n  if (cap && r.body.max_tokens > cap) r.body.max_tokens = cap;\n  return r;\n",
     "replace": "  }\n  if (r.body.max_tokens > 0) r.body.max_tokens = outputCap(messages, r.body.max_tokens);\n  return r;\n"
+   }
+  ]
+ },
+ {
+  "file": "planpath48/writer.mjs",
+  "why": "a long film must not fail: planning and the bible go through e4/bridge/scale.mjs (one call exactly as before for a short story, parts for a long one, a failed part split smaller); the writer's story and film plan and a reference repair's context are windowed past a budget (the same text below it).",
+  "replacements": [
+   {
+    "find": "import { stateFacts } from './state.mjs';\n",
+    "replace": "import { stateFacts } from './state.mjs';\nimport { writerContext } from '../bridge/scale.mjs';\n"
+   },
+   {
+    "find": "  const masters = Object.fromEntries(shot.references.filter((r) => r.type === 'character').map((r) => [r.id, bible.cast.find((c) => c.id === r.id).acting]));\n  const vars = {",
+    "replace": "  const masters = Object.fromEntries(shot.references.filter((r) => r.type === 'character').map((r) => [r.id, bible.cast.find((c) => c.id === r.id).acting]));\n  const big = writerContext({ plan, rawAsks, story, clipNumber: rec.clip.clip });\n  const vars = {"
+   },
+   {
+    "find": "    screenplay: screenplaySlot(plan, rawAsks, rec.clip.clip),\n    narrative_seed: { hasStory: true, storyText: story },",
+    "replace": "    screenplay: big ? big.screenplay : screenplaySlot(plan, rawAsks, rec.clip.clip),\n    narrative_seed: { hasStory: true, storyText: big ? big.storyText : story },"
+   }
+  ]
+ },
+ {
+  "file": "planpath48/refs.mjs",
+  "why": "a long film must not fail: planning and the bible go through e4/bridge/scale.mjs (one call exactly as before for a short story, parts for a long one, a failed part split smaller); the writer's story and film plan and a reference repair's context are windowed past a budget (the same text below it).",
+  "replacements": [
+   {
+    "find": "import { checkEntity, wordCount, plateObjects, namedObjectCount, objectCoverage, appearances, needsRef } from './refchecks.mjs';\n",
+    "replace": "import { checkEntity, wordCount, plateObjects, namedObjectCount, objectCoverage, appearances, needsRef } from './refchecks.mjs';\nimport { refContext } from '../bridge/scale.mjs';\n"
+   },
+   {
+    "find": "messages: [{ role: 'user', content: repairPrompt({ kind, ent, story, rawAsks, issues: msgs(first), landmarks }) }] });",
+    "replace": "messages: [{ role: 'user', content: repairPrompt({ kind, ent, ...refContext({ story, rawAsks, plan, ent }), issues: msgs(first), landmarks }) }] });"
    }
   ]
  }

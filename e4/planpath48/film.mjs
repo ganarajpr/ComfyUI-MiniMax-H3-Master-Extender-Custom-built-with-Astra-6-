@@ -20,6 +20,7 @@ import { offscreenCuts } from './offscreen.mjs';
 import { soundVocabFindings, dropItems } from './soundvocab.mjs';
 import { filmChecks, clipChecks } from './filmchecks.mjs';
 import { foldState, withCarriedState } from './state.mjs';
+import { planFilm, bibleFilm } from '../bridge/scale.mjs';
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -31,27 +32,13 @@ export async function planAndBible({ name, story, outRoot, resume, language = 'E
   const pf = join(dir, 'plan.json');
   if (resume && existsSync(pf)) ({ plan, planMeta } = rj(pf));
   else {
-    const chat = async (messages, attempt) => {
-      const c = await call({ outRoot, dir: join(dir, 'planner'), name: attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages });
-      const text = c.content;
-      if (c.cut) return { text, cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };
-      if (parseBreakdown(text)) return text;
-      const r = repairJson(text);
-      return r.ok ? JSON.stringify(r.value) : text;
-    };
-    const r = await planStory(chat, withLanguage(story, language));
-    plan = r.breakdown; planMeta = { issues: r.issues, attempts: r.attempts, rawAsks: r.rawAsks };
+    ({ plan, planMeta } = await planFilm({ name, story, wrap: (text) => withLanguage(text, language), outRoot, dir, resume }));
     wr(pf, { plan, planMeta });
   }
   const bf = join(dir, 'bible.json');
   if (resume && existsSync(bf) && rj(bf).bible && !rj(bf).bibleMeta?.issues?.length) ({ bible, bibleMeta } = rj(bf));
   else {
-    const chat = async (messages, attempt) => {
-      const c = await call({ outRoot, dir: join(dir, 'bible'), name: attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages });
-      if (c.cut) return { ...parseJsonReply(c.content), cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };
-      return parseJsonLoose(c.content);
-    };
-    const r = await makeBible(chat, story, plan, planMeta.rawAsks, { score });
+    const r = await bibleFilm({ name, story, plan, planMeta, outRoot, dir, score, resume });
     bible = r.bible; bibleMeta = { issues: r.issues, attempts: r.attempts };
     wr(bf, { bible, bibleMeta });
     if (!bible || r.issues.length) throw new Error(`bible failed validation after retry: ${r.issues.slice(0, 5).join(' | ')}`);

@@ -5,7 +5,7 @@
 import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL } from '../planpath48/lib.mjs';
+import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL, cutNote } from '../planpath48/lib.mjs';
 import { outputCap } from '../planpath48/transport.mjs';
 
 // Its own call kind, not 'decision': the decision calls think off (E4.7 onward), but this one looks at pictures, and on the lane thinking off missed a character
@@ -189,12 +189,12 @@ export function makeBinder({ pictures, notes = {}, sees, resume = false, log = (
           const base = `pictures.map${attempt > 1 ? '.retry' : ''}${wire === 'chat-completions' ? '.chat' : ''}`;
           wr(join(dir, `${base}.request.json`), redact(c.body));
           wr(join(dir, `${base}.response.raw.txt`), c.raw || c.error || '');
-          const meta = { kind: MAP_KIND, story: name, clip: null, name: 'pictures.map', wire, usage: c.usage, cost: c.cost, finish: c.finish, secs: c.secs, status: c.status, attempt: c.attempt, model: c.resp?.model || null };
+          const meta = { kind: MAP_KIND, story: name, clip: null, name: 'pictures.map', wire, usage: c.usage, cost: c.cost, finish: c.finish, secs: c.secs, status: c.status, attempt: c.attempt, model: c.resp?.model || null, ...(c.cut ? { cut: c.cut } : {}), ...(c.escalated ? { escalated: c.escalated } : {}) };
           wr(join(dir, `${base}.meta.json`), meta);
           appendFileSync(join(outRoot, 'calls.jsonl'), `${JSON.stringify(meta)}\n`);
           result.attempts = attempt;
           const parsed = parseJsonLoose(c.content);
-          const v = parsed.ok ? validateMapping(parsed.value, labels, ids) : { map: null, issues: ['the reply was not one JSON object'] };
+          const v = parsed.ok ? validateMapping(parsed.value, labels, ids) : { map: null, issues: [`the reply was not one JSON object${c.cut ? ` (${cutNote(c.cut)}; shorter field values, same structure)` : ''}`] };
           result.issues = v.issues;
           if (parsed.ok) result.shows = Object.fromEntries((parsed.value.pictures || []).filter((r) => r && labels.includes(Number(r.picture))).map((r) => [Number(r.picture), String(r.shows || '').slice(0, 160)]));
           map = v.map;

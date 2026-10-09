@@ -948,7 +948,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
                     notes=e4_engine.parse_notes(settings.get("e4_picture_notes")), sees=sees, endpoint=endpoint,
                     decision=e4_engine.decision_budget(settings.get("e4_decision_budget", e4_engine.DECISION_BUDGET_DEFAULT)), workers=e4_workers,
                     say=e4_say, interrupted=interrupted)
-            except e4_engine.E4Interrupted:
+            except (e4_engine.E4Interrupted, e4_engine.E4SetupError):
                 raise
             except e4_engine.E4Error as error:
                 e4_failed = error

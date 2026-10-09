@@ -81,16 +81,16 @@ export function outputShape(start = 1, second = null, seconds = CLIP_SECONDS) {
   return shape.replace('{"clip": 1,', `{"clip": ${start},`).replace('"clip_ids": [1, 2]', `"clip_ids": [${start}, ${second}]`);
 }
 
-export function buildUserMessage(story, seconds = CLIP_SECONDS) {
-  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\n\n${CONTINUITY_RULE}\n\n${UTTERANCE_RULE}\n\n${VISIBLE_STATE_RULE}${outputShape(1, null, seconds)}`;
+export function buildUserMessage(story, seconds = CLIP_SECONDS, extra = '') {
+  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\n\n${CONTINUITY_RULE}\n\n${UTTERANCE_RULE}\n\n${VISIBLE_STATE_RULE}${extra ? `\n\n${extra}` : ''}${outputShape(1, null, seconds)}`;
 }
 
 export const REFS_RULE = 'REFERENCE RULE — These are the only characters, props and locations that have a reference picture. Stage the story with them: a character keeps the face, build and hair of their picture, a prop or location keeps its material and layout. A character\'s clothing comes from the story, not from the picture (the picture\'s outfit is only the fallback when the story is silent). Anything without a picture stays off screen or unseen. Name a subject by its Picture number the first time it appears in a clip\'s shots.';
 export const REFS_HEADER = 'REFERENCES — the only subjects that have a reference (labelled in slot order):';
 
 // refs = { pictures: [{label, caption}] }: caption-only references (no pixels in E4). Without refs the user turn is the plain text.
-export function buildUserContent(story, refs = null, seconds = CLIP_SECONDS) {
-  const body = buildUserMessage(story, seconds);
+export function buildUserContent(story, refs = null, seconds = CLIP_SECONDS, extra = '') {
+  const body = buildUserMessage(story, seconds, extra);
   const pictures = refs?.pictures || [];
   if (!pictures.length) return body;
   const lines = pictures.map((p) => `${p.label}: ${p.caption}`.trimEnd());
@@ -375,10 +375,11 @@ export class PlanError extends Error {}
 // One call; on an unparseable reply or any failed check, exactly one retry with the complaint appended (the Studio's own discipline).
 // After the retry soft issues are kept (and returned); an unparseable reply twice raises PlanError.
 // `chat(messages, attempt) -> reply text`, or `{ text, cut: { note, max_tokens } }` when the server stopped the reply at max_tokens (the retry then asks for shorter field values).
-export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () => {} } = {}) {
-  const user = buildUserContent(story, null, seconds);
+export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () => {}, extra = '' } = {}) {
+  const user = buildUserContent(story, null, seconds, extra);
   let complaint = [], parsed = null, issues = [];
   const attempts = [], cuts = [];
+  let kept = null;
   // E4.6: the plan checks of issue #7 (speech in prose, sequence continuity) get one more retry, and so do E4.8's visible-state checks (option wording, state changes against end_state); every other failure keeps the single retry of E4.2.
   for (let attempt = 0; attempt < 3; attempt++) {
     const content = complaint.length ? `${user}\n\nYOUR PREVIOUS REPLY FAILED THESE CHECKS — CORRECT EXACTLY THIS AND NOTHING ELSE:\n${complaint.join('\n')}` : user;
@@ -390,7 +391,7 @@ export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () 
     let rebalanced = [];
     if (parsed) { renumber(parsed); rebalanced = rebalanceDialogue(parsed); }
     if (!parsed) {
-      if (attempt >= 1) { attempts.push({ attempt: attempt + 1, parsed: false, issues: ['not parseable', ...(cut ? [cut.note] : [])] }); break; }
+      if (attempt >= 1) { attempts.push({ attempt: attempt + 1, parsed: false, issues: ['not parseable', ...(cut ? [cut.note] : []), ...(kept ? ['kept the first reply'] : [])] }); if (kept) ({ parsed, issues } = kept); break; }
       complaint = cut
         ? [`Your reply was cut off at the output limit (max_tokens ${cut.max_tokens}) before the JSON object was complete. Write the SAME structure with shorter field values (fewer words in every description, one short sentence per shot where you can), and close every brace.`]
         : ['Your reply was not one valid JSON object in the OUTPUT FORMAT above (or had no clips). Reply with that JSON object only.'];
@@ -401,6 +402,7 @@ export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () 
     }
     const base = checkBreakdown(parsed, seconds), utter = [...planSpeechIssues(parsed), ...sequenceIssues(plannedLines(parsed), story).issues, ...planStateIssues(parsed)];
     issues = [...base, ...utter];
+    kept = { parsed, issues };
     attempts.push({ attempt: attempt + 1, parsed: true, issues: [...issues], rebalanced });
     if (!issues.length) break;
     if (attempt >= 1 && base.length) break;

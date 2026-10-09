@@ -375,14 +375,14 @@ class EngineTests(unittest.TestCase):
         self.assertLess(time.time() - started, 20)
 
     def test_a_cut_planner_reply_falls_back_to_the_builder_planner_and_says_why(self):
-        """Every reply is stopped at max_tokens: the planner is asked again with a larger cap and the complaint 'shorter field values', fails again, E4 exits
+        """Every reply is stopped at max_tokens: the planner is asked again with a larger cap and the complaint 'shorter field values', fails again, the story is tried in parts, which are cut too, E4 exits
         non-zero, and the node does not raise: the builder planner plans, with a loud warning that names the cut and the kept run."""
         user = Path(tempfile.mkdtemp(dir=self.user))
         with e4_mock_llm.MockLLM(REPLAY, cut_all=True) as llm:
             rec, notes, done = stub_pack.run_rewrite(ROOT, settings_for(self.story, auto_clips=2), builder_scenario.clips_empty(1), refs=stub_pack.make_pictures((0, 1)), writer_suffix=".ninfer",
                                                     server_base=llm.url, user_dir=user)
         planner = [r["body"] for r in llm.requests]
-        self.assertEqual(4, len(planner), "two planner attempts, each resent once with a larger cap")
+        self.assertGreaterEqual(len(planner), 4, "two planner attempts, each resent once with a larger cap, then the story in parts, which are cut too")
         caps = [b["max_tokens"] for b in planner]
         self.assertGreater(max(caps), min(caps), "a cut reply is not resent with the same cap")
         self.assertIn("cut off at the output limit", json.dumps(planner[-1]["messages"]), "the retry says the reply was cut and asks for shorter field values")
@@ -423,6 +423,49 @@ class EngineTests(unittest.TestCase):
         self.assertEqual([], json.loads(bible_file.read_text(encoding="utf-8"))["bibleMeta"]["issues"])
         self.assertEqual(hashlib.sha256(good).hexdigest(), hashlib.sha256(bible_file.read_bytes()).hexdigest(), "and it is the stored run's bible again")
 
+    def test_request_bodies_differ_from_the_old_fixed_cap_only_in_max_tokens(self):
+        """The same story through the same replayed server, once with the old fixed cap (E4_LLM_MAX_TOKENS only) and once with the slot context: every request body is
+        equal except max_tokens, and every stored output is byte-identical."""
+        import hashlib
+
+        def run(env_extra):
+            out = Path(tempfile.mkdtemp(dir=self.user))
+            job = {"name": "drama_two_hander", "story": self.story, "language": "English", "score": "off", "workers": 1, "resume": False, "out": str(out), "vision": False,
+                   "pictures": [], "notes": {}}
+            (out / "job.json").write_text(json.dumps(job), encoding="utf-8")
+            with e4_mock_llm.MockLLM(REPLAY) as llm:
+                env = {k: v for k, v in os.environ.items() if not k.startswith("E4_LLM_")}
+                env.update(E4_LLM_URL=llm.url, E4_LLM_MODEL="mock", E4_LLM_API_STYLE="ninfer-messages", **env_extra)
+                proc = subprocess.run([NODE, str(ROOT / "e4" / "bridge" / "run.mjs"), str(out / "job.json")], env=env, capture_output=True, text=True, cwd=str(ROOT))
+            self.assertEqual(0, proc.returncode, proc.stderr[-1500:])
+            return out, [r["body"] for r in llm.requests]
+
+        old_out, old = run({"E4_LLM_MAX_TOKENS": "12288"})
+        new_out, new = run({"E4_LLM_SLOT_CTX": "65536"})
+        self.assertEqual(len(old), len(new))
+        key = lambda b: e4_mock_llm.request_key(b)
+        old_by, new_by = {}, {}
+        for b in old:
+            old_by.setdefault(key(b), []).append(b)
+        for b in new:
+            new_by.setdefault(key(b), []).append(b)
+        self.assertEqual(sorted(old_by), sorted(new_by))
+        differing = set()
+        for k in old_by:
+            for a, b in zip(old_by[k], new_by[k]):
+                strip = lambda d: {x: y for x, y in d.items() if x != "max_tokens"}
+                self.assertEqual(strip(a), strip(b))
+                if a.get("max_tokens") != b.get("max_tokens"):
+                    differing.add(k)
+        self.assertTrue(differing, "the cap did change for some requests")
+        for rel in ("plan.json", "bible.json", "fix.json", "shots.json"):
+            digest = lambda root: hashlib.sha256((root / "drama_two_hander" / rel).read_bytes()).hexdigest()
+            self.assertEqual(digest(old_out), digest(new_out), rel)
+        old_clips = sorted((old_out / "drama_two_hander" / "clips").glob("clip*/final.prose.json"))
+        new_clips = sorted((new_out / "drama_two_hander" / "clips").glob("clip*/final.prose.json"))
+        self.assertTrue(old_clips)
+        self.assertEqual([p.read_bytes() for p in old_clips], [p.read_bytes() for p in new_clips])
+
     def test_node_missing_is_a_clear_error(self):
         saved = dict(os.environ)
         os.environ[e4_engine.NODE_ENV] = str(self.user / "no-such-node")
@@ -435,7 +478,7 @@ class EngineTests(unittest.TestCase):
         finally:
             os.environ.clear()
             os.environ.update(saved)
-        self.assertEqual("E4Error", type(ctx.exception).__name__)
+        self.assertEqual("E4SetupError", type(ctx.exception).__name__)
         self.assertIn(e4_engine.NODE_ENV, str(ctx.exception))
         self.assertIn("e4_node.txt", str(ctx.exception))
 

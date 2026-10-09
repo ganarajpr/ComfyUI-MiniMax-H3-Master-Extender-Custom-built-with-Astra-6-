@@ -23,7 +23,8 @@ const pictures = (job.pictures || []).map((p) => ({ label: Number(p.label), file
 
 progress({ stage: 'start', story: name });
 const bindPictures = pictures.length ? makeBinder({ pictures, notes: job.notes || {}, sees: !!job.vision, resume: !!job.resume, log: (m) => progress({ stage: 'pictures', message: m }) }) : null;
-await runStory({ name, story: job.story, outRoot: out, budget: { spent: 0, cap: Infinity }, resume: !!job.resume, workers: Math.max(1, Math.min(4, Number(job.workers) || 3)), language: job.language || 'English', score: job.score === 'on' ? 'on' : 'off', bindPictures });
+await runStory({ name, story: job.story, outRoot: out, budget: { spent: 0, cap: Infinity }, resume: !!job.resume, workers: Math.max(1, Math.min(4, Number(job.workers) || 3)), language: job.language || 'English', score: job.score === 'on' ? 'on' : 'off', bindPictures, refsOnly: job.stopAfter === 'bible' });
+if (job.stopAfter) { progress({ stage: 'done', stoppedAfter: job.stopAfter }); process.exit(0); }
 progress({ stage: 'export' });
 const result = exportClips(out, name, { pictures });
 const done = result.clips.filter((c) => c.prompt).length;

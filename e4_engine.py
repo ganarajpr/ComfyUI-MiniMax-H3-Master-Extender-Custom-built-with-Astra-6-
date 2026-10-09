@@ -74,6 +74,10 @@ class E4Interrupted(E4Error):
     pass
 
 
+class E4SetupError(E4Error):
+    """Nothing ran: no Node, no server address, a bad picture, a missing e4/ folder. Deterministic, so the node reports it instead of falling back."""
+
+
 def e4_dir() -> Path:
     return Path(__file__).resolve().parent / "e4"
 
@@ -144,10 +148,10 @@ def node_version(path: str) -> tuple[int, int, int]:
     try:
         out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
     except (OSError, subprocess.SubprocessError) as error:
-        raise E4Error(f"cannot run node at '{path}': {error}") from error
+        raise E4SetupError(f"cannot run node at '{path}': {error}") from error
     match = re.match(r"v?(\d+)\.(\d+)\.(\d+)", out)
     if not match:
-        raise E4Error(f"'{path} --version' answered '{out}', not a Node version")
+        raise E4SetupError(f"'{path} --version' answered '{out}', not a Node version")
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
 
 
@@ -175,7 +179,7 @@ def find_node(user_dir: Path | None = None) -> str:
             tried.append(f"{where}: '{path}' is Node {major}, E4 needs {MIN_NODE_MAJOR} or newer")
             continue
         return path
-    raise E4Error("story_engine=e4.8 needs Node.js " + str(MIN_NODE_MAJOR) + "+ (no package install, just the executable). Set "
+    raise E4SetupError("story_engine=e4.8 needs Node.js " + str(MIN_NODE_MAJOR) + "+ (no package install, just the executable). Set "
                   + NODE_ENV + " or write its path on the first line of " + (str(folder / NODE_FILE) if folder else NODE_FILE)
                   + (". Tried: " + "; ".join(tried) if tried else ". Nothing found on PATH."))
 
@@ -191,7 +195,7 @@ def endpoint_of(server, *, model_path: str, strata: bool, is_ninfer) -> dict:
     """
     base = str(getattr(server, "base", "") or "").rstrip("/")
     if not base:
-        raise E4Error("the rewriter's server has no address E4 can call")
+        raise E4SetupError("the rewriter's server has no address E4 can call")
     if strata:
         return {"url": base, "model": str(getattr(server, "model", "") or "local"), "style": "llama-chat"}
     model = str(getattr(server, "model_id", "") or "")
@@ -230,7 +234,7 @@ def pick_run_dir(root: Path, digest: str) -> tuple[Path, bool]:
 def decode_picture(data_uri: str) -> bytes:
     head, _, data = data_uri.partition(",")
     if not head.startswith("data:image/png"):
-        raise E4Error("a reference picture is not a PNG data URI")
+        raise E4SetupError("a reference picture is not a PNG data URI")
     return base64.b64decode(data)
 
 
@@ -286,9 +290,11 @@ def progress_message(row: dict, clips: int | None, seen: dict) -> tuple[str, flo
     count = clips or "?"
     if kind == "planner":
         seen["planner"] = seen.get("planner", 0) + 1
+        if name.startswith("plan.part"):
+            return f"E4: long story planned in parts ({seen['planner']} planner calls so far){took}", 0.12
         return f"E4: story planned{' again after a failed check' if seen['planner'] > 1 else ''}{took}", 0.12
     if kind == "bible":
-        return f"E4: film bible written{took}", 0.25
+        return f"E4: film bible written{' (in parts)' if name.startswith('bible.') else ''}{took}", 0.25
     if name == "pictures.map":
         return f"E4: reference pictures bound to the film's entities{took}", 0.3
     if kind == "decision":
@@ -320,7 +326,7 @@ def plan_film(*, story: str, language: str, score: str, labels: list[int], pictu
     say = say or (lambda message, fraction: None)
     node = find_node(user_dir)
     if not (e4_dir() / "bridge" / "run.mjs").is_file():
-        raise E4Error(f"{e4_dir() / 'bridge' / 'run.mjs'} is missing: the e4/ folder was not installed")
+        raise E4SetupError(f"{e4_dir() / 'bridge' / 'run.mjs'} is missing: the e4/ folder was not installed")
     language = (language or DEFAULT_LANGUAGE).strip() or DEFAULT_LANGUAGE
     score = "on" if score == "on" else "off"
     shas = [hashlib.sha1(pictures[n].encode("ascii")).hexdigest()[:12] if n in pictures else "" for n in labels]

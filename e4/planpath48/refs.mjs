@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import { call, parseJsonReply, wr, rj, MODEL } from './lib.mjs';
 import { KINDS, assemble, slotIssues, repairPrompt, refwriterSystem, refwriterBrief, normalizeRef } from './refslots.mjs';
 import { checkEntity, wordCount, plateObjects, namedObjectCount, objectCoverage, appearances, needsRef } from './refchecks.mjs';
+import { refContext } from '../bridge/scale.mjs';
 
 export const COVERAGE_MIN = 0.7;
 
@@ -29,7 +30,7 @@ async function oneDefault({ kind, ent, story, outRoot, dir, name, bible, plan, r
   let issues = first, repair = null;
   if (first.length) {
     const landmarks = kind === 'location' ? ent.landmarks.map((l) => ({ id: l.id, gloss: l.gloss })) : null;
-    const c = await call({ outRoot, dir, name: `ref.repair.${ent.id}`, kind: 'refrepair', story: name, messages: [{ role: 'user', content: repairPrompt({ kind, ent, story, rawAsks, issues: msgs(first), landmarks }) }] });
+    const c = await call({ outRoot, dir, name: `ref.repair.${ent.id}`, kind: 'refrepair', story: name, messages: [{ role: 'user', content: repairPrompt({ kind, ent, ...refContext({ story, rawAsks, plan, ent }), issues: msgs(first), landmarks }) }] });
     const p = parseJsonReply(c.content);
     const cand = p.ok ? normalizeRef(p.value?.ref && typeof p.value.ref === 'object' ? p.value.ref : p.value) : null;
     const bad = cand ? slotIssues(kind, cand, ent.id) : ['the reply was not a JSON object'];

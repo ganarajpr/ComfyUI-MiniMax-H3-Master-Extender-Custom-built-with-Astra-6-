@@ -41,7 +41,7 @@ Order of lookup: `MINIMAX_H3_E4_NODE`, then `e4_node.txt`, then `node` on PATH. 
 ```
 "C:\Users\user\tools\node-v20.20.2-win-x64\node.exe" e4\verify-frozen.mjs
 ```
-Expected last line: `e4 E4.8 (e4.8-frozen): 91 files checked, 7 patched (patches reversed), 88 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The three patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.8-frozen`.
+Expected last line: `e4 E4.8 (e4.8-frozen): 91 files checked, 9 patched (patches reversed), 88 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.8-frozen`.
 
 The tests need the embedded Python of ComfyUI (numpy and Pillow are there), Node, and no GPU (they use their own throw-away folders, so the node path comes from the environment, not from `e4_node.txt`):
 ```
@@ -94,3 +94,11 @@ then restart ComfyUI. Notes:
 An H3 render left about 6 GB reserved in ComfyUI, so the rewriter's in-process `ninfer-serve` died with `automatic KV capacity requires ... but only ... bytes are available after weights`.
 - **This branch** (`vram_release.py`): ComfyUI's `unload_all_models` (`POST /free` with `unload_models`, the rewriter's own pre-launch step, Strata) also drops the cached X2 final VAE, runs `gc` and empties the CUDA cache. Active after the ComfyUI restart.
 - **The rewriter pack** (`custom_nodes\MiniMax-H3-Prompt-Rewriter-ComfyUI`, a separate repo; fork `ganarajpr/MiniMax-H3-Prompt-Rewriter-ComfyUI`, branch `local-ninfer-vram-fix`): `ninfer-serve` is started with `--vram-headroom-mib 512` (env `MINIMAX_H3_NINFER_HEADROOM_MIB`) instead of its default 1024; if it still fails with the KV message, the pack releases ComfyUI's cached memory and retries once with the headroom that fits from ninfer's own numbers; a failure now says how much VRAM was free and which GPU servers were running. On the box that pack's working tree carries local edits that are not on any remote; the fork's first commit on the branch is a snapshot of exactly that tree, so the three changed files (`server_engine.py`, `mtmd_engine.py`, `runner.py`) are copied over (CRLF, as the box has them), not merged.
+
+## Long stories and truncated replies (2026-10-09)
+
+- The slot context of one E4 call is 65536 tokens (`MINIMAX_H3_E4_SLOT_CTX` to change it; it becomes the rewriter ninfer server's `--max-context`, the KV pool itself is sized by `--kv-capacity auto`). On a llama.cpp writer the pool is slot context x slots, so lower it there if the card cannot hold it.
+- Each call's `max_tokens` is its own setting lowered to the slot minus the estimated prompt (Latin at 2.5 characters a token, any other script at one token a character, a picture at 1,100) minus 1,024, never below 4,096. A reply stopped at `max_tokens` is sent again once with a larger cap. `MINIMAX_H3_E4_MAX_TOKENS` is an optional hard ceiling.
+- A story of more than about 14 estimated clips is planned in parts of about 8 clips (`e4/bridge/scale.mjs`, stored under `<run>\story\plan_parts\`, resumable part by part). `E4_PLAN_SINGLE_MAX` / `E4_PLAN_SEG_CLIPS` change the two numbers for a run.
+- If E4.8 still fails (any failure after a run started; a missing Node or a bad setup still raises), `rewrite_clips` warns loudly and plans with the builder planner.
+- Compared with the previous E4.8 deploy, the requests differ only in `max_tokens` for a short story; the stored plan, bible and clips are byte-identical (`tests/test_e4_engine.py::test_request_bodies_differ_from_the_old_fixed_cap_only_in_max_tokens`).
