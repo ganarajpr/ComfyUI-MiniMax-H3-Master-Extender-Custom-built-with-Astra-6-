@@ -443,6 +443,10 @@ class MiniMaxH3MasterExtender:
                 "e4_score": (prompt_rewriter.E4_SCORES, {"default": "off", "tooltip": "story_engine=e4. off: non_diegetic_music is N/A in every clip and music-like words (hum, drone, resonance...) are swept out of the sound design. on: the film bible writes one instrumental score that every clip carries."}),
                 "e4_decision_budget": (prompt_rewriter.E4_DECISION_BUDGETS, {"default": "off", "tooltip": "story_engine=e4.8: thinking of each per-clip decision call (who is on screen, staging, the picture binding). off (default): no thinking (measured on 1,937 decision questions: 0.6 points below thinking 2048, not significant, and about 4.7 times faster); or 1024 / 2048 / 4096 thinking tokens at most (1024 measured worse than both). The planner, the film bible and the writer always think up to 4096."}),
                 "e4_picture_notes": ("STRING", {"default": "", "multiline": True, "tooltip": "story_engine=e4.8, optional. One line per connected picture: '2: the old tailor in a grey kurta'. With a model that sees, the lines are a hint beside the picture; with a model that cannot see, they are all it has to bind a picture to a character, prop or location (without them every entity is described in words only)."}),
+                # --- Core BlockSparseAttention recipe (appended last; 'auto' = HyperFlow's recipe with HyperFlow + sol-attn, else the old fixed values) ---
+                "sparse_start_percent": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.01, "tooltip": "Fraction of the schedule that stays dense before sparse attention starts. -1 = auto: 0.16 with HyperFlow 8-step + sol-attn (HyperFlow's validated recipe), otherwise 0.20 (the long-standing value). Any value 0-1 overrides."}),
+                "sparse_dense_blocks": ("STRING", {"default": "auto", "multiline": False, "tooltip": "Transformer blocks that stay dense, e.g. 0,1. auto = 0,1 with HyperFlow 8-step + sol-attn (HyperFlow's recipe), otherwise none. Empty = no dense blocks; any list overrides."}),
+                "sparse_sink": (["auto", "exact_kv_and_rows", "exact_kv", "off"], {"default": "auto", "tooltip": "Sink conditioning of core BlockSparseAttention. auto = off with HyperFlow 8-step + sol-attn (HyperFlow's recipe), otherwise exact_kv_and_rows (the long-standing value). Any other choice overrides."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -515,6 +519,9 @@ class MiniMaxH3MasterExtender:
         async_decode="off",
         sparse_method="sla",
         sparse_tau=1.3,
+        sparse_start_percent=-1.0,
+        sparse_dense_blocks="auto",
+        sparse_sink="auto",
         **kwargs,
     ):
         owner = str(unique_id if unique_id is not None else "master_extender")
@@ -725,6 +732,9 @@ class MiniMaxH3MasterExtender:
             pass2_chunk_overlap=pass2_chunk_overlap,
             sparse_method=sparse_method,
             sparse_tau=sparse_tau,
+            sparse_start_percent=sparse_start_percent,
+            sparse_dense_blocks=sparse_dense_blocks,
+            sparse_sink=sparse_sink,
             hyperflow_file=kwargs.get("hyperflow_file") or HYPERFLOW_DEFAULT_FILE,
             hyperflow_curve_refit=kwargs.get("hyperflow_curve_refit", True),
             hyperflow_strength=kwargs.get("hyperflow_strength", 1.0),

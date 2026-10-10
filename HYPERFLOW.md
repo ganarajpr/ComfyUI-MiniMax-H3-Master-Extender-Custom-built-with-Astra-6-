@@ -21,7 +21,7 @@ A mismatched pairing stops the job with the node pack's own message. With refit 
 
 - Pass 1 uses the MODEL and the trained 9-point SIGMAS returned by `ApplyHyperFlowH3` (applied on the SigmaShift model). Never a BasicScheduler schedule. `pdd_nfe` is ignored (8 fixed), and the sampler is Euler.
 - New inputs, appended after every existing widget so saved workflows keep their widget order: `hyperflow_file`, `hyperflow_curve_refit`, `hyperflow_strength`.
-- Sparse attention: `sla_enabled` behaves as in the other modes and the log notes what is in effect. HyperFlow's own validated sol-attn recipe is `start_percent 0.16`, `dense_blocks "0,1"`, `tau 1.0`, sink off.
+- Sparse attention: `sla_enabled` behaves as in the other modes and the log notes what is in effect (method, tau or keep %, start, dense_blocks, sink, and whether each came from the recipe, the default or your setting). HyperFlow's own validated sol-attn recipe is `start_percent 0.16`, `dense_blocks "0,1"`, `tau 1.0`, sink off. New inputs `sparse_start_percent` (-1 = auto), `sparse_dense_blocks` (`auto`) and `sparse_sink` (`auto`), appended last: with HyperFlow 8-step + `sparse_method` sol-attn, auto resolves to start 0.16, dense blocks 0,1, sink off; in every other mode auto is the old fixed 0.20 / none / exact_kv_and_rows. Any value you set wins. `sparse_tau` is not changed automatically (default 1.3; the recipe is 1.0).
 
 ## Pass-2 rule
 

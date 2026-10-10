@@ -1304,6 +1304,36 @@
           },
           "link": null,
           "shape": 7
+        },
+        {
+          "localized_name": "sparse_start_percent",
+          "name": "sparse_start_percent",
+          "type": "FLOAT",
+          "widget": {
+            "name": "sparse_start_percent"
+          },
+          "link": null,
+          "shape": 7
+        },
+        {
+          "localized_name": "sparse_dense_blocks",
+          "name": "sparse_dense_blocks",
+          "type": "STRING",
+          "widget": {
+            "name": "sparse_dense_blocks"
+          },
+          "link": null,
+          "shape": 7
+        },
+        {
+          "localized_name": "sparse_sink",
+          "name": "sparse_sink",
+          "type": "COMBO",
+          "widget": {
+            "name": "sparse_sink"
+          },
+          "link": null,
+          "shape": 7
         }
       ],
       "outputs": [
@@ -1410,6 +1440,9 @@
         "off",
         "off",
         "",
+        -1.0,
+        "auto",
+        "auto",
         ""
       ]
     }

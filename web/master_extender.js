@@ -258,6 +258,13 @@ function repairMergedRewriterModel(node, info) {
     migrated.forEach((value, i) => { if (node.widgets[i]) node.widgets[i].value = value; });
 }
 
+// sparse_start_percent / sparse_dense_blocks / sparse_sink are the last widgets, after e4_picture_notes; a workflow
+// saved before them (including every E4-era one) has its trailing master_ui "" land in the first of them. Anything not a number there means auto.
+function repairSparseWidgets(node) {
+    const w = node.widgets?.find(x => x.name === "sparse_start_percent");
+    if (w && (typeof w.value !== "number" || !Number.isFinite(w.value))) w.value = -1;
+}
+
 // BUNNY ActionLogic Bridge V1 was deleted from the box (2026-10-07); saved workflows that pick it load on V2.
 const RETIRED_BRIDGES = { "BUNNY_H3_ActionLogic_Bridge_V1.safetensors": "BUNNY_H3_ActionLogic_Bridge_V2.safetensors" };
 function repairSemanticBridge(node) {
@@ -669,6 +676,7 @@ app.registerExtension({
                 repairMergedRewriterModel(node, info);
                 repairHyperflowWidgets(node, hyperflowDefaults);
                 repairSemanticBridge(node);
+                repairSparseWidgets(node);
                 // Older workflows stored the empty master_ui value in this slot.
                 const attentionWidget = node.widgets?.find(w => w.name === "attention_backend");
                 if (attentionWidget && attentionWidget.value === "") {

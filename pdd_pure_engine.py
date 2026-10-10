@@ -155,6 +155,43 @@ def hyperflow_tail_sigmas(grid, denoise):
     return grid[-(tail + 1):]
 
 
+SPARSE_SINK_CHOICES = ("exact_kv_and_rows", "exact_kv", "off")
+
+
+def resolve_sparse_settings(hyperflow, method, start_percent, dense_blocks, sink,
+                            default_start=0.2):
+    """Resolve the three 'auto' sparse-attention inputs.
+
+    Auto means HyperFlow's validated sol-attn recipe (start 0.16, dense blocks
+    0,1, sink off) when HyperFlow is the accelerator and the method is sol-attn,
+    else the long-standing defaults (start ``default_start``, no dense blocks,
+    exact_kv_and_rows). Any value the user set wins. Returns
+    ``{"start", "dense_blocks", "sink", "sources"}`` where sources maps each
+    field to "user", "hyperflow recipe" or "default".
+    """
+    recipe = bool(hyperflow) and method == "sol-attn"
+    sources = {}
+    try:
+        start = float(start_percent)
+    except (TypeError, ValueError):
+        start = -1.0
+    if start < 0:
+        start, sources["start"] = (0.16, "hyperflow recipe") if recipe else (float(default_start), "default")
+    else:
+        sources["start"] = "user"
+    blocks = "auto" if dense_blocks is None else str(dense_blocks).strip()
+    if blocks.lower() == "auto":
+        blocks, sources["dense_blocks"] = ("0,1", "hyperflow recipe") if recipe else ("", "default")
+    else:
+        sources["dense_blocks"] = "user"
+    pick = str(sink or "auto").strip()
+    if pick not in SPARSE_SINK_CHOICES:
+        pick, sources["sink"] = ("off", "hyperflow recipe") if recipe else ("exact_kv_and_rows", "default")
+    else:
+        sources["sink"] = "user"
+    return {"start": start, "dense_blocks": blocks, "sink": pick, "sources": sources}
+
+
 class PurePDDEngine:
     def __init__(
         self,
@@ -188,6 +225,9 @@ class PurePDDEngine:
         hyperflow_curve_refit=True,
         hyperflow_strength=1.0,
         hyperflow_lora_mode="bypass",
+        sparse_start_percent=-1.0,
+        sparse_dense_blocks="auto",
+        sparse_sink="auto",
     ):
         self.raw_model = model
         self.accel_mode = str(accel_mode)
@@ -206,6 +246,9 @@ class PurePDDEngine:
         self.sla_sparsity = float(sla_sparsity)
         self.sparse_method = str(sparse_method or "sla")
         self.sparse_tau = float(sparse_tau)
+        self.sparse_start_percent = sparse_start_percent
+        self.sparse_dense_blocks = sparse_dense_blocks
+        self.sparse_sink = sparse_sink
         self.pass2_chunk_frames = int(pass2_chunk_frames or 0)
         self.pass2_chunk_overlap = int(pass2_chunk_overlap or 0)
         # Hooks from the Master node: is a background decode running, and how
@@ -449,6 +492,12 @@ class PurePDDEngine:
     SPARSE_MIN_TOKENS = 12288
     SPARSE_EXTRA_TOKENS = 256
 
+    def _sparse_settings(self):
+        return resolve_sparse_settings(
+            self.hyperflow_mode, str(getattr(self, "sparse_method", "sla") or "sla"),
+            self.sparse_start_percent, self.sparse_dense_blocks, self.sparse_sink,
+            default_start=self.SPARSE_START_PERCENT)
+
     # ------------------------------------------------------------------
     # Turbo LoRA mode + SLA
     # ------------------------------------------------------------------
@@ -525,9 +574,17 @@ class PurePDDEngine:
             raise RuntimeError("ApplyHyperFlowH3 returned no model / sigmas")
         _LOG.info("HyperFlow: trained grid %s, sampler euler", [round(float(x), 4) for x in sigmas])
         if self.sla_enabled:
-            _LOG.info("HyperFlow: extender sparse attention is ON (%s, tau %.2f, dense before %.0f%%); HyperFlow's "
-                      "validated sol-attn recipe is start 0.16, dense_blocks 0,1, tau 1.0, sink off",
-                      self.sparse_method, self.sparse_tau, self.SPARSE_START_PERCENT * 100)
+            cfg = self._sparse_settings()
+            src = cfg["sources"]
+            if self.sparse_method == "sol-attn":
+                sel = "tau %.2f (HyperFlow recipe: 1.0)" % self.sparse_tau
+            else:
+                sel = "keep %.1f%%" % max(0.5, min(95.0, (1.0 - self.sla_sparsity) * 100.0))
+            _LOG.info("HyperFlow: extender sparse attention is ON (%s, %s, start %.2f [%s], dense_blocks '%s' [%s], "
+                      "sink %s [%s]); HyperFlow's validated sol-attn recipe is start 0.16, dense_blocks 0,1, tau 1.0, "
+                      "sink off",
+                      self.sparse_method, sel, cfg["start"], src["start"], cfg["dense_blocks"], src["dense_blocks"],
+                      cfg["sink"], src["sink"])
         else:
             _LOG.info("HyperFlow: sparse attention is OFF (dense recipe)")
         return hf_model, sigmas
@@ -555,21 +612,23 @@ class PurePDDEngine:
             selection["tau"] = float(getattr(self, "sparse_tau", 1.3))
         else:
             selection["keep_percent"] = keep_percent
+        cfg = self._sparse_settings()
         try:
             res = native.execute(
                 model, selection=selection,
-                start_percent=self.SPARSE_START_PERCENT, end_percent=1.0,
-                dense_blocks="", min_tokens=self.SPARSE_MIN_TOKENS,
+                start_percent=cfg["start"], end_percent=1.0,
+                dense_blocks=cfg["dense_blocks"], min_tokens=self.SPARSE_MIN_TOKENS,
                 extra_tokens=0 if method == "vsa" else self.SPARSE_EXTRA_TOKENS,
-                sink_conditioning="exact_kv_and_rows", verbose=False,
+                sink_conditioning=cfg["sink"], verbose=False,
             )
             out = _safe_get_output(res, 0, "model")
             if out is not None:
                 detail = (f"tau={selection['tau']}" if method == "sol-attn"
                           else f"keep={keep_percent:.1f}% (sparsity {self.sla_sparsity:.2f})")
                 _LOG.info("Sparse attention (core BlockSparseAttention, %s): %s, dense before %.0f%%, "
-                          "min_tokens %d, dense fall-through = %s", method, detail,
-                          self.SPARSE_START_PERCENT * 100, self.SPARSE_MIN_TOKENS, self.attention_backend)
+                          "dense_blocks '%s', sink %s, min_tokens %d, dense fall-through = %s", method, detail,
+                          cfg["start"] * 100, cfg["dense_blocks"], cfg["sink"], self.SPARSE_MIN_TOKENS,
+                          self.attention_backend)
                 return out
         except Exception as exc:
             _LOG.warning("Core BlockSparseAttention could not be applied (%s); continuing dense", exc)

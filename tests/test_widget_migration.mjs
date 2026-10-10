@@ -11,6 +11,8 @@ for (const file of workflows) {
     // widget order of the current node = its widget inputs, then the JS-only master_ui
     const names = [...node.inputs.filter(i => i.widget).map(i => i.name), "master_ui"];
     const current = node.widgets_values;
+    assert.deepEqual(names.slice(-5), ["e4_picture_notes", "sparse_start_percent", "sparse_dense_blocks", "sparse_sink", "master_ui"], `${file}: sparse widgets are last`);
+    assert.deepEqual(current.slice(-4), [-1, "auto", "auto", ""], file);
     assert.equal(names.length, current.length, file);
     assert.equal(dropCaptionModelValue(names, current), null, `${file}: current layout is left alone`);
     assert.equal(dropSingleTextEncodeValue(names, current), null, `${file}: no single_text_encode value to drop`);

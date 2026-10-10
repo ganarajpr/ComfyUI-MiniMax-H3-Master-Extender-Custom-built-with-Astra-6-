@@ -173,7 +173,7 @@ def _settings_summary(inputs: dict | None, clips: list[dict]) -> str:
         lines.append(f"Quality: draft {inputs.get('pass1_resolution', '?')} → refine {inputs.get('pass2_resolution', '?')} · denoise {inputs.get('pass2_denoise', '?')} · upscaler {inputs.get('upscaler_model', '?')}")
         lines.append(f"Continuity: motion {inputs.get('context_length', '?')} f · audio {inputs.get('audio_context_length', '?')} f · identity {inputs.get('identity_continuity', '?')}")
         sla = inputs.get("sla_enabled", False)
-        lines.append(f"Performance: {inputs.get('attention_backend', '?')} · SLA {'on ' + str(inputs.get('sla_sparsity', '')) + ' ' + str(inputs.get('sparse_method', '')) if sla else 'off'} · chunk {inputs.get('pass2_chunk_frames', '?')}/{inputs.get('pass2_chunk_overlap', '?')} · run {inputs.get('run_mode', '?')}")
+        lines.append(f"Performance: {inputs.get('attention_backend', '?')} · SLA {'on ' + str(inputs.get('sla_sparsity', '')) + ' ' + str(inputs.get('sparse_method', '')) + ' start ' + str(inputs.get('sparse_start_percent', 'auto')) + ' dense ' + str(inputs.get('sparse_dense_blocks', 'auto')) + ' sink ' + str(inputs.get('sparse_sink', 'auto')) if sla else 'off'} · chunk {inputs.get('pass2_chunk_frames', '?')}/{inputs.get('pass2_chunk_overlap', '?')} · run {inputs.get('run_mode', '?')}")
         refs = _load_json(inputs.get("refs_json")) if isinstance(inputs.get("refs_json"), str) else inputs.get("refs_json")
         if isinstance(refs, dict):
             imgs = [r for r in refs.get("images", []) if r]
