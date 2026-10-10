@@ -1,0 +1,1201 @@
+{
+ "story_auto_final_prompts": {
+  "chats": [
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 5348,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "REFERENCES — the only subjects that have a reference (labelled in slot order):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "\nREFERENCE RULE — These are the only characters, props and locations that have a reference picture. Stage the story with them: a character keeps the face, build and hair of their picture, a prop or location keeps its material and layout. A character's clothing comes from the story, not from the picture (the picture's outfit is only the fallback when the story is silent). Anything without a picture stays off screen or unseen. Name a subject by its Picture number the first time it appears in a clip's shots.\n\nBreak the chapter below into fixed 15-second video clips, each built from 3-6 shots.\n\nRULES — a clip is one continuous narrative beat; a shot is one discrete camera angle inside it.\n\n- Every clip is exactly 15 seconds of shots (they must sum to 15, plus or minus half a second).\n- 3-4 shots per clip by default. Only use 5-6 when the beat truly demands rapid cuts. Never fewer than 3, never more than 6.\n- Follow a setup -> action -> reaction -> payoff arc, compressed to fit the shot count: shot 1 establishes where/who/what state; the middle shot(s) carry the action that moves the beat forward; the last shot is the reaction or the payoff — usually a line of dialogue, a held look, or a final gesture.\n- Vary the camera between consecutive shots in the SAME clip — never the same camera term twice in a row.\n- One action per shot. If a character does two distinct things, that's two shots.\n- Dialogue gets its OWN shot (or is attached to the payoff shot) — never buried inside a multi-action shot. Dialogue is in the target language/script only, verbatim, no translation or gloss.\n- End every clip with tension, a question, or a forward pull into the next clip — the last shot should make the audience need the next 15 seconds.\n- No shot should require having seen a previous clip to make sense — each clip is visually self-contained.\n- Camera per shot must be exactly one of these terms (spelled verbatim, snake_case): wide_establishing, medium, medium_close, close_up, extreme_close_up_macro, tracking_following, over_the_shoulder, top_down_overhead, low_angle, high_angle.\n\nRUNTIME — TARGET, NOT A CEILING OR A FLOOR: this chapter must become EXACTLY 2 clips of 15 seconds each (30s total) — not one more, not one fewer. Reach EXACTLY 2 by covering the SAME events at a finer or coarser grain — more or fewer clips, longer or shorter dwell on each beat — never by inventing events the chapter does not contain, and never by compressing two distinct dramatic beats into one clip or stretching one beat thin across several just to fill the count.\n\nSTATE LEDGER — before writing the clips, propose a small ledger of what actually CHANGES visibly during this chapter:\n- One entry per character, prop, creature, or location-as-environment whose visible state changes (wardrobe, condition, possession, consciousness, restraint for people; configuration, integrity, fill, activation for objects/environments — a lamp lit or not, a door open or not). Do NOT track a permanent trait as an axis, and do NOT invent an entity with nothing that changes.\n- Each entity declares its own small set of axes, each axis a short ordered list of options (least to most, for anything that can only move one way — an injury does not heal mid-chapter) and whether it is progressive (can never move backwards) and whether it would show on that entity's own reference plate (wardrobe, a visible marking — never posture or mood).\n- Give every entity its value on every one of its own axes at the chapter's OPENING, before clip 1.\n- Then, per clip, list ONLY the state changes that actually happen in THAT clip (which entity, which axis, its new value, and which shot causes it) — never restate a value that did not change, and never repeat earlier clips' changes.\n\nCHAPTER:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\n\nReturn the breakdown as data: the state ledger first (entities, their axes, their opening values), then every clip in order with its beat, its shots (camera, subject, the physical action, and — only on the shot where someone actually speaks — the speaker and their exact line), its own state changes if any, and the forward pull that closes it.\n\nCONTINUITY STATE — these rules sit on top of the template and win over its 'visually self-contained' line. The clips play back to back as ONE continuous film: clip N opens exactly where clip N-1 ended. For EVERY clip add \"end_state\": the state at that clip's FINAL frame — location (the spot inside the set), time_light, end_action (the exact physical action or pose of the last shot's last second) and, for every character on screen at that moment, position (where in the set, facing which way), wardrobe, props and state. Carry every field forward unchanged into the next clip unless a shot of that clip changes it: nobody changes clothes, loses a prop, heals, or moves between clips off screen. Only an explicit time or location cut that the beat itself names may open a clip somewhere else, and then say so in the beat. WARDROBE comes from the STORY, never from a reference picture: when the story says what a character wears at that point (or changes into), write the full outfit — garment, colour, fabric, trim, accessories — in every clip's end_state until the story changes it; when the story says nothing about that character's clothing, write exactly: as on the reference. A reference picture tells you who a character is (face, build, hair), not what they wear in the film.\nOUTPUT FORMAT — reply with ONE JSON object and nothing else (no prose, no code fence), in exactly this shape and key order:\n{\n  \"chapter\": \"the chapter's own spine, one line\",\n  \"ledger\": {\"entities\": [\n    {\"id\": \"short_slug\", \"name\": \"...\", \"kind\": \"character|prop|creature|environment\",\n     \"clip_ids\": [1, 2],\n     \"axes\": [{\"axis\": \"wardrobe\", \"options\": [\"least\", \"...\", \"most\"], \"progressive\": false, \"plate_visible\": true}],\n     \"initial\": [{\"axis\": \"wardrobe\", \"value\": \"one of that axis's options\"}]}\n  ]},\n  \"clips\": [\n    {\"clip\": 1, \"beat\": \"the dramatic beat this clip covers, one line, no camera\",\n     \"shots\": [\n       {\"shot\": 1, \"seconds\": 4, \"camera\": \"one of the camera terms above, verbatim\",\n        \"subject\": \"who or what is on screen, no camera language\", \"action\": \"the one physical action\",\n        \"has_dialogue\": false, \"dialogue_speaker\": \"\", \"dialogue_line\": \"\"}\n     ],\n     \"forward_pull\": \"the tension, question or forward pull this clip closes on\",\n     \"state_changes\": [{\"entity\": \"an entity id\", \"axis\": \"one of its axes\", \"to\": \"one of that axis's options\", \"shot\": 2}],\n     \"end_state\": {\"location\": \"where the last frame is, with the spot in the set\", \"time_light\": \"time of day and light at the last frame\",\n                   \"end_action\": \"the exact physical action or pose of the last shot's last second\",\n                   \"characters\": [{\"name\": \"...\", \"position\": \"where in the set, facing which way\", \"wardrobe\": \"the full outfit, or: as on the reference\",\n                                   \"props\": \"held, worn or carried objects, or: none\", \"state\": \"visible emotion or condition\"}]}}\n  ]\n}\nEach clip has 3-6 shots whose seconds sum to 15. \"ledger.entities\" may be an empty array when nothing visibly changes.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   },
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 2148,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": "SYSTEM[Ref2VA]\n\nContinuity: the task message may carry a 'previous_clips' block with two parts. 'Story so far' is the short raw asks of the earlier clips, as story memory only. 'Previous clip, final prompt' is the finished H3 prompt of the clip immediately before this one, already rendered. The target video begins exactly where the LAST shot of that final prompt ends: take its end state (positions, wardrobe, props, light, set, who is where) as this clip's opening state, and keep the subjects and visual style continuous with it. Do not repeat its events, do not re-describe what it already showed, and do not count its shots as shots of this clip.\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. Use it only to decide what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip.\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any 'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); (3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the one shown on the picture, use fully_preserved.\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled 'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>.\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP N ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the outfit shown on the picture.",
+      "role": "system"
+     },
+     {
+      "content": [
+       {
+        "text": "Reference pictures, in order (each labelled before its image):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "duration: 15\nreferences:\nPicture 1: the attached image labelled 'Picture 1:' at the top of this message\nPicture 2: the attached image labelled 'Picture 2:' at the top of this message\nstory:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\noriginal_prompt:\nClip 1:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 1?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   },
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 2148,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": "SYSTEM[Ref2VA]\n\nContinuity: the task message may carry a 'previous_clips' block with two parts. 'Story so far' is the short raw asks of the earlier clips, as story memory only. 'Previous clip, final prompt' is the finished H3 prompt of the clip immediately before this one, already rendered. The target video begins exactly where the LAST shot of that final prompt ends: take its end state (positions, wardrobe, props, light, set, who is where) as this clip's opening state, and keep the subjects and visual style continuous with it. Do not repeat its events, do not re-describe what it already showed, and do not count its shots as shots of this clip.\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. Use it only to decide what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip.\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any 'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); (3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the one shown on the picture, use fully_preserved.\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled 'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>.\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP N ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the outfit shown on the picture.",
+      "role": "system"
+     },
+     {
+      "content": [
+       {
+        "text": "Reference pictures, in order (each labelled before its image):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "duration: 15\nreferences:\nPicture 1: the attached image labelled 'Picture 1:' at the top of this message\nPicture 2: the attached image labelled 'Picture 2:' at the top of this message\nstory:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\nprevious_clips:\nPrevious clip, final prompt (clip 1, 15s, already rendered; this clip starts where its last shot ends):\nFINAL 5bbe31fc980ed3f8\noriginal_prompt:\nCONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP 1 ENDED:\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\n\nClip 2:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 2?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 2\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 2 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   }
+  ],
+  "clips": [
+   {
+    "beyond": false,
+    "duration": 15,
+    "id": 0,
+    "loras": [],
+    "plan_end_state": {},
+    "planned": true,
+    "prompt": "FINAL 5bbe31fc980ed3f8",
+    "prompt_raw": "Clip 1:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 1?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+    "prompt_rewritten": true,
+    "rewrite_meta": {
+     "budget": 2048,
+     "fingerprint": "v2:a08796fa25a10e7501226b9a2acebb679aa8fe8a",
+     "model": "writer-stub.gguf",
+     "task": "Ref2VA",
+     "thinking": true
+    },
+    "rewrite_text": "FINAL 5bbe31fc980ed3f8",
+    "seed": 1,
+    "seed_mode": "fixed",
+    "title": "Clip 1",
+    "validated": false
+   },
+   {
+    "beyond": false,
+    "duration": 15,
+    "id": 1,
+    "loras": [],
+    "plan_end_state": {},
+    "planned": true,
+    "prompt": "FINAL 5d653782c5a0630b",
+    "prompt_raw": "CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP 1 ENDED:\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\n\nClip 2:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 2?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 2\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 2 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+    "prompt_rewritten": true,
+    "rewrite_meta": {
+     "budget": 2048,
+     "fingerprint": "v2:165028ccd39ccd6c2924ccdaa58c08c63839aa84",
+     "model": "writer-stub.gguf",
+     "prev_final": "4af2da5dfc87fad3a1189d52a9649e9eb1a21c29",
+     "task": "Ref2VA",
+     "thinking": true
+    },
+    "rewrite_text": "FINAL 5d653782c5a0630b",
+    "seed": 473233031,
+    "seed_mode": "randomize",
+    "title": "Clip 2",
+    "validated": false
+   }
+  ],
+  "notes": [
+   "rewriter: 2 clip(s)",
+   "planned 2 clip(s) from the story, wrote 2 new ask(s)"
+  ],
+  "plans": [
+   [
+    0,
+    1
+   ]
+  ],
+  "progress": [
+   [
+    "rewrite",
+    "planning the story into 2 clip(s) of 15 s with thinking (budget 2048)",
+    0.2
+   ],
+   [
+    "rewrite",
+    "writing 2 clip prompt(s) as Ref2VA with thinking (budget 2048), one after another (continuity 'final prompts': each clip continues from the previous clip's final prompt)",
+    0.3
+   ],
+   [
+    "rewrite",
+    "rewrote 2 clip(s) in 0 s",
+    1.0
+   ]
+  ],
+  "sessions": [
+   {
+    "kw": {
+     "assets": 0,
+     "attachments": 2,
+     "auto_download": true,
+     "backend": "auto",
+     "device": "auto",
+     "force": true,
+     "gpu_layers": -1,
+     "n_ctx": 0,
+     "pool_ctx": 4096,
+     "progress": null,
+     "reasoning": {
+      "budget": 2048,
+      "enabled": true,
+      "message": "Wrap up."
+     },
+     "slots": 1
+    },
+    "mmproj": "mm.gguf",
+    "model": "writer-stub.gguf"
+   }
+  ],
+  "streams": [
+   [
+    0,
+    0,
+    "thinking",
+    "e3b0c44298fc1c14"
+   ],
+   [
+    0,
+    0,
+    "done",
+    "4903e8d92766d489"
+   ],
+   [
+    1,
+    1,
+    "thinking",
+    "e3b0c44298fc1c14"
+   ],
+   [
+    1,
+    1,
+    "done",
+    "2a8fabe2a3474180"
+   ]
+  ]
+ },
+ "story_auto_no_thinking": {
+  "chats": [
+   {
+    "kw": {
+     "enable_thinking": false,
+     "greedy": true,
+     "max_new_tokens": 3300,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "REFERENCES — the only subjects that have a reference (labelled in slot order):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "\nREFERENCE RULE — These are the only characters, props and locations that have a reference picture. Stage the story with them: a character keeps the face, build and hair of their picture, a prop or location keeps its material and layout. A character's clothing comes from the story, not from the picture (the picture's outfit is only the fallback when the story is silent). Anything without a picture stays off screen or unseen. Name a subject by its Picture number the first time it appears in a clip's shots.\n\nBreak the chapter below into fixed 15-second video clips, each built from 3-6 shots.\n\nRULES — a clip is one continuous narrative beat; a shot is one discrete camera angle inside it.\n\n- Every clip is exactly 15 seconds of shots (they must sum to 15, plus or minus half a second).\n- 3-4 shots per clip by default. Only use 5-6 when the beat truly demands rapid cuts. Never fewer than 3, never more than 6.\n- Follow a setup -> action -> reaction -> payoff arc, compressed to fit the shot count: shot 1 establishes where/who/what state; the middle shot(s) carry the action that moves the beat forward; the last shot is the reaction or the payoff — usually a line of dialogue, a held look, or a final gesture.\n- Vary the camera between consecutive shots in the SAME clip — never the same camera term twice in a row.\n- One action per shot. If a character does two distinct things, that's two shots.\n- Dialogue gets its OWN shot (or is attached to the payoff shot) — never buried inside a multi-action shot. Dialogue is in the target language/script only, verbatim, no translation or gloss.\n- End every clip with tension, a question, or a forward pull into the next clip — the last shot should make the audience need the next 15 seconds.\n- No shot should require having seen a previous clip to make sense — each clip is visually self-contained.\n- Camera per shot must be exactly one of these terms (spelled verbatim, snake_case): wide_establishing, medium, medium_close, close_up, extreme_close_up_macro, tracking_following, over_the_shoulder, top_down_overhead, low_angle, high_angle.\n\nRUNTIME — TARGET, NOT A CEILING OR A FLOOR: this chapter must become EXACTLY 2 clips of 15 seconds each (30s total) — not one more, not one fewer. Reach EXACTLY 2 by covering the SAME events at a finer or coarser grain — more or fewer clips, longer or shorter dwell on each beat — never by inventing events the chapter does not contain, and never by compressing two distinct dramatic beats into one clip or stretching one beat thin across several just to fill the count.\n\nSTATE LEDGER — before writing the clips, propose a small ledger of what actually CHANGES visibly during this chapter:\n- One entry per character, prop, creature, or location-as-environment whose visible state changes (wardrobe, condition, possession, consciousness, restraint for people; configuration, integrity, fill, activation for objects/environments — a lamp lit or not, a door open or not). Do NOT track a permanent trait as an axis, and do NOT invent an entity with nothing that changes.\n- Each entity declares its own small set of axes, each axis a short ordered list of options (least to most, for anything that can only move one way — an injury does not heal mid-chapter) and whether it is progressive (can never move backwards) and whether it would show on that entity's own reference plate (wardrobe, a visible marking — never posture or mood).\n- Give every entity its value on every one of its own axes at the chapter's OPENING, before clip 1.\n- Then, per clip, list ONLY the state changes that actually happen in THAT clip (which entity, which axis, its new value, and which shot causes it) — never restate a value that did not change, and never repeat earlier clips' changes.\n\nCHAPTER:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\n\nReturn the breakdown as data: the state ledger first (entities, their axes, their opening values), then every clip in order with its beat, its shots (camera, subject, the physical action, and — only on the shot where someone actually speaks — the speaker and their exact line), its own state changes if any, and the forward pull that closes it.\n\nCONTINUITY STATE — these rules sit on top of the template and win over its 'visually self-contained' line. The clips play back to back as ONE continuous film: clip N opens exactly where clip N-1 ended. For EVERY clip add \"end_state\": the state at that clip's FINAL frame — location (the spot inside the set), time_light, end_action (the exact physical action or pose of the last shot's last second) and, for every character on screen at that moment, position (where in the set, facing which way), wardrobe, props and state. Carry every field forward unchanged into the next clip unless a shot of that clip changes it: nobody changes clothes, loses a prop, heals, or moves between clips off screen. Only an explicit time or location cut that the beat itself names may open a clip somewhere else, and then say so in the beat. WARDROBE comes from the STORY, never from a reference picture: when the story says what a character wears at that point (or changes into), write the full outfit — garment, colour, fabric, trim, accessories — in every clip's end_state until the story changes it; when the story says nothing about that character's clothing, write exactly: as on the reference. A reference picture tells you who a character is (face, build, hair), not what they wear in the film.\nOUTPUT FORMAT — reply with ONE JSON object and nothing else (no prose, no code fence), in exactly this shape and key order:\n{\n  \"chapter\": \"the chapter's own spine, one line\",\n  \"ledger\": {\"entities\": [\n    {\"id\": \"short_slug\", \"name\": \"...\", \"kind\": \"character|prop|creature|environment\",\n     \"clip_ids\": [1, 2],\n     \"axes\": [{\"axis\": \"wardrobe\", \"options\": [\"least\", \"...\", \"most\"], \"progressive\": false, \"plate_visible\": true}],\n     \"initial\": [{\"axis\": \"wardrobe\", \"value\": \"one of that axis's options\"}]}\n  ]},\n  \"clips\": [\n    {\"clip\": 1, \"beat\": \"the dramatic beat this clip covers, one line, no camera\",\n     \"shots\": [\n       {\"shot\": 1, \"seconds\": 4, \"camera\": \"one of the camera terms above, verbatim\",\n        \"subject\": \"who or what is on screen, no camera language\", \"action\": \"the one physical action\",\n        \"has_dialogue\": false, \"dialogue_speaker\": \"\", \"dialogue_line\": \"\"}\n     ],\n     \"forward_pull\": \"the tension, question or forward pull this clip closes on\",\n     \"state_changes\": [{\"entity\": \"an entity id\", \"axis\": \"one of its axes\", \"to\": \"one of that axis's options\", \"shot\": 2}],\n     \"end_state\": {\"location\": \"where the last frame is, with the spot in the set\", \"time_light\": \"time of day and light at the last frame\",\n                   \"end_action\": \"the exact physical action or pose of the last shot's last second\",\n                   \"characters\": [{\"name\": \"...\", \"position\": \"where in the set, facing which way\", \"wardrobe\": \"the full outfit, or: as on the reference\",\n                                   \"props\": \"held, worn or carried objects, or: none\", \"state\": \"visible emotion or condition\"}]}}\n  ]\n}\nEach clip has 3-6 shots whose seconds sum to 15. \"ledger.entities\" may be an empty array when nothing visibly changes.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   },
+   {
+    "kw": {
+     "enable_thinking": false,
+     "greedy": true,
+     "max_new_tokens": 100,
+     "on_reasoning": null,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": "SYSTEM[Ref2VA]\n\nContinuity: the task message may carry a 'previous_clips' block. Those are the earlier clips of the same continuous video, in order, already rendered. The target video begins exactly where the last of them ends: keep the subjects, wardrobe, setting, lighting and visual style continuous with them, do not re-describe or repeat their events, and do not count them as shots of this clip.\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. Use it only to decide what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip.\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any 'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); (3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the one shown on the picture, use fully_preserved.\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled 'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>.\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP N ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the outfit shown on the picture.",
+      "role": "system"
+     },
+     {
+      "content": [
+       {
+        "text": "Reference pictures, in order (each labelled before its image):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "duration: 15\nreferences:\nPicture 1: the attached image labelled 'Picture 1:' at the top of this message\nPicture 2: the attached image labelled 'Picture 2:' at the top of this message\nstory:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\noriginal_prompt:\nClip 1:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 1?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   },
+   {
+    "kw": {
+     "enable_thinking": false,
+     "greedy": true,
+     "max_new_tokens": 100,
+     "on_reasoning": null,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": "SYSTEM[Ref2VA]\n\nContinuity: the task message may carry a 'previous_clips' block. Those are the earlier clips of the same continuous video, in order, already rendered. The target video begins exactly where the last of them ends: keep the subjects, wardrobe, setting, lighting and visual style continuous with them, do not re-describe or repeat their events, and do not count them as shots of this clip.\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. Use it only to decide what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip.\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any 'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); (3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the one shown on the picture, use fully_preserved.\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled 'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>.\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP N ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the outfit shown on the picture.",
+      "role": "system"
+     },
+     {
+      "content": [
+       {
+        "text": "Reference pictures, in order (each labelled before its image):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "duration: 15\nreferences:\nPicture 1: the attached image labelled 'Picture 1:' at the top of this message\nPicture 2: the attached image labelled 'Picture 2:' at the top of this message\nstory:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\nprevious_clips:\nClip 1 (15s): Clip 1: Shot 1 – Wide as The wet street shines under a lamp. (5s) Shot 2 – Medium as Ana walks on. (5s) Shot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s) What is at the station 1? AT THE END OF THIS CLIP (the next clip opens exactly here): Location: the street, lamp 1 Time and light: night, sodium lamplight Last action: Ana stops under lamp 1 and looks up Ana — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\noriginal_prompt:\nCONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP 1 ENDED:\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\n\nClip 2:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 2?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 2\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 2 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   }
+  ],
+  "clips": [
+   {
+    "beyond": false,
+    "duration": 15,
+    "id": 0,
+    "loras": [],
+    "plan_end_state": {},
+    "planned": true,
+    "prompt": "FINAL 7745ecf7de1b65b5",
+    "prompt_raw": "Clip 1:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 1?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+    "prompt_rewritten": true,
+    "rewrite_meta": {
+     "budget": 0,
+     "fingerprint": "v2:a08796fa25a10e7501226b9a2acebb679aa8fe8a",
+     "model": "writer-stub.gguf",
+     "task": "Ref2VA",
+     "thinking": false
+    },
+    "rewrite_text": "FINAL 7745ecf7de1b65b5",
+    "seed": 1,
+    "seed_mode": "fixed",
+    "title": "Clip 1",
+    "validated": false
+   },
+   {
+    "beyond": false,
+    "duration": 15,
+    "id": 1,
+    "loras": [],
+    "plan_end_state": {},
+    "planned": true,
+    "prompt": "FINAL 8d327ec218544881",
+    "prompt_raw": "CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP 1 ENDED:\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\n\nClip 2:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 2?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 2\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 2 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+    "prompt_rewritten": true,
+    "rewrite_meta": {
+     "budget": 0,
+     "fingerprint": "v2:165028ccd39ccd6c2924ccdaa58c08c63839aa84",
+     "model": "writer-stub.gguf",
+     "task": "Ref2VA",
+     "thinking": false
+    },
+    "rewrite_text": "FINAL 8d327ec218544881",
+    "seed": 473233031,
+    "seed_mode": "randomize",
+    "title": "Clip 2",
+    "validated": false
+   }
+  ],
+  "notes": [
+   "rewriter: 2 clip(s)",
+   "planned 2 clip(s) from the story, wrote 2 new ask(s)"
+  ],
+  "plans": [
+   [
+    0,
+    1
+   ]
+  ],
+  "progress": [
+   [
+    "rewrite",
+    "planning the story into 2 clip(s) of 15 s",
+    0.2
+   ],
+   [
+    "rewrite",
+    "writing 2 clip prompt(s) as Ref2VA",
+    0.3
+   ],
+   [
+    "rewrite",
+    "rewrote 2 clip(s) in 0 s",
+    1.0
+   ]
+  ],
+  "sessions": [
+   {
+    "kw": {
+     "assets": 0,
+     "attachments": 2,
+     "auto_download": true,
+     "backend": "auto",
+     "device": "auto",
+     "force": true,
+     "gpu_layers": -1,
+     "n_ctx": 0,
+     "pool_ctx": 4096,
+     "progress": null,
+     "reasoning": {
+      "budget": 2048,
+      "enabled": false,
+      "message": "Wrap up."
+     },
+     "slots": 1
+    },
+    "mmproj": "mm.gguf",
+    "model": "writer-stub.gguf"
+   }
+  ],
+  "streams": [
+   [
+    0,
+    0,
+    "writing",
+    "e3b0c44298fc1c14"
+   ],
+   [
+    0,
+    0,
+    "done",
+    "ce98291597beb724"
+   ],
+   [
+    1,
+    1,
+    "writing",
+    "e3b0c44298fc1c14"
+   ],
+   [
+    1,
+    1,
+    "done",
+    "2829e5cb1b4e37ae"
+   ]
+  ]
+ },
+ "story_auto_raw_asks": {
+  "chats": [
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 5348,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "REFERENCES — the only subjects that have a reference (labelled in slot order):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "\nREFERENCE RULE — These are the only characters, props and locations that have a reference picture. Stage the story with them: a character keeps the face, build and hair of their picture, a prop or location keeps its material and layout. A character's clothing comes from the story, not from the picture (the picture's outfit is only the fallback when the story is silent). Anything without a picture stays off screen or unseen. Name a subject by its Picture number the first time it appears in a clip's shots.\n\nBreak the chapter below into fixed 15-second video clips, each built from 3-6 shots.\n\nRULES — a clip is one continuous narrative beat; a shot is one discrete camera angle inside it.\n\n- Every clip is exactly 15 seconds of shots (they must sum to 15, plus or minus half a second).\n- 3-4 shots per clip by default. Only use 5-6 when the beat truly demands rapid cuts. Never fewer than 3, never more than 6.\n- Follow a setup -> action -> reaction -> payoff arc, compressed to fit the shot count: shot 1 establishes where/who/what state; the middle shot(s) carry the action that moves the beat forward; the last shot is the reaction or the payoff — usually a line of dialogue, a held look, or a final gesture.\n- Vary the camera between consecutive shots in the SAME clip — never the same camera term twice in a row.\n- One action per shot. If a character does two distinct things, that's two shots.\n- Dialogue gets its OWN shot (or is attached to the payoff shot) — never buried inside a multi-action shot. Dialogue is in the target language/script only, verbatim, no translation or gloss.\n- End every clip with tension, a question, or a forward pull into the next clip — the last shot should make the audience need the next 15 seconds.\n- No shot should require having seen a previous clip to make sense — each clip is visually self-contained.\n- Camera per shot must be exactly one of these terms (spelled verbatim, snake_case): wide_establishing, medium, medium_close, close_up, extreme_close_up_macro, tracking_following, over_the_shoulder, top_down_overhead, low_angle, high_angle.\n\nRUNTIME — TARGET, NOT A CEILING OR A FLOOR: this chapter must become EXACTLY 2 clips of 15 seconds each (30s total) — not one more, not one fewer. Reach EXACTLY 2 by covering the SAME events at a finer or coarser grain — more or fewer clips, longer or shorter dwell on each beat — never by inventing events the chapter does not contain, and never by compressing two distinct dramatic beats into one clip or stretching one beat thin across several just to fill the count.\n\nSTATE LEDGER — before writing the clips, propose a small ledger of what actually CHANGES visibly during this chapter:\n- One entry per character, prop, creature, or location-as-environment whose visible state changes (wardrobe, condition, possession, consciousness, restraint for people; configuration, integrity, fill, activation for objects/environments — a lamp lit or not, a door open or not). Do NOT track a permanent trait as an axis, and do NOT invent an entity with nothing that changes.\n- Each entity declares its own small set of axes, each axis a short ordered list of options (least to most, for anything that can only move one way — an injury does not heal mid-chapter) and whether it is progressive (can never move backwards) and whether it would show on that entity's own reference plate (wardrobe, a visible marking — never posture or mood).\n- Give every entity its value on every one of its own axes at the chapter's OPENING, before clip 1.\n- Then, per clip, list ONLY the state changes that actually happen in THAT clip (which entity, which axis, its new value, and which shot causes it) — never restate a value that did not change, and never repeat earlier clips' changes.\n\nCHAPTER:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\n\nReturn the breakdown as data: the state ledger first (entities, their axes, their opening values), then every clip in order with its beat, its shots (camera, subject, the physical action, and — only on the shot where someone actually speaks — the speaker and their exact line), its own state changes if any, and the forward pull that closes it.\n\nCONTINUITY STATE — these rules sit on top of the template and win over its 'visually self-contained' line. The clips play back to back as ONE continuous film: clip N opens exactly where clip N-1 ended. For EVERY clip add \"end_state\": the state at that clip's FINAL frame — location (the spot inside the set), time_light, end_action (the exact physical action or pose of the last shot's last second) and, for every character on screen at that moment, position (where in the set, facing which way), wardrobe, props and state. Carry every field forward unchanged into the next clip unless a shot of that clip changes it: nobody changes clothes, loses a prop, heals, or moves between clips off screen. Only an explicit time or location cut that the beat itself names may open a clip somewhere else, and then say so in the beat. WARDROBE comes from the STORY, never from a reference picture: when the story says what a character wears at that point (or changes into), write the full outfit — garment, colour, fabric, trim, accessories — in every clip's end_state until the story changes it; when the story says nothing about that character's clothing, write exactly: as on the reference. A reference picture tells you who a character is (face, build, hair), not what they wear in the film.\nOUTPUT FORMAT — reply with ONE JSON object and nothing else (no prose, no code fence), in exactly this shape and key order:\n{\n  \"chapter\": \"the chapter's own spine, one line\",\n  \"ledger\": {\"entities\": [\n    {\"id\": \"short_slug\", \"name\": \"...\", \"kind\": \"character|prop|creature|environment\",\n     \"clip_ids\": [1, 2],\n     \"axes\": [{\"axis\": \"wardrobe\", \"options\": [\"least\", \"...\", \"most\"], \"progressive\": false, \"plate_visible\": true}],\n     \"initial\": [{\"axis\": \"wardrobe\", \"value\": \"one of that axis's options\"}]}\n  ]},\n  \"clips\": [\n    {\"clip\": 1, \"beat\": \"the dramatic beat this clip covers, one line, no camera\",\n     \"shots\": [\n       {\"shot\": 1, \"seconds\": 4, \"camera\": \"one of the camera terms above, verbatim\",\n        \"subject\": \"who or what is on screen, no camera language\", \"action\": \"the one physical action\",\n        \"has_dialogue\": false, \"dialogue_speaker\": \"\", \"dialogue_line\": \"\"}\n     ],\n     \"forward_pull\": \"the tension, question or forward pull this clip closes on\",\n     \"state_changes\": [{\"entity\": \"an entity id\", \"axis\": \"one of its axes\", \"to\": \"one of that axis's options\", \"shot\": 2}],\n     \"end_state\": {\"location\": \"where the last frame is, with the spot in the set\", \"time_light\": \"time of day and light at the last frame\",\n                   \"end_action\": \"the exact physical action or pose of the last shot's last second\",\n                   \"characters\": [{\"name\": \"...\", \"position\": \"where in the set, facing which way\", \"wardrobe\": \"the full outfit, or: as on the reference\",\n                                   \"props\": \"held, worn or carried objects, or: none\", \"state\": \"visible emotion or condition\"}]}}\n  ]\n}\nEach clip has 3-6 shots whose seconds sum to 15. \"ledger.entities\" may be an empty array when nothing visibly changes.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   },
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 2148,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": "SYSTEM[Ref2VA]\n\nContinuity: the task message may carry a 'previous_clips' block. Those are the earlier clips of the same continuous video, in order, already rendered. The target video begins exactly where the last of them ends: keep the subjects, wardrobe, setting, lighting and visual style continuous with them, do not re-describe or repeat their events, and do not count them as shots of this clip.\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. Use it only to decide what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip.\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any 'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); (3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the one shown on the picture, use fully_preserved.\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled 'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>.\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP N ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the outfit shown on the picture.",
+      "role": "system"
+     },
+     {
+      "content": [
+       {
+        "text": "Reference pictures, in order (each labelled before its image):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "duration: 15\nreferences:\nPicture 1: the attached image labelled 'Picture 1:' at the top of this message\nPicture 2: the attached image labelled 'Picture 2:' at the top of this message\nstory:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\noriginal_prompt:\nClip 1:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 1?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   },
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 2148,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": "SYSTEM[Ref2VA]\n\nContinuity: the task message may carry a 'previous_clips' block. Those are the earlier clips of the same continuous video, in order, already rendered. The target video begins exactly where the last of them ends: keep the subjects, wardrobe, setting, lighting and visual style continuous with them, do not re-describe or repeat their events, and do not count them as shots of this clip.\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. Use it only to decide what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip.\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any 'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); (3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the one shown on the picture, use fully_preserved.\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled 'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>.\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP N ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the outfit shown on the picture.",
+      "role": "system"
+     },
+     {
+      "content": [
+       {
+        "text": "Reference pictures, in order (each labelled before its image):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "duration: 15\nreferences:\nPicture 1: the attached image labelled 'Picture 1:' at the top of this message\nPicture 2: the attached image labelled 'Picture 2:' at the top of this message\nstory:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\nprevious_clips:\nClip 1 (15s): Clip 1: Shot 1 – Wide as The wet street shines under a lamp. (5s) Shot 2 – Medium as Ana walks on. (5s) Shot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s) What is at the station 1? AT THE END OF THIS CLIP (the next clip opens exactly here): Location: the street, lamp 1 Time and light: night, sodium lamplight Last action: Ana stops under lamp 1 and looks up Ana — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\noriginal_prompt:\nCONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP 1 ENDED:\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\n\nClip 2:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 2?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 2\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 2 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   }
+  ],
+  "clips": [
+   {
+    "beyond": false,
+    "duration": 15,
+    "id": 0,
+    "loras": [],
+    "plan_end_state": {},
+    "planned": true,
+    "prompt": "FINAL 7745ecf7de1b65b5",
+    "prompt_raw": "Clip 1:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 1?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+    "prompt_rewritten": true,
+    "rewrite_meta": {
+     "budget": 2048,
+     "fingerprint": "v2:a08796fa25a10e7501226b9a2acebb679aa8fe8a",
+     "model": "writer-stub.gguf",
+     "task": "Ref2VA",
+     "thinking": true
+    },
+    "rewrite_text": "FINAL 7745ecf7de1b65b5",
+    "seed": 1,
+    "seed_mode": "fixed",
+    "title": "Clip 1",
+    "validated": false
+   },
+   {
+    "beyond": false,
+    "duration": 15,
+    "id": 1,
+    "loras": [],
+    "plan_end_state": {},
+    "planned": true,
+    "prompt": "FINAL 8d327ec218544881",
+    "prompt_raw": "CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP 1 ENDED:\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\n\nClip 2:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 2?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 2\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 2 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+    "prompt_rewritten": true,
+    "rewrite_meta": {
+     "budget": 2048,
+     "fingerprint": "v2:165028ccd39ccd6c2924ccdaa58c08c63839aa84",
+     "model": "writer-stub.gguf",
+     "task": "Ref2VA",
+     "thinking": true
+    },
+    "rewrite_text": "FINAL 8d327ec218544881",
+    "seed": 473233031,
+    "seed_mode": "randomize",
+    "title": "Clip 2",
+    "validated": false
+   }
+  ],
+  "notes": [
+   "rewriter: 2 clip(s)",
+   "planned 2 clip(s) from the story, wrote 2 new ask(s)"
+  ],
+  "plans": [
+   [
+    0,
+    1
+   ]
+  ],
+  "progress": [
+   [
+    "rewrite",
+    "planning the story into 2 clip(s) of 15 s with thinking (budget 2048)",
+    0.2
+   ],
+   [
+    "rewrite",
+    "writing 2 clip prompt(s) as Ref2VA with thinking (budget 2048)",
+    0.3
+   ],
+   [
+    "rewrite",
+    "rewrote 2 clip(s) in 0 s",
+    1.0
+   ]
+  ],
+  "sessions": [
+   {
+    "kw": {
+     "assets": 0,
+     "attachments": 2,
+     "auto_download": true,
+     "backend": "auto",
+     "device": "auto",
+     "force": true,
+     "gpu_layers": -1,
+     "n_ctx": 0,
+     "pool_ctx": 4096,
+     "progress": null,
+     "reasoning": {
+      "budget": 2048,
+      "enabled": true,
+      "message": "Wrap up."
+     },
+     "slots": 1
+    },
+    "mmproj": "mm.gguf",
+    "model": "writer-stub.gguf"
+   }
+  ],
+  "streams": [
+   [
+    0,
+    0,
+    "thinking",
+    "e3b0c44298fc1c14"
+   ],
+   [
+    0,
+    0,
+    "done",
+    "ce98291597beb724"
+   ],
+   [
+    1,
+    1,
+    "thinking",
+    "e3b0c44298fc1c14"
+   ],
+   [
+    1,
+    1,
+    "done",
+    "2829e5cb1b4e37ae"
+   ]
+  ]
+ },
+ "story_plan_around_typed": {
+  "chats": [
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 5348,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": [
+       {
+        "text": "REFERENCES — the only subjects that have a reference (labelled in slot order):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "\nREFERENCE RULE — These are the only characters, props and locations that have a reference picture. Stage the story with them: a character keeps the face, build and hair of their picture, a prop or location keeps its material and layout. A character's clothing comes from the story, not from the picture (the picture's outfit is only the fallback when the story is silent). Anything without a picture stays off screen or unseen. Name a subject by its Picture number the first time it appears in a clip's shots.\n\nALREADY IN THE FILM (do not re-plan, repeat or contradict) — the asks of clips 1-1, in order:\n\n--- Clip 1 ---\nAna leaves her flat in the rain.\n\n[TO PLAN: clip 2]\n\n[TO PLAN: clip 3]\n\nSTATE — the existing clips have no ledger: derive the opening state of your ledger from where the existing clips leave things.\n\nCONTINUATION — Plan exactly 2 more clips, numbered 2-3. Begin where clip 1 ends and carry the story forward from there; cover what the story has not yet covered. Number them 2-3 in the JSON ('clip' fields and the ledger's clip_ids). The CHAPTER below is the whole film's story; clips 1-1 above already cover its first part. Plan ONLY the 2 new clips.\n\nBreak the chapter below into fixed 15-second video clips, each built from 3-6 shots.\n\nRULES — a clip is one continuous narrative beat; a shot is one discrete camera angle inside it.\n\n- Every clip is exactly 15 seconds of shots (they must sum to 15, plus or minus half a second).\n- 3-4 shots per clip by default. Only use 5-6 when the beat truly demands rapid cuts. Never fewer than 3, never more than 6.\n- Follow a setup -> action -> reaction -> payoff arc, compressed to fit the shot count: shot 1 establishes where/who/what state; the middle shot(s) carry the action that moves the beat forward; the last shot is the reaction or the payoff — usually a line of dialogue, a held look, or a final gesture.\n- Vary the camera between consecutive shots in the SAME clip — never the same camera term twice in a row.\n- One action per shot. If a character does two distinct things, that's two shots.\n- Dialogue gets its OWN shot (or is attached to the payoff shot) — never buried inside a multi-action shot. Dialogue is in the target language/script only, verbatim, no translation or gloss.\n- End every clip with tension, a question, or a forward pull into the next clip — the last shot should make the audience need the next 15 seconds.\n- No shot should require having seen a previous clip to make sense — each clip is visually self-contained.\n- Camera per shot must be exactly one of these terms (spelled verbatim, snake_case): wide_establishing, medium, medium_close, close_up, extreme_close_up_macro, tracking_following, over_the_shoulder, top_down_overhead, low_angle, high_angle.\n\nRUNTIME — TARGET, NOT A CEILING OR A FLOOR: this chapter must become EXACTLY 2 clips of 15 seconds each (30s total) — not one more, not one fewer. Reach EXACTLY 2 by covering the SAME events at a finer or coarser grain — more or fewer clips, longer or shorter dwell on each beat — never by inventing events the chapter does not contain, and never by compressing two distinct dramatic beats into one clip or stretching one beat thin across several just to fill the count.\n\nSTATE LEDGER — before writing the clips, propose a small ledger of what actually CHANGES visibly during this chapter:\n- One entry per character, prop, creature, or location-as-environment whose visible state changes (wardrobe, condition, possession, consciousness, restraint for people; configuration, integrity, fill, activation for objects/environments — a lamp lit or not, a door open or not). Do NOT track a permanent trait as an axis, and do NOT invent an entity with nothing that changes.\n- Each entity declares its own small set of axes, each axis a short ordered list of options (least to most, for anything that can only move one way — an injury does not heal mid-chapter) and whether it is progressive (can never move backwards) and whether it would show on that entity's own reference plate (wardrobe, a visible marking — never posture or mood).\n- Give every entity its value on every one of its own axes at the chapter's OPENING, before clip 1.\n- Then, per clip, list ONLY the state changes that actually happen in THAT clip (which entity, which axis, its new value, and which shot causes it) — never restate a value that did not change, and never repeat earlier clips' changes.\n\nCHAPTER:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\n\nReturn the breakdown as data: the state ledger first (entities, their axes, their opening values), then every clip in order with its beat, its shots (camera, subject, the physical action, and — only on the shot where someone actually speaks — the speaker and their exact line), its own state changes if any, and the forward pull that closes it.\n\nCONTINUITY STATE — these rules sit on top of the template and win over its 'visually self-contained' line. The clips play back to back as ONE continuous film: clip N opens exactly where clip N-1 ended. For EVERY clip add \"end_state\": the state at that clip's FINAL frame — location (the spot inside the set), time_light, end_action (the exact physical action or pose of the last shot's last second) and, for every character on screen at that moment, position (where in the set, facing which way), wardrobe, props and state. Carry every field forward unchanged into the next clip unless a shot of that clip changes it: nobody changes clothes, loses a prop, heals, or moves between clips off screen. Only an explicit time or location cut that the beat itself names may open a clip somewhere else, and then say so in the beat. WARDROBE comes from the STORY, never from a reference picture: when the story says what a character wears at that point (or changes into), write the full outfit — garment, colour, fabric, trim, accessories — in every clip's end_state until the story changes it; when the story says nothing about that character's clothing, write exactly: as on the reference. A reference picture tells you who a character is (face, build, hair), not what they wear in the film.\nOUTPUT FORMAT — reply with ONE JSON object and nothing else (no prose, no code fence), in exactly this shape and key order:\n{\n  \"chapter\": \"the chapter's own spine, one line\",\n  \"ledger\": {\"entities\": [\n    {\"id\": \"short_slug\", \"name\": \"...\", \"kind\": \"character|prop|creature|environment\",\n     \"clip_ids\": [2, 3],\n     \"axes\": [{\"axis\": \"wardrobe\", \"options\": [\"least\", \"...\", \"most\"], \"progressive\": false, \"plate_visible\": true}],\n     \"initial\": [{\"axis\": \"wardrobe\", \"value\": \"one of that axis's options\"}]}\n  ]},\n  \"clips\": [\n    {\"clip\": 2, \"beat\": \"the dramatic beat this clip covers, one line, no camera\",\n     \"shots\": [\n       {\"shot\": 1, \"seconds\": 4, \"camera\": \"one of the camera terms above, verbatim\",\n        \"subject\": \"who or what is on screen, no camera language\", \"action\": \"the one physical action\",\n        \"has_dialogue\": false, \"dialogue_speaker\": \"\", \"dialogue_line\": \"\"}\n     ],\n     \"forward_pull\": \"the tension, question or forward pull this clip closes on\",\n     \"state_changes\": [{\"entity\": \"an entity id\", \"axis\": \"one of its axes\", \"to\": \"one of that axis's options\", \"shot\": 2}],\n     \"end_state\": {\"location\": \"where the last frame is, with the spot in the set\", \"time_light\": \"time of day and light at the last frame\",\n                   \"end_action\": \"the exact physical action or pose of the last shot's last second\",\n                   \"characters\": [{\"name\": \"...\", \"position\": \"where in the set, facing which way\", \"wardrobe\": \"the full outfit, or: as on the reference\",\n                                   \"props\": \"held, worn or carried objects, or: none\", \"state\": \"visible emotion or condition\"}]}}\n  ]\n}\nEach clip has 3-6 shots whose seconds sum to 15. \"ledger.entities\" may be an empty array when nothing visibly changes.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   },
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 2148,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": "SYSTEM[Ref2VA]\n\nContinuity: the task message may carry a 'previous_clips' block. Those are the earlier clips of the same continuous video, in order, already rendered. The target video begins exactly where the last of them ends: keep the subjects, wardrobe, setting, lighting and visual style continuous with them, do not re-describe or repeat their events, and do not count them as shots of this clip.\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. Use it only to decide what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip.\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any 'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); (3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the one shown on the picture, use fully_preserved.\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled 'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>.\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP N ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the outfit shown on the picture.",
+      "role": "system"
+     },
+     {
+      "content": [
+       {
+        "text": "Reference pictures, in order (each labelled before its image):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "duration: 15\nreferences:\nPicture 1: the attached image labelled 'Picture 1:' at the top of this message\nPicture 2: the attached image labelled 'Picture 2:' at the top of this message\nstory:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\noriginal_prompt:\nAna leaves her flat in the rain.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   },
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 2148,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": "SYSTEM[Ref2VA]\n\nContinuity: the task message may carry a 'previous_clips' block. Those are the earlier clips of the same continuous video, in order, already rendered. The target video begins exactly where the last of them ends: keep the subjects, wardrobe, setting, lighting and visual style continuous with them, do not re-describe or repeat their events, and do not count them as shots of this clip.\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. Use it only to decide what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip.\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any 'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); (3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the one shown on the picture, use fully_preserved.\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled 'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>.\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP N ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the outfit shown on the picture.",
+      "role": "system"
+     },
+     {
+      "content": [
+       {
+        "text": "Reference pictures, in order (each labelled before its image):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "duration: 15\nreferences:\nPicture 1: the attached image labelled 'Picture 1:' at the top of this message\nPicture 2: the attached image labelled 'Picture 2:' at the top of this message\nstory:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\nprevious_clips:\nClip 1 (15s): Ana leaves her flat in the rain.\noriginal_prompt:\nClip 2:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 1?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   },
+   {
+    "kw": {
+     "enable_thinking": true,
+     "greedy": true,
+     "max_new_tokens": 2148,
+     "repeat_penalty": 1.05,
+     "seed": 42,
+     "temperature": 0.7,
+     "top_k": 20,
+     "top_p": 0.8
+    },
+    "messages": [
+     {
+      "content": "SYSTEM[Ref2VA]\n\nContinuity: the task message may carry a 'previous_clips' block. Those are the earlier clips of the same continuous video, in order, already rendered. The target video begins exactly where the last of them ends: keep the subjects, wardrobe, setting, lighting and visual style continuous with them, do not re-describe or repeat their events, and do not count them as shots of this clip.\n\nStory: the task message may carry a 'story' block. It is the whole film's story, from start to end. Use it only to decide what THIS clip covers: the next beat after where the previous clips end (clip 1 = the opening beat). Do not stage events that belong later in the story, do not compress the remaining story into this clip, and do not copy the story's wording or dialogue into the prompt unless the clip's own ask calls for it. The clip's own ask (original_prompt) wins over the story when they disagree. The story is also where wardrobe comes from: if it says what a character wears, or changes into, by this point, that is their outfit in this clip.\n\nReferences, identity versus wardrobe: a reference picture supplies IDENTITY only: face, build, skin tone, hair, apparent age, distinguishing marks. It does not decide what the character wears. In subject_definitions, define each person from the picture's identity features PLUS the wardrobe, props and accessories this clip needs, written out in full (garment, colour, fabric, trim, accessories), e.g. '<Subject 1> is the woman whose face, build, skin tone and hair come from <Picture 1>, in a deep red silk wedding saree with a gold border and a gold necklace.' Decide the wardrobe in this order: (1) the clip's own ask, including any 'OPENS EXACTLY WHERE' or 'AT THE END OF THIS CLIP' block; (2) the state the previous clip ended in (previous_clips); (3) the story block; (4) only when none of these says what the character wears, the outfit shown on the picture. Use the same outfit wording in every shot, so it stays the same across the clip. When the chosen outfit is not the one shown on the picture, never describe the picture's own outfit anywhere in the prompt, and never write what the character is not wearing. For that subject, retention_analysis uses partially_preserved and says which identity features are retained from the picture and that the clothing is replaced by the outfit defined in subject_definitions. When the outfit IS the one shown on the picture, use fully_preserved.\n\nReference pictures: the task message opens with the reference pictures themselves, in order, each labelled 'Picture N:' right before its image, and reference_assets repeats those labels. Look at each one. For a person take the identity only; for a prop or a location take its material, shape, layout and look. Cite each as <Picture N>.\n\nContinuity state in the ask: the original_prompt may carry a 'CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP N ENDED' block and an 'AT THE END OF THIS CLIP' block. They are binding. The first shot opens in exactly the opening state (same place in the set, same positions and facing, same wardrobe and props, same time and light, continuing from the stated last action), without re-staging how it got there. The last shot ends in the state of the closing block. With no opening block (the first clip), wardrobe and props are those of the closing block unless a shot visibly changes them. Where the opening and closing wardrobe differ, the change happens inside this clip: shots before it show the opening outfit, shots after it the closing one, and the shot that makes the change says how. 'as on the reference' means the outfit shown on the picture.",
+      "role": "system"
+     },
+     {
+      "content": [
+       {
+        "text": "Reference pictures, in order (each labelled before its image):",
+        "type": "text"
+       },
+       {
+        "text": "Picture 1:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:511a10d69cc7a890"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "Picture 2:",
+        "type": "text"
+       },
+       {
+        "image_url": {
+         "url": "sha256:0958b7a4b1b46167"
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "duration: 15\nreferences:\nPicture 1: the attached image labelled 'Picture 1:' at the top of this message\nPicture 2: the attached image labelled 'Picture 2:' at the top of this message\nstory:\nAna, a night-shift nurse, leaves her flat in the rain and walks across the city to the central station. She catches the last train to her sister's coast town and sleeps against the window. At dawn the train reaches the coast and Ana steps onto an empty platform.\nprevious_clips:\nClip 1 (15s): Ana leaves her flat in the rain.\nClip 2 (15s): Clip 2: Shot 1 – Wide as The wet street shines under a lamp. (5s) Shot 2 – Medium as Ana walks on. (5s) Shot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s) What is at the station 1? AT THE END OF THIS CLIP (the next clip opens exactly here): Location: the street, lamp 1 Time and light: night, sodium lamplight Last action: Ana stops under lamp 1 and looks up Ana — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\noriginal_prompt:\nCONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP 2 ENDED:\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\n\nClip 3:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 2?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 2\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 2 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ]
+   }
+  ],
+  "clips": [
+   {
+    "beyond": false,
+    "duration": 15,
+    "id": 0,
+    "loras": [],
+    "prompt": "FINAL 8af02c5fd5a269ad",
+    "prompt_raw": "Ana leaves her flat in the rain.",
+    "prompt_rewritten": true,
+    "rewrite_meta": {
+     "budget": 2048,
+     "fingerprint": "v2:48870ec5dd3201f841473f6f37e98301f805667e",
+     "model": "writer-stub.gguf",
+     "task": "Ref2VA",
+     "thinking": true
+    },
+    "rewrite_text": "FINAL 8af02c5fd5a269ad",
+    "seed": 1,
+    "seed_mode": "fixed",
+    "title": "Clip 1",
+    "validated": false
+   },
+   {
+    "beyond": false,
+    "duration": 15,
+    "id": 1,
+    "loras": [],
+    "plan_end_state": {},
+    "planned": true,
+    "prompt": "FINAL 567452439754e7ff",
+    "prompt_raw": "Clip 2:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 1?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+    "prompt_rewritten": true,
+    "rewrite_meta": {
+     "budget": 2048,
+     "fingerprint": "v2:7cba48de641496c7fed3f36d421558bd2379adc9",
+     "model": "writer-stub.gguf",
+     "task": "Ref2VA",
+     "thinking": true
+    },
+    "rewrite_text": "FINAL 567452439754e7ff",
+    "seed": 1,
+    "seed_mode": "fixed",
+    "title": "Clip 2",
+    "validated": false
+   },
+   {
+    "beyond": false,
+    "duration": 15,
+    "id": 2,
+    "loras": [],
+    "plan_end_state": {},
+    "planned": true,
+    "prompt": "FINAL 15b6d482f5c5138b",
+    "prompt_raw": "CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP 2 ENDED:\nLocation: the street, lamp 1\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 1 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary\n\nClip 3:\n\nShot 1 – Wide as The wet street shines under a lamp. (5s)\nShot 2 – Medium as Ana walks on. (5s)\nShot 3 – Close Up as Her face tightens, Ana says \"Not yet.\". (5s)\n\nWhat is at the station 2?\n\nAT THE END OF THIS CLIP (the next clip opens exactly here):\nLocation: the street, lamp 2\nTime and light: night, sodium lamplight\nLast action: Ana stops under lamp 2 and looks up\nAna — position: centre of the lane, facing the station; wardrobe: as on the reference; props: none; state: wary",
+    "prompt_rewritten": true,
+    "rewrite_meta": {
+     "budget": 2048,
+     "fingerprint": "v2:ffb9cc297de45b2428dc380884fefffbbfbe9247",
+     "model": "writer-stub.gguf",
+     "task": "Ref2VA",
+     "thinking": true
+    },
+    "rewrite_text": "FINAL 15b6d482f5c5138b",
+    "seed": 1,
+    "seed_mode": "fixed",
+    "title": "Clip 3",
+    "validated": false
+   }
+  ],
+  "notes": [
+   "rewriter: 3 clip(s)",
+   "planned 2 clip(s) from the story, wrote 2 new ask(s)"
+  ],
+  "plans": [
+   [
+    1,
+    2
+   ]
+  ],
+  "progress": [
+   [
+    "rewrite",
+    "planning 2 clip(s) (2-3) around the 1 existing clip(s) with thinking (budget 2048)",
+    0.2
+   ],
+   [
+    "rewrite",
+    "writing 3 clip prompt(s) as Ref2VA with thinking (budget 2048)",
+    0.3
+   ],
+   [
+    "rewrite",
+    "rewrote 3 clip(s) in 0 s",
+    1.0
+   ]
+  ],
+  "sessions": [
+   {
+    "kw": {
+     "assets": 0,
+     "attachments": 2,
+     "auto_download": true,
+     "backend": "auto",
+     "device": "auto",
+     "force": true,
+     "gpu_layers": -1,
+     "n_ctx": 0,
+     "pool_ctx": 4096,
+     "progress": null,
+     "reasoning": {
+      "budget": 2048,
+      "enabled": true,
+      "message": "Wrap up."
+     },
+     "slots": 1
+    },
+    "mmproj": "mm.gguf",
+    "model": "writer-stub.gguf"
+   }
+  ],
+  "streams": [
+   [
+    0,
+    0,
+    "thinking",
+    "e3b0c44298fc1c14"
+   ],
+   [
+    0,
+    0,
+    "done",
+    "a93ab14e61fae1d9"
+   ],
+   [
+    1,
+    1,
+    "thinking",
+    "e3b0c44298fc1c14"
+   ],
+   [
+    1,
+    1,
+    "done",
+    "53452acfd78a9dc9"
+   ],
+   [
+    2,
+    2,
+    "thinking",
+    "e3b0c44298fc1c14"
+   ],
+   [
+    2,
+    2,
+    "done",
+    "c6ba7a35659f057a"
+   ]
+  ]
+ }
+}

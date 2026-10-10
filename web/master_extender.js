@@ -195,7 +195,10 @@ const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
 // auto_clips is appended after rewrite_story; a workflow saved before it carries the empty master_ui value there.
 const AUTO_CLIPS_WIDGETS = ["auto_clips", "planner_refs", "auto_clip_seconds"];
-const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...AUTO_CLIPS_WIDGETS];
+// story_engine and its E4 settings are appended after auto_clip_seconds, so the same empty master_ui value lands in story_engine.
+// Only the dropdowns are repaired: the two text widgets (e4_language, e4_picture_notes) read an empty value as their default.
+const STORY_ENGINE_WIDGETS = ["story_engine", "e4_score", "e4_decision_budget"];
+const REPAIRED_WIDGETS = [...HYPERFLOW_ONLY_WIDGETS, ...AUDIO_REFINE_WIDGETS, ...AUTO_CLIPS_WIDGETS, ...STORY_ENGINE_WIDGETS];
 
 function setWidgetVisible(widget, visible) {
     if (!widget) return;
@@ -255,8 +258,8 @@ function repairMergedRewriterModel(node, info) {
     migrated.forEach((value, i) => { if (node.widgets[i]) node.widgets[i].value = value; });
 }
 
-// sparse_start_percent / sparse_dense_blocks / sparse_sink were appended after auto_clip_seconds; an older
-// workflow's trailing master_ui "" lands in the first of them. Anything not a number there means auto.
+// sparse_start_percent / sparse_dense_blocks / sparse_sink are the last widgets, after e4_picture_notes; a workflow
+// saved before them (including every E4-era one) has its trailing master_ui "" land in the first of them. Anything not a number there means auto.
 function repairSparseWidgets(node) {
     const w = node.widgets?.find(x => x.name === "sparse_start_percent");
     if (w && (typeof w.value !== "number" || !Number.isFinite(w.value))) w.value = -1;
@@ -270,8 +273,15 @@ function repairSemanticBridge(node) {
     if (replacement && comboValues(w).includes(replacement)) w.value = replacement;
 }
 
+// The first E4 builds named the engine "e4"; it is "e4.8" now (the vendored engine is E4.8).
+function repairStoryEngine(node) {
+    const w = node.widgets?.find(x => x.name === "story_engine");
+    if (w && w.value === "e4") w.value = "e4.8";
+}
+
 function repairHyperflowWidgets(node, defaults) {
     repairFinalDecode(node);
+    repairStoryEngine(node);
     repairReasoningBudget(node);
     for (const name of REPAIRED_WIDGETS) {
         const w = node.widgets?.find(x => x.name === name);
@@ -841,6 +851,24 @@ app.registerExtension({
                             wrap.appendChild(uiHint("Raise the number to plan more clips after the existing ones (only the new clips are planned)."));
                             if (W("auto_clip_seconds")) wrap.appendChild(uiRow("planned clip length (s)", bindNumber("auto_clip_seconds"), { indent: true, hint: "Seconds per planned clip, 5-15 (15 = the old fixed length). The planner budgets its beats and shots to this length and the planned clips are created with it. Typed clips keep their own duration. Applies only when a plan is made; to re-plan at a new length use 'Replan from story'." }));
                             if (W("planner_refs")) wrap.appendChild(uiRow("planner sees references as", bindSelect("planner_refs"), { indent: true, hint: "images: the reference pictures themselves, as the clip writers get them (needs a rewriter model with vision, else it is the story text alone); captions: the old name for images, now the same; off: the story text alone." }));
+                            if (W("story_engine")) {
+                                wrap.appendChild(uiRow("story engine", bindSelect("story_engine"), { indent: true, hint: "builder: planner.md plans, builder.md writes every clip (as before). e4.8: the E4.8 pipeline plans the whole film and writes every clip's final prompt (film bible, per-clip staging decisions, speaker ids, every spoken word verbatim, checked and repaired). e4.8 needs Node.js 18+, a server-backed rewriter, at least one reference picture and an empty clip list; it decides the number of clips itself and plans 15 s clips." }));
+                                if (String(getW("story_engine", "builder")) === "e4.8") {
+                                    const lang = document.createElement("div");
+                                    lang.style.cssText = "margin-left: 28px;";
+                                    lang.appendChild(uiTextarea(getW("e4_language", "English"), (v) => setW("e4_language", v, { rerender: false }), { rows: 1, placeholder: "Dialogue language, e.g. English" }));
+                                    if (W("e4_language")) wrap.appendChild(uiRow("dialogue language", lang, { indent: true, hint: "The language every spoken line is written in." }));
+                                    if (W("e4_score")) wrap.appendChild(uiRow("score", bindSelect("e4_score"), { indent: true, hint: "off: non_diegetic_music is N/A and music-like sound words are swept out. on: one instrumental score for the film." }));
+                                    if (W("e4_decision_budget")) wrap.appendChild(uiRow("decision thinking", bindSelect("e4_decision_budget"), { indent: true, hint: "Thinking of each per-clip decision call. off (default): no thinking, measured 0.6 points below thinking 2048 (not significant) and about 4.7 times faster; or 1024 / 2048 / 4096 tokens at most. The planner, bible and writer always think up to 4096." }));
+                                    if (W("e4_picture_notes")) {
+                                        wrap.appendChild(uiHint("Picture notes (optional), one line per connected picture, e.g. '2: the old tailor in a grey kurta'. A hint for a model that sees; the only way to bind pictures for a model that cannot."));
+                                        const notes = document.createElement("div");
+                                        notes.style.cssText = "margin-left: 28px;";
+                                        notes.appendChild(uiTextarea(getW("e4_picture_notes", ""), (v) => setW("e4_picture_notes", v, { rerender: false }), { rows: 3, placeholder: "1: the shopkeeper, an old man in a white kurta\n2: the small shop with the green door" }));
+                                        wrap.appendChild(notes);
+                                    }
+                                }
+                            }
                             const replan = document.createElement("button");
                             replan.textContent = "Replan from story";
                             replan.title = "Clear the untouched planned asks (and their rewrites) so the next run plans the story again. Clips you edited or typed stay.";

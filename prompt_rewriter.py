@@ -36,9 +36,11 @@ import types
 from concurrent.futures import ThreadPoolExecutor
 
 try:
+    from . import e4_engine
     from . import story_planner
     from . import strata_backend
 except ImportError:  # imported as a top-level module (tests)
+    import e4_engine
     import story_planner
     import strata_backend
 
@@ -92,6 +94,9 @@ CAPTION_LENGTHS = ["brief", "standard", "detailed"]
 RAW_ASKS = "raw asks"
 FINAL_PROMPTS = "final prompts"
 PLANNER_REFS = ["images", "captions", "off"]
+STORY_ENGINES = e4_engine.ENGINES
+E4_SCORES = e4_engine.SCORES
+E4_DECISION_BUDGETS = e4_engine.DECISION_BUDGETS
 
 REASONING_BUDGETS = ["1024", "2048", "4096"]
 
@@ -649,6 +654,7 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     planner_refs = str(settings.get("planner_refs", "images"))
     if planner_refs not in PLANNER_REFS:
         planner_refs = "images"
+    story_engine = e4_engine.normalize_engine(settings.get("story_engine"))
 
     if writer_label.startswith("(") or not writer_label:
         raise RuntimeError("rewrite_writer_model: pick a GGUF from the list (the rewriter pack's model list).")
@@ -714,6 +720,28 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         plan_ctx = story_planner.plan_more(clips, auto_clips)
     planning = bool(plan_slots) or bool(plan_ctx)
     plan_n = len(plan_ctx["numbers"]) if plan_ctx else auto_clips
+    # story_engine=e4.8 plans and writes a whole film in one run: only a first plan of a clip list that holds no text qualifies.
+    e4_plan, e4_why = False, ""
+    if story_engine == e4_engine.ENGINE_ID and planning:
+        if plan_ctx or any(story_planner._ask_text(c).strip() for c in clips if isinstance(c, dict)):
+            e4_why = "clips are already typed or planned ('Plan more' and typed clips are not supported by the e4 engine in this version)"
+        elif task != "Ref2VA" or not ordered:
+            e4_why = "no reference picture is connected (e4 writes Ref2VA prompts)"
+        elif not on_server:
+            raise RuntimeError(
+                "story_engine=e4.8 needs a rewriter model that runs on a server (a vision model from the pack's list, or Strata); "
+                "this writer runs in-process. Pick another writer, or set story_engine to builder.")
+        else:
+            e4_plan = True
+        if not e4_plan:
+            say("rewrite", f"story_engine=e4.8 is not used for this run: {e4_why}; planning with the builder planner", 0.05)
+    if e4_plan:
+        reasoning = dict(reasoning, enabled=True, budget=e4_engine.PLAN_BUDGET, message=reasoning["message"] or e4_engine.BUDGET_MESSAGE)
+        writer_budget = max_new_tokens + e4_engine.PLAN_BUDGET
+        if clip_seconds != story_planner.CLIP_SECONDS:
+            say("rewrite", f"e4 plans {story_planner.CLIP_SECONDS} s clips (auto_clip_seconds {clip_seconds} is not used by this engine)", 0.05)
+        if auto_clips:
+            say("rewrite", f"e4 decides the number of clips from the story (auto_clips {auto_clips} only switches planning on)", 0.05)
     sizing_clips = clips
     if planning:
         sizing_clips = copy.deepcopy(clips)
@@ -821,6 +849,11 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
     caption_slots = max(1, min(caption_jobs, slots)) if caption_jobs else 1
     server_slots = max(caption_slots, writers_at_once)
     pool_ctx = max(pool_ctx, plan_ctx_tokens * server_slots)
+    e4_workers = 1
+    if e4_plan:
+        e4_workers = max(1, min(e4_engine.MAX_WORKERS, slots))
+        server_slots = max(server_slots, e4_workers)
+        pool_ctx = max(pool_ctx, e4_engine.slot_ctx() * server_slots)
 
     started = time.time()
     notes: list[str] = []
@@ -895,6 +928,76 @@ def rewrite_clips(clips: list, refs: dict, settings: dict, *, aspect_text: str, 
         pack_settings = dict(nodes.DEFAULT_OPTIONS)
         pack_settings.update(max_new_tokens=max_new_tokens, temperature=temperature)
         names = guide_prompt.FIELDS_FOR_MODE[task]
+
+        # ---- planning with E4: the whole film, planned AND written, in one subprocess ---------------------
+        if e4_plan:
+            say("rewrite", f"story_engine=e4.8: planning and writing the film with {e4_engine.ENGINE_NAME} (planner, bible and writer think {e4_engine.PLAN_BUDGET} tokens at most, the per-clip decisions {e4_engine.decision_label(e4_engine.decision_budget(settings.get('e4_decision_budget', e4_engine.DECISION_BUDGET_DEFAULT)))})", 0.2)
+            endpoint = e4_engine.endpoint_of(server, model_path=model_path, strata=strata, is_ninfer=_mod("server_engine").is_ninfer)
+            labels = [slot + 1 for slot, _t in ordered]
+            by_label = {int(item["slot"]) + 1: item["image"] for item in pictures}
+            interrupted = getattr(_mod("runner"), "interrupted", None)
+
+            def e4_say(message, fraction):
+                say("rewrite", message, 0.2 + 0.7 * max(0.0, min(1.0, fraction)))
+
+            t_e4 = time.time()
+            e4_failed = None
+            try:
+                result = e4_engine.plan_film(
+                    story=story, language=str(settings.get("e4_language") or ""), score=str(settings.get("e4_score", "off")), labels=labels, pictures=by_label,
+                    notes=e4_engine.parse_notes(settings.get("e4_picture_notes")), sees=sees, endpoint=endpoint,
+                    decision=e4_engine.decision_budget(settings.get("e4_decision_budget", e4_engine.DECISION_BUDGET_DEFAULT)), workers=e4_workers,
+                    say=e4_say, interrupted=interrupted)
+            except (e4_engine.E4Interrupted, e4_engine.E4SetupError):
+                raise
+            except e4_engine.E4Error as error:
+                e4_failed = error
+            if e4_failed is not None:
+                cause = e4_failed.cause or str(e4_failed).splitlines()[0]
+                kept = e4_failed.run or "the e4 run folder"
+                warning = f"story_engine=e4.8 FAILED and is NOT used for this run: {cause} (run kept in {kept}); planning with the builder planner instead"
+                _LOG.warning("Rewriter: %s\n%s", warning, e4_failed)
+                say("rewrite", "WARNING: " + warning, 0.2)
+                notes.append("WARNING: " + warning)
+                e4_plan = False
+                plan_budget = plan_tokens + e4_engine.PLAN_BUDGET
+            else:
+                positions = e4_engine.apply_clips(clips, result, model=os.path.basename(writer_file or writer_label))
+                current, _pending = assess(clips)
+                for position in positions:
+                    meta = clips[position].get("rewrite_meta")
+                    if isinstance(meta, dict) and "fingerprint" in meta:
+                        meta["fingerprint"] = current.get(position)
+                for position in positions:
+                    _LOG.info("Rewriter plan clip %d (e4, %s s):\n%s", position + 1, clips[position].get("duration"), clips[position].get("prompt_raw") or clips[position].get("prompt"))
+                mapping = result.get("mapping") or {}
+                bound = [f"Picture {p['picture']} = {p['entity']}" for p in mapping.get("pictures", []) if p.get("entity")]
+                _LOG.info("Rewriter: e4 bound the pictures (%s): %s; unused: %s", mapping.get("mode"), ", ".join(bound) or "none", mapping.get("unused") or "none")
+                if mapping.get("issues"):
+                    _LOG.warning("Rewriter: e4 picture binding: %s", " | ".join(mapping["issues"]))
+                written_clips = [c for c in result["clips"] if c.get("prompt")]
+                for position in positions:
+                    clip = clips[position]
+                    if clip.get("prompt_rewritten") and stream_cb is not None:
+                        try:
+                            stream_cb(position, clip.get("id"), "done", clip["prompt"], clip.get("prompt_raw") or "")
+                        except Exception:
+                            _LOG.debug("stream callback failed", exc_info=True)
+                notes.append(f"e4: planned and wrote {len(written_clips)} of {len(result['clips'])} clip(s) from the story in {time.time() - t_e4:.0f} s"
+                             + (f", {len(result['clips']) - len(written_clips)} left for the builder" if len(written_clips) < len(result["clips"]) else "")
+                             + f" (run kept in {result['run_dir']})")
+                if len(clips) > len(positions):
+                    notes.append(f"e4: {len(clips) - len(positions)} empty clip(s) are left after the film's {len(positions)}; delete them")
+                if plan_cb is not None:
+                    try:
+                        plan_cb(clips, positions)
+                    except Exception:
+                        _LOG.debug("plan callback failed", exc_info=True)
+                planning = False
+                current, todo = assess(clips)
+                if not todo:
+                    return notes
+                log_reasons(clips, todo)
 
         # ---- planning: the film story into the clip list, once ----------------
         if planning:

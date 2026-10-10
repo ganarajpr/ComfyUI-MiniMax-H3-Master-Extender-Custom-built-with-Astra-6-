@@ -28,6 +28,10 @@ from .metadata_nodes import (
     NODE_DISPLAY_NAME_MAPPINGS as METADATA_NODE_DISPLAY_NAME_MAPPINGS,
 )
 
+from . import vram_release
+
+vram_release.install()
+
 NODE_CLASS_MAPPINGS = {
     **MASTER_NODE_CLASS_MAPPINGS,
     **DECODE_NODE_CLASS_MAPPINGS,
