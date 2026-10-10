@@ -427,6 +427,15 @@ function uiNumber(current, onChange, { min, max, step } = {}) {
     return inp;
 }
 
+function uiText(current, onChange, { width = 90 } = {}) {
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.style.cssText = UI_CONTROL_CSS + ` width: ${width}px; text-align: right;`;
+    inp.value = current;
+    inp.onchange = () => onChange(inp.value);
+    return inp;
+}
+
 function uiToggle(current, onChange) {
     const label = document.createElement("label");
     label.style.cssText = "display: inline-flex; align-items: center; cursor: pointer;";
@@ -1010,7 +1019,15 @@ app.registerExtension({
                 if (getW("sla_enabled", false)) {
                     wrap.appendChild(uiRow("sparsity", bindNumber("sla_sparsity"), { indent: true }));
                     wrap.appendChild(uiRow("method", bindSelect("sparse_method"), { indent: true }));
-                    if (getW("sparse_method", "sla") === "sol-attn") wrap.appendChild(uiRow("tau", bindNumber("sparse_tau"), { indent: true }));
+                    if (getW("sparse_method", "sla") === "sol-attn") wrap.appendChild(uiRow("tau", bindNumber("sparse_tau"), { indent: true, hint: "HyperFlow's validated recipe is tau 1.0." }));
+                    const recipe = isHyperflow() && getW("sparse_method", "sla") === "sol-attn";
+                    const autoNote = recipe ? "auto = HyperFlow sol-attn recipe" : "auto = default";
+                    wrap.appendChild(uiRow("sparse start %", bindNumber("sparse_start_percent"), { indent: true,
+                        hint: `-1 = auto (${autoNote}: ${recipe ? "0.16" : "0.20"}). Steps before this fraction of the schedule run dense.` }));
+                    wrap.appendChild(uiRow("dense blocks", uiText(getW("sparse_dense_blocks", "auto"), (v) => setW("sparse_dense_blocks", v)), { indent: true,
+                        hint: `Transformer blocks that always run dense, e.g. 0,1. auto (${autoNote}: ${recipe ? "0,1" : "none"}); empty = none.` }));
+                    wrap.appendChild(uiRow("sink", bindSelect("sparse_sink"), { indent: true,
+                        hint: `Keep text/audio/reference rows exact. auto (${autoNote}: ${recipe ? "off" : "exact_kv_and_rows"}).` }));
                 }
                 const chunkOn = Number(getW("pass2_chunk_frames", 0)) > 0;
                 wrap.appendChild(uiRow("chunked refine pass", uiToggle(chunkOn, (on) => {
