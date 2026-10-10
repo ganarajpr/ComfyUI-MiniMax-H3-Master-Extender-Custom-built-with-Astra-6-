@@ -437,6 +437,10 @@ class MiniMaxH3MasterExtender:
                 "auto_clips": ("INT", {"default": 0, "min": 0, "max": 40, "step": 1, "tooltip": "0 = off. With rewrite_mode on and a rewrite_story set, plan the story ONCE into exactly this many clips of auto_clip_seconds each (15 s by default) before rewriting (the Studio's one-call chapter-breakdown planner, run on the writer GGUF): each planned clip's shot list is written into the clip list as its raw ask, flagged 'planned', and editable in the panel; then the normal rewrite runs. Clips you typed are kept and planned around: the planner sees them and fills only the empty ones (a gap between typed clips is bridged, clips after the last typed one continue it); they are never overwritten. Changing the story or lowering this number never replans (it would throw away rendered takes). Raise it to plan more clips after the existing ones: only the difference is planned (continuing from where the last existing clip ends, with the state carried over), existing clips typed or planned are never touched, and lowering it or editing the story does nothing. To plan the whole story again use 'Replan from story' in the Prompt Rewriter section."}),
                 "planner_refs": (prompt_rewriter.PLANNER_REFS, {"default": "images", "tooltip": "What the story planner (auto_clips) is shown of the reference pictures. images (default): the pictures themselves, each labelled 'Picture N:' (the same images, in the same order, as the clip writers get), plus a rule to stage the story only with them (needs a rewriter model with vision; without vision the planner gets the story text alone). captions: the old name for images, now the same. off: the story text alone. Videos are always caption lines. Only used when a plan is made."}),
                 "auto_clip_seconds": ("INT", {"default": 15, "min": 5, "max": 15, "step": 1, "tooltip": "Length of each clip the story planner (auto_clips) plans, in seconds. 15 = the old fixed length. The planner is told to budget the beats and shots (they must sum to this) for that length, and each planned clip is created with this duration. Typed clips keep their own duration. Only used when a plan is made; changing it never replans clips already planned (use 'Replan from story'). 5-15 is the clip slider's range without 'go beyond'."}),
+                # --- Core BlockSparseAttention recipe (appended last; 'auto' = HyperFlow's recipe with HyperFlow + sol-attn, else the old fixed values) ---
+                "sparse_start_percent": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.01, "tooltip": "Fraction of the schedule that stays dense before sparse attention starts. -1 = auto: 0.16 with HyperFlow 8-step + sol-attn (HyperFlow's validated recipe), otherwise 0.20 (the long-standing value). Any value 0-1 overrides."}),
+                "sparse_dense_blocks": ("STRING", {"default": "auto", "multiline": False, "tooltip": "Transformer blocks that stay dense, e.g. 0,1. auto = 0,1 with HyperFlow 8-step + sol-attn (HyperFlow's recipe), otherwise none. Empty = no dense blocks; any list overrides."}),
+                "sparse_sink": (["auto", "exact_kv_and_rows", "exact_kv", "off"], {"default": "auto", "tooltip": "Sink conditioning of core BlockSparseAttention. auto = off with HyperFlow 8-step + sol-attn (HyperFlow's recipe), otherwise exact_kv_and_rows (the long-standing value). Any other choice overrides."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -509,6 +513,9 @@ class MiniMaxH3MasterExtender:
         async_decode="off",
         sparse_method="sla",
         sparse_tau=1.3,
+        sparse_start_percent=-1.0,
+        sparse_dense_blocks="auto",
+        sparse_sink="auto",
         **kwargs,
     ):
         owner = str(unique_id if unique_id is not None else "master_extender")
@@ -719,6 +726,9 @@ class MiniMaxH3MasterExtender:
             pass2_chunk_overlap=pass2_chunk_overlap,
             sparse_method=sparse_method,
             sparse_tau=sparse_tau,
+            sparse_start_percent=sparse_start_percent,
+            sparse_dense_blocks=sparse_dense_blocks,
+            sparse_sink=sparse_sink,
             hyperflow_file=kwargs.get("hyperflow_file") or HYPERFLOW_DEFAULT_FILE,
             hyperflow_curve_refit=kwargs.get("hyperflow_curve_refit", True),
             hyperflow_strength=kwargs.get("hyperflow_strength", 1.0),
