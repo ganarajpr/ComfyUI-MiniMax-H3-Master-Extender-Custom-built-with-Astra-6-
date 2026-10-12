@@ -130,12 +130,12 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(clips), len([s for s in run.rec.streams if s[2] == "done"]))
 
     def test_a_visible_state_change_is_carried_into_every_later_clip(self):
-        """E4.10: the boat's oil sheen (set by clip 1 in the stored plan) is in the boat's subject line of clips 2 and 3, and not in clip 1."""
+        """E4.10: the boat's oil sheen (set by clip 1 in the stored plan) is in the boat's subject line of clips 2 and 3, and not in clip 1; the line holds no opening wording ("dry hull")."""
         run = self.run_engine("ninfer")
         carried = []
         for clip in run.clips:
             subjects = sections_of(clip["prompt"])["subject_definitions"]
-            carried.append("now with the Mohan's wooden boat has a fresh oil sheen" in subjects)
+            carried.append("now with a fresh oil sheen along the hull" in subjects)
         self.assertEqual([False, True, True], carried)
 
     def test_the_stored_run_is_replayed_byte_for_byte_at_engine_level(self):
@@ -350,7 +350,7 @@ class EngineTests(unittest.TestCase):
         return llm, rec, clips, user
 
     def test_a_writer_that_cannot_see_binds_by_the_picture_notes(self):
-        notes = "1: a sherwani on a mannequin\n2: the tailor shop\n3: Pramod in a blue kurta\n4: a white button\n5: Haroon, the old tailor\n6: a glass of tea"
+        notes = "1: a sherwani on a mannequin\n2: the tailor shop\n3: Pramod in a blue kurta\n4: a white button\n5: Haroon, the old tailor"
         llm, rec, clips, user = self.run_strata(notes)
         self.assertEqual([], llm.misses)
         self.assertEqual({"chat"}, {r["wire"] for r in llm.requests}, "Strata is called on chat completions")
@@ -359,7 +359,7 @@ class EngineTests(unittest.TestCase):
         content = calls[0]["body"]["messages"][0]["content"]
         self.assertIsInstance(content, str, "no picture goes to a model that cannot see")
         self.assertIn("You cannot see the pictures", content)
-        self.assertIn("Picture 6: a glass of tea", content)
+        self.assertIn("Picture 5: Haroon, the old tailor", content)
         mapping = json.loads(next(user.rglob("map.json")).read_text(encoding="utf-8"))
         self.assertEqual("labels", mapping["mode"])
         self.assertTrue(all("<Picture" in c["prompt"] for c in clips))

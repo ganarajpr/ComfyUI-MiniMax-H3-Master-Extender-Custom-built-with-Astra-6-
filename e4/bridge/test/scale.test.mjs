@@ -235,3 +235,42 @@ test('a retry that comes back unparseable keeps the first reply\'s plan instead 
   assert.ok(r.attempts.at(-1).issues.includes('kept the first reply'));
   await assert.rejects(() => planStory(async () => 'not json', 'A story.'), /no usable JSON twice/);
 });
+
+test('the bible of a film planned in parts: a base line that names what a trace axis changes gets a third attempt and, if it stays, is reported, not a failure; a clean reply ends it', async () => {
+  const fx = JSON.parse((await import('node:fs')).readFileSync(new URL('../../../tests/fixtures/e4_bible_fixture.json', import.meta.url), 'utf8'));
+  const run = async (replies) => {
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        seen.push(JSON.parse(body).messages[0].content);
+        const out = JSON.stringify(replies[Math.min(seen.length - 1, replies.length - 1)]);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ content: [{ type: 'text', text: out }], stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 10 } }));
+      });
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const out = mkdtempSync(join(tmpdir(), 'bible-'));
+    try {
+      const code = `import { bibleFilm } from ${JSON.stringify(new URL('../scale.mjs', import.meta.url).href)};
+        import { readFileSync } from 'node:fs';
+        const fx = JSON.parse(readFileSync(${JSON.stringify(new URL('../../../tests/fixtures/e4_bible_fixture.json', import.meta.url).pathname)}, 'utf8'));
+        const plan = { ...fx.plan, parts: [{ first: 1, last: fx.plan.clips.length, start: 0, end: 10 }] };
+        const r = await bibleFilm({ name: 's', story: 'a story of a boat', plan, planMeta: { rawAsks: fx.rawAsks }, outRoot: ${JSON.stringify(out)}, dir: ${JSON.stringify(out)}, score: 'off' });
+        console.log(JSON.stringify({ issues: r.issues, attempts: r.attempts.map((a) => [a.attempt, a.issues.length, a.issues.every((x) => /^BASE WORDING:/.test(x))]) }));`;
+      const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code], { env: { ...process.env, E4_LLM_API_STYLE: 'ninfer-messages', E4_LLM_URL: `http://127.0.0.1:${server.address().port}`, E4_LLM_MODEL: 'm', E4_LLM_SLOT_CTX: '' }, timeout: 120000 });
+      return { ...JSON.parse(stdout), seen };
+    } finally { server.close(); }
+  };
+  const bad = JSON.parse(JSON.stringify(fx.bible));
+  bad.props.find((p) => p.id === 'boat').appearsAs = 'a narrow wooden rowing boat with a dry hull with no oil sheen';
+  const stubborn = await run([bad]);
+  assert.equal(stubborn.attempts.length, 3, 'three attempts');
+  assert.deepEqual(stubborn.issues, [], 'base wording is reported in the attempts only');
+  assert.ok(stubborn.attempts.every(([, n, only]) => n === 1 && only));
+  const fixed = await run([bad, fx.bible]);
+  assert.equal(fixed.attempts.length, 2);
+  assert.ok(fixed.seen[1].includes('YOUR PREVIOUS REPLY FAILED') && fixed.seen[1].includes('BASE WORDING:'));
+  assert.deepEqual(fixed.issues, []);
+});
