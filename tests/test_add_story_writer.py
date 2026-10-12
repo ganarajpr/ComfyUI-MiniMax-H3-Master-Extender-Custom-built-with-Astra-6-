@@ -137,6 +137,45 @@ class TransformTests(unittest.TestCase):
         self.assertEqual(len(node(tool.add_story_writer(two, node_id=99), tool.WRITER)), 1)
 
 
+class CompactWorkflowTests(unittest.TestCase):
+    """A frontend that lists only linked inputs (1.53): widget order comes from object_info."""
+
+    def setUp(self):
+        self.src = load()
+        ext = node(self.src, tool.EXTENDER)[0]
+        self.names = [i["name"] for i in ext["inputs"] if i.get("widget")]
+        self.info = {tool.EXTENDER: {"input": {"required": {n: ["STRING", {}] for n in self.names}}}}
+        ext["inputs"] = [i for i in ext["inputs"] if not i.get("widget")]
+        self.saved = dict(tool.WIDGET_ORDER)
+
+    def tearDown(self):
+        tool.WIDGET_ORDER.clear()
+        tool.WIDGET_ORDER.update(self.saved)
+
+    def test_refused_without_object_info(self):
+        tool.WIDGET_ORDER.clear()
+        with self.assertRaises(tool.WorkflowError):
+            tool.add_story_writer(self.src)
+
+    def test_wired_with_object_info(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oi.json"
+            path.write_text(json.dumps(self.info), encoding="utf-8")
+            tool.load_object_info(str(path))
+        out = tool.add_story_writer(self.src, clips=12)
+        ext = node(out, tool.EXTENDER)[0]
+        entry = [i for i in ext["inputs"] if i["name"] == "rewrite_story"][0]
+        self.assertEqual(entry["widget"], {"name": "rewrite_story"})
+        writer = node(out, tool.WRITER)[0]
+        link = [l for l in out["links"] if l[0] == entry["link"]][0]
+        self.assertEqual(link[1], writer["id"])
+        self.assertEqual(link[4], ext["inputs"].index(entry))
+        values = ext["widgets_values"]
+        self.assertEqual(values[self.names.index("story_engine")], "e4.10")
+        self.assertEqual(values[self.names.index("auto_clips")], 12)
+        self.assertEqual(tool.add_story_writer(out, clips=12), out)
+
+
 class FilesTests(unittest.TestCase):
     def test_example_workflow_is_the_tools_output(self):
         expected = tool.add_story_writer(load(), workflow_id="9b7e5d21-h3-master-extender-story-writer-example")
