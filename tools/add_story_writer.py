@@ -33,8 +33,35 @@ class WorkflowError(ValueError):
     pass
 
 
+WIDGET_ORDER = {}  # node type -> widget names in widgets_values order, from object_info (for frontends that list only linked inputs)
+SCALAR_TYPES = ("INT", "FLOAT", "STRING", "BOOLEAN", "COMBO")
+
+
+def load_object_info(path: str) -> None:
+    """Read a /object_info dump and record each node type's widget order (required then optional, combos and scalars, plus a
+    control value after any input that declares control_after_generate)."""
+    with open(path, encoding="utf-8") as handle:
+        info = json.load(handle)
+    for node_type, spec in info.items():
+        names = []
+        for section in ("required", "optional"):
+            for name, entry in (spec.get("input", {}).get(section) or {}).items():
+                kind = entry[0]
+                opts = entry[1] if len(entry) > 1 and isinstance(entry[1], dict) else {}
+                if opts.get("forceInput") or not (isinstance(kind, list) or kind in SCALAR_TYPES):
+                    continue
+                names.append(name)
+                if opts.get("control_after_generate"):
+                    names.append(name + "::control")
+        WIDGET_ORDER[node_type] = names
+
+
 def widget_names(node: dict) -> list:
-    return [i["name"] for i in node.get("inputs", []) if i.get("widget")]
+    listed = [i["name"] for i in node.get("inputs", []) if i.get("widget")]
+    order = WIDGET_ORDER.get(node.get("type"))
+    if order and len(listed) < len(order) and len(order) <= len(node.get("widgets_values") or []):
+        return order
+    return listed
 
 
 def get_widget(node: dict, name: str):
@@ -88,8 +115,12 @@ def add_story_writer(workflow: dict, *, clips: int = 8, seconds: int = 15, previ
         wf["id"] = workflow_id
     extender = find_extender(wf, node_id)
     if STORY_INPUT not in widget_names(extender):
-        raise WorkflowError(f"the Extender node has no '{STORY_INPUT}' input: this is not a build with the story widgets")
-    story_input = next(i for i in extender["inputs"] if i["name"] == STORY_INPUT)
+        raise WorkflowError(f"the Extender node has no '{STORY_INPUT}' input: this is not a build with the story widgets"
+                            " (for a workflow saved by a frontend that lists only linked inputs, pass --object-info)")
+    story_input = next((i for i in extender.setdefault("inputs", []) if i["name"] == STORY_INPUT), None)
+    if story_input is None:
+        story_input = {"localized_name": STORY_INPUT, "name": STORY_INPUT, "type": "STRING", "widget": {"name": STORY_INPUT}, "link": None}
+        extender["inputs"].append(story_input)
     writer, link = existing_writer(wf, extender)
     if writer is None and story_input.get("link") is not None:
         raise WorkflowError(f"the Extender's {STORY_INPUT} is already wired to something else (link {story_input['link']}); unwire it first")
@@ -146,8 +177,11 @@ def main(argv=None) -> int:
     ap.add_argument("--seconds", type=int, default=15)
     ap.add_argument("--no-preview", action="store_true")
     ap.add_argument("--node-id", type=int)
+    ap.add_argument("--object-info", help="an /object_info JSON dump, for workflows whose nodes list only linked inputs")
     ap.add_argument("--workflow-id", help="a new id for the workflow (a copy of an example would otherwise keep the original's)")
     a = ap.parse_args(argv)
+    if a.object_info:
+        load_object_info(a.object_info)
     with open(a.source, encoding="utf-8") as handle:
         workflow = json.load(handle)
     try:
