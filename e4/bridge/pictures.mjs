@@ -5,8 +5,8 @@
 import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL, cutNote } from '../planpath48/lib.mjs';
-import { outputCap } from '../planpath48/transport.mjs';
+import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL, cutNote } from '../planpath410/lib.mjs';
+import { outputCap } from '../planpath410/transport.mjs';
 
 // Its own call kind, not 'decision': the decision calls think off (E4.7 onward), but this one looks at pictures, and on the lane thinking off missed a character
 // (Pramod) that thinking 2048 and 4096 both found. E4_LLM_BUDGET_PICTURE_MAP sets its budget (2048 here).

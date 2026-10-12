@@ -1,6 +1,6 @@
-# Deploying `story_engine=e4.8` to the box
+# Deploying `story_engine=e4.10` to the box
 
-Branch `e4-story-engine` of the founder's fork (`ganarajpr/ComfyUI-MiniMax-H3-Master-Extender-Custom-built-with-Astra-6-`). It is based on `b12b03d`, the commit the box runs. The vendored engine is E4.8 (tag `e4.8-frozen` of the eval repo). Deployment needs an empty queue.
+Branch `e4.10-engine` (merged into `all-features`) of the founder's fork (`ganarajpr/ComfyUI-MiniMax-H3-Master-Extender-Custom-built-with-Astra-6-`). It is based on `all-features` at `2fb8f58`, which already holds the E4.8 engine and the long-story fixes. The vendored engine is E4.10 (tag `e4.10-frozen` of the eval repo); it replaces E4.8, and a saved `e4` or `e4.8` widget value reads as `e4.10`. Deployment needs an empty queue.
 
 ## Before you start
 
@@ -41,7 +41,7 @@ Order of lookup: `MINIMAX_H3_E4_NODE`, then `e4_node.txt`, then `node` on PATH. 
 ```
 "C:\Users\user\tools\node-v20.20.2-win-x64\node.exe" e4\verify-frozen.mjs
 ```
-Expected last line: `e4 E4.8 (e4.8-frozen): 91 files checked, 9 patched (patches reversed), 88 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.8-frozen`.
+Expected last line: `e4 E4.10 (e4.10-frozen): 92 files checked, 9 patched (patches reversed), 89 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4.10 until it is clean. The patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.10-frozen`.
 
 The tests need the embedded Python of ComfyUI (numpy and Pillow are there), Node, and no GPU (they use their own throw-away folders, so the node path comes from the environment, not from `e4_node.txt`):
 ```
@@ -58,13 +58,13 @@ set MINIMAX_H3_E4_NODE=C:\Users\user\tools\node-v20.20.2-win-x64\node.exe
 Python and the panel's JavaScript are read when ComfyUI starts, and the browser must be refreshed. **Restart only with an empty queue and the founder's OK** (the `never-restart-comfyui-with-queue` rule). Until then the running ComfyUI is still `b12b03d` in memory, whatever is on disk.
 
 After the restart:
-- the Master node has five new widgets at the end of its list: `story_engine` (`builder` (default) or `e4.8`; a saved `e4` reads as `e4.8`), `e4_language`, `e4_score`, `e4_decision_budget` (default `off`: the decision calls do not think), `e4_picture_notes`. Saved workflows load with the defaults, so they behave as before.
+- the Master node has five new widgets at the end of its list: `story_engine` (`builder` (default) or `e4.10`; a saved `e4` reads as `e4.10`), `e4_language`, `e4_score`, `e4_decision_budget` (default `off`: the decision calls do not think), `e4_picture_notes`. Saved workflows load with the defaults, so they behave as before.
 - the example workflows carry the new values (`builder`).
 
 ## First real use
 
-In the Story Auto workflow: connect the reference pictures, put the story in `rewrite_story`, `auto_clips` at 1 or more (it only switches planning on), one empty clip, `rewrite_mode` = `pending clips`, the Swift 1.5 NInfer writer, `story_engine` = `e4.8`. Queue it. Expected:
-- the panel's progress line walks through `story_engine=e4.8: planning and writing the film with E4.8 ...`, `E4: story planned`, `E4: film bible written`, `E4: reference pictures bound to the film's entities`, `E4: clip 1/N staged and referenced`, `E4: clip 1/N written` ...
+In the Story Auto workflow: connect the reference pictures, put the story in `rewrite_story`, `auto_clips` at 1 or more (it only switches planning on), one empty clip, `rewrite_mode` = `pending clips`, the Swift 1.5 NInfer writer, `story_engine` = `e4.10`. Queue it. Expected:
+- the panel's progress line walks through `story_engine=e4.10: planning and writing the film with E4.8 ...`, `E4: story planned`, `E4: film bible written`, `E4: reference pictures bound to the film's entities`, `E4: clip 1/N staged and referenced`, `E4: clip 1/N written` ...
 - the clip list fills with N finished clips (a ✎ badge, titles `Clip 1: <beat>`, 15 s), and the note `e4: planned and wrote N of N clip(s)` is in the status.
 - every request and reply is in `ComfyUI\user\minimax_h3_master\e4\<run>\story\` (`calls.jsonl` in `<run>` lists them; `story\pictures\map.json` is the picture binding; `clips.json` is what was put into the clip list).
 - a first run of the ninfer server loads the model once (about 20 s) and the whole film takes minutes, not seconds (the planner, the bible, one decision per clip, one writer per clip with up to 4 at a time, plus repairs).
@@ -85,7 +85,7 @@ then restart ComfyUI. Notes:
 
 ## What was and was not tested
 
-- Mock (replaying a stored real E4.8 run, `drama_two_hander`, through the real Node subprocess; with no pictures it reproduces that run's plan, bible, state fold, shots and each clip's facts, writer prompt and final prose byte for byte), builder-mode byte identity, the verify script, the Python and Node units: `tests/test_e4_engine.py`, `e4/bridge/test/bridge.test.mjs`.
+- Mock (replaying a stored real E4.10 run, `drama_two_hander`, through the real Node subprocess; with no pictures it reproduces that run's plan, bible, state fold, shots and each clip's facts, writer prompt and final prose byte for byte), builder-mode byte identity, the verify script, the Python and Node units: `tests/test_e4_engine.py`, `e4/bridge/test/bridge.test.mjs`.
 - One story, end to end outside ComfyUI against the lane of the 5090 (`tests/e2e/e4_outside_comfyui.py`), with the extender's own code and the pack stubbed. See the PR description for the result.
 - **Not tested here:** the extender's own private `ninfer-serve` session (the lane was used instead: same model and the same `/v1/messages` wire, but not the process the node would start), the Windows paths of the box (the one spot of E4.6 that built a file path from a URL, `HERE`, is fixed in E4.7 and E4.8 themselves, but nothing here ran on Windows), the panel (JavaScript syntax-checked only), and rendering the produced prompts (unattached pictures that a clip does not cite are still attached to the render, see the README).
 
@@ -100,5 +100,9 @@ An H3 render left about 6 GB reserved in ComfyUI, so the rewriter's in-process `
 - The slot context of one E4 call is 65536 tokens (`MINIMAX_H3_E4_SLOT_CTX` to change it; it becomes the rewriter ninfer server's `--max-context`, the KV pool itself is sized by `--kv-capacity auto`). On a llama.cpp writer the pool is slot context x slots, so lower it there if the card cannot hold it.
 - Each call's `max_tokens` is its own setting lowered to the slot minus the estimated prompt (Latin at 2.5 characters a token, any other script at one token a character, a picture at 1,100) minus 1,024, never below 4,096. A reply stopped at `max_tokens` is sent again once with a larger cap. `MINIMAX_H3_E4_MAX_TOKENS` is an optional hard ceiling.
 - A story of more than about 14 estimated clips is planned in parts of about 8 clips (`e4/bridge/scale.mjs`, stored under `<run>\story\plan_parts\`, resumable part by part). `E4_PLAN_SINGLE_MAX` / `E4_PLAN_SEG_CLIPS` change the two numbers for a run.
-- If E4.8 still fails (any failure after a run started; a missing Node or a bad setup still raises), `rewrite_clips` warns loudly and plans with the builder planner.
-- Compared with the previous E4.8 deploy, the requests differ only in `max_tokens` for a short story; the stored plan, bible and clips are byte-identical (`tests/test_e4_engine.py::test_request_bodies_differ_from_the_old_fixed_cap_only_in_max_tokens`).
+- If E4.10 still fails (any failure after a run started; a missing Node or a bad setup still raises), `rewrite_clips` warns loudly and plans with the builder planner.
+- Compared with the eval repo's own run, the requests differ only in `max_tokens` for a short story; the stored plan, bible and clips are byte-identical (`tests/test_e4_engine.py::test_request_bodies_differ_from_the_old_fixed_cap_only_in_max_tokens`).
+
+## E4.8 to E4.10 (2026-10-12)
+
+The widget's options are `builder` and `e4.10`. Every long-story patch (`tools/patch_frozen.py`, `e4/PATCHES.json`) was re-applied to E4.10's files and their tests pass; `scale.mjs` additionally gives the long-film bible the third attempt and a report-only base-wording finding. Restart ComfyUI only with running and pending both empty.

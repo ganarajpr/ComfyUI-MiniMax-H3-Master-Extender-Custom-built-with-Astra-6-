@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Re-vendor the frozen E4.8 story engine into e4/ from the h3-prompt-eval repo (tag e4.8-frozen) and the audit runner, apply the
+// Re-vendor the frozen E4.10 story engine into e4/ from the h3-prompt-eval repo (tag e4.10-frozen) and the audit runner, apply the
 // declared patches (e4/PATCHES.json) and write e4/MANIFEST.json. Only used to (re)build e4/; nothing here runs inside ComfyUI.
-//   node tools/vendor_e4.mjs --eval ~/Projects/h3-prompt-eval --audit ~/.kshana/runners/dhee-runner-h3-audit [--ref e4.8-frozen]
+//   node tools/vendor_e4.mjs --eval ~/Projects/h3-prompt-eval --audit ~/.kshana/runners/dhee-runner-h3-audit [--ref e4.10-frozen]
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -15,13 +15,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'e4');
 const EVAL = resolve(opt('eval', join(homedir(), 'Projects/h3-prompt-eval')));
 const AUDIT = resolve(opt('audit', join(homedir(), '.kshana/runners/dhee-runner-h3-audit')));
-const REF = opt('ref', 'e4.8-frozen');
-const PP = 'planpath48';
-const ENGINE = 'E4.8';
+const REF = opt('ref', 'e4.10-frozen');
+const PP = 'planpath410';
+const ENGINE = 'E4.10';
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 
 // ---- the runtime closure of run-e4.mjs: the freeze's own closure.mjs (static and absolute imports, plus the data files the modules name) ----
-// closure.mjs reads the tree it sits in, so --eval must be a checkout of the tag (git worktree add <dir> e4.8-frozen), not a working tree with other edits.
+// closure.mjs reads the tree it sits in, so --eval must be a checkout of the tag (git worktree add <dir> e4.10-frozen), not a working tree with other edits.
 const AUDIT_SPEC = '/Users/ganaraj/.kshana/runners/dhee-runner-h3-audit/dist/index.js';
 const { runtimeClosure } = await import(join(EVAL, PP, 'closure.mjs'));
 const closure = runtimeClosure({ entries: [join(EVAL, PP, 'run-e4.mjs')] });
@@ -42,11 +42,11 @@ add(join(EVAL, PP, `${ENGINE}-FROZEN.md`), `${PP}/${ENGINE}-FROZEN.md`, 'eval');
 add(join(AUDIT, 'LICENSE'), 'audit/LICENSE', 'audit');
 
 const tagFiles = new Set(execFileSync('git', ['-C', EVAL, 'ls-tree', '-r', '--name-only', REF], { maxBuffer: 1 << 28 }).toString().split('\n').filter(Boolean));
-const record = readFileSync(join(EVAL, 'planpath48/E4.8-FROZEN.md'), 'utf8');
+const record = readFileSync(join(EVAL, 'planpath410/E4.10-FROZEN.md'), 'utf8');
 const recorded = new Map([...record.matchAll(/^([0-9a-f]{64})  (\S+)$/gm)].map((m) => [m[2].replace(/^~\/Projects\/h3-prompt-eval/, EVAL).replace(/^~/, homedir()), m[1]]));
 const patches = JSON.parse(readFileSync(join(OUT, 'PATCHES.json'), 'utf8'));
 
-for (const old of ['planpath46', 'planpath47', 'planpath48']) rmSync(join(OUT, old), { recursive: true, force: true });
+for (const old of ['planpath46', 'planpath47', 'planpath48', 'planpath410']) rmSync(join(OUT, old), { recursive: true, force: true });
 for (const d of ['hybrid3', 'templater', 'staging', 'audit']) rmSync(join(OUT, d), { recursive: true, force: true });
 
 const manifest = [];

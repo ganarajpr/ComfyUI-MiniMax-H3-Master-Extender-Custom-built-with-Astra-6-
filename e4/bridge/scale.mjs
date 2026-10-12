@@ -1,5 +1,5 @@
-// A long film must not fail. Everything in E4.8 that grows with the length of the story is bounded here, and a call that still fails is split smaller instead of raised:
-//   - planFilm:   a story whose estimated clip count fits one reply is planned in ONE call exactly as E4.8 does (same request, same file names). A longer one is split at paragraph /
+// A long film must not fail. Everything in E4.10 that grows with the length of the story is bounded here, and a call that still fails is split smaller instead of raised:
+//   - planFilm:   a story whose estimated clip count fits one reply is planned in ONE call exactly as E4.10 does (same request, same file names). A longer one is split at paragraph /
 //                 sentence boundaries into parts of about SEG_CLIPS clips; each part is its own planner call that is told how the film so far ended, which ledger entities and speaker
 //                 strings exist, and is checked by the planner's own checks; the parts are merged with global clip numbers and the film-level checks run on the merged plan. A part
 //                 whose planner reply cannot be used (cut twice at the largest cap, or not JSON twice) is split in two and each half planned in its own call, down to MIN_PART_WEIGHT.
@@ -10,18 +10,18 @@
 // A short story takes the same path and makes the same requests as before (the tests prove it).
 import { join } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
-import { call, wr, rj, parseJsonReply, parseJsonLoose, cutNote } from '../planpath48/lib.mjs';
-import { planStory, parseBreakdown, PlanError, checkBreakdown, rawAskForClip, formatEndState, foldLedger } from '../planpath48/planner.mjs';
-import { planSpeechIssues } from '../planpath48/utterance.mjs';
-import { sequenceIssues } from '../planpath48/sequence.mjs';
-import { planStateIssues } from '../planpath48/state.mjs';
-import { repairJson } from '../planpath48/jsonrepair.mjs';
-import { makeBible, buildBibleMessages, normalizeBible, validateBible, plannedSpeakers } from '../planpath48/bible.mjs';
-import { estimatePromptTokens } from '../planpath48/transport.mjs';
+import { call, wr, rj, parseJsonReply, parseJsonLoose, cutNote } from '../planpath410/lib.mjs';
+import { planStory, parseBreakdown, PlanError, checkBreakdown, rawAskForClip, formatEndState, foldLedger } from '../planpath410/planner.mjs';
+import { planSpeechIssues } from '../planpath410/utterance.mjs';
+import { sequenceIssues } from '../planpath410/sequence.mjs';
+import { planStateIssues, isOpeningIssue, isBaseWordingIssue } from '../planpath410/state.mjs';
+import { repairJson } from '../planpath410/jsonrepair.mjs';
+import { makeBible, buildBibleMessages, normalizeBible, validateBible, plannedSpeakers } from '../planpath410/bible.mjs';
+import { estimatePromptTokens } from '../planpath410/transport.mjs';
 
 export const LATIN_CHARS_PER_CLIP = 700, WIDE_CHARS_PER_CLIP = 380;   // measured: 5,273 Devanagari-heavy characters were planned as 12 clips (about 440 a clip)
 const envNumber = (name, fallback) => { const v = Number(process.env[name]); return Number.isFinite(v) && v > 0 ? v : fallback; };
-export const SINGLE_MAX_CLIPS = envNumber('E4_PLAN_SINGLE_MAX', 14);   // up to this estimate the story is planned in one call, as E4.8 does
+export const SINGLE_MAX_CLIPS = envNumber('E4_PLAN_SINGLE_MAX', 14);   // up to this estimate the story is planned in one call, as E4.10 does
 export const SEG_CLIPS = envNumber('E4_PLAN_SEG_CLIPS', 8);           // a part of a longer story is about this many clips
 export const MIN_PART_WEIGHT = 1.5;     // a part is never split below this many estimated clips
 export const WRITER_CONTEXT_TOKENS = 14000;   // past this the writer's story + film plan are windowed
@@ -139,7 +139,7 @@ export function unclosed(text) {
   return inStr || depth > 0;
 }
 const plannerChat = ({ outRoot, dir, name, label }) => async (messages, attempt) => {
-  const c = await call({ outRoot, dir: join(dir, 'planner'), name: `plan${label}${attempt ? '.retry' : ''}`, kind: 'planner', story: name, messages });
+  const c = await call({ outRoot, dir: join(dir, 'planner'), name: `plan${label}${attempt > 1 ? `.retry${attempt}` : attempt ? '.retry' : ''}`, kind: 'planner', story: name, messages });
   const text = c.content;
   if (c.cut) return { text, cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };
   if (parseBreakdown(text)) return text;
@@ -226,7 +226,7 @@ export function mergeBible(acc, part) {
 const rosterNote = (acc, index, total) => `PART ${index + 1} OF ${total} OF THE FILM BIBLE. The story and the plan above are only part ${index + 1} of one long film; the entities below are ALREADY DEFINED from the earlier parts. Do NOT return them again (not in cast, props, locations or voices): return only the entities that are NEW in this part (a new character, prop, place or voice), each complete as described above, plus "language" and a "speakers" entry for every speaker string of THIS part (map it to an id below or to a new entity of yours).\nALREADY DEFINED: ${JSON.stringify({ cast: acc.cast.map((c) => ({ id: c.id, name: c.name, appearsAs: c.appearsAs })), props: acc.props.map((p) => ({ id: p.id, name: p.name })), locations: acc.locations.map((l) => ({ id: l.id, name: l.name, landmarks: (l.landmarks || []).map((m) => m.id) })), voices: (acc.voices || []).map((v) => ({ id: v.id, name: v.name })) })}`;
 
 const bibleChat = ({ outRoot, dir, name, label }) => async (messages, attempt) => {
-  const c = await call({ outRoot, dir: join(dir, 'bible'), name: `bible${label}${attempt ? '.retry' : ''}`, kind: 'bible', story: name, messages });
+  const c = await call({ outRoot, dir: join(dir, 'bible'), name: `bible${label}${attempt > 1 ? `.retry${attempt}` : attempt ? '.retry' : ''}`, kind: 'bible', story: name, messages });
   if (c.cut) return { ...parseJsonReply(c.content), cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };
   return parseJsonLoose(c.content);
 };
@@ -249,7 +249,9 @@ export async function bibleFilm({ name, story, plan, planMeta, outRoot, dir, sco
     if (resume && existsSync(stored)) { const r = rj(stored); acc = mergeBible(acc, r.parsed); attempts.push(...r.attempts); continue; }
     let parsed = null, issues = [];
     const mine = [];
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // E4.9/E4.10 makeBible: a base description that shows a later state, or names what a trace axis changes, gets a third attempt (every other failure keeps two)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt === 2 && !(issues.length && issues.every((x) => isOpeningIssue(x) || isBaseWordingIssue(x)))) break;
       const msgs = [{ role: 'user', content: attempt && issues.length ? `${content}\n\nYOUR PREVIOUS REPLY FAILED THESE CHECKS — CORRECT EXACTLY THESE AND KEEP EVERYTHING ELSE:\n${issues.slice(0, 25).join('\n')}` : content }];
       const reply = await chat(msgs, attempt);
       parsed = reply.ok ? normalizeBible(reply.value) : null;
@@ -258,15 +260,16 @@ export async function bibleFilm({ name, story, plan, planMeta, outRoot, dir, sco
       if (!issues.length) break;
     }
     attempts.push(...mine);
+    issues = issues.filter((x) => !isBaseWordingIssue(x));
     if (parsed) { acc = mergeBible(acc, parsed); if (!issues.length) wr(stored, { parsed, attempts: mine }); }
     if (issues.length && !parsed) return { bible: acc, issues, attempts };
   }
-  const issues = validateBible(acc, plan, { score });
+  const issues = validateBible(acc, plan, { score }).filter((x) => !isBaseWordingIssue(x));
   return { bible: acc, issues, attempts };
 }
 
 // ---- the writer's and the reference repair's context ----
-// -> null when the full context fits the budget (the caller then builds exactly what E4.8 builds), else { screenplay, storyText }
+// -> null when the full context fits the budget (the caller then builds exactly what E4.10 builds), else { screenplay, storyText }
 export function writerContext({ plan, rawAsks, story, clipNumber }) {
   const asks = rawAsks.join('\n\n');
   if (tokens(asks) + tokens(story) <= WRITER_CONTEXT_TOKENS) return null;

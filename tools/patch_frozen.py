@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Edit a vendored (frozen) E4.8 file AND record the edit in e4/PATCHES.json, then refresh e4/MANIFEST.json's hashes.
+"""Edit a vendored (frozen) E4.10 file AND record the edit in e4/PATCHES.json, then refresh e4/MANIFEST.json's hashes.
 
   patch_frozen.py <e4-relative file> --why "text" --find FILE_WITH_OLD --replace FILE_WITH_NEW
 

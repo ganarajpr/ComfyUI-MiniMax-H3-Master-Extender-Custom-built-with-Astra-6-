@@ -1,7 +1,7 @@
 [
  {
   "file": "hybrid3/lib.mjs",
-  "why": "the dhee-core .env is optional (a local endpoint needs no key). hybrid3/lib.mjs is shared by every E4 version and frozen, so E4.8 cannot change it; E4.8's own lib.mjs is already tolerant.",
+  "why": "the dhee-core .env is optional (a local endpoint needs no key). hybrid3/lib.mjs is shared by every E4 version and frozen, so E4.10 cannot change it; E4.8's own lib.mjs is already tolerant.",
   "replacements": [
    {
     "find": "const env = readFileSync(join(homedir(), 'Projects/dhee-core/.env'), 'utf8');",
@@ -10,7 +10,7 @@
   ]
  },
  {
-  "file": "planpath48/hybrid46/validate.mjs",
+  "file": "planpath410/hybrid46/validate.mjs",
   "why": "the h3-audit runner is vendored under e4/audit instead of ~/.kshana/runners.",
   "replacements": [
    {
@@ -20,7 +20,7 @@
   ]
  },
  {
-  "file": "planpath48/film.mjs",
+  "file": "planpath410/film.mjs",
   "why": "hook for the Master Extender: bindPictures replaces the reference-image stage (buildRefs) when the user's own pictures are connected. Everything else is untouched. Also (cut-reply handling): hook for truncated replies at max_tokens: planner and bible get the cut note, the failed 'no parseable reply' names it, and a bible.json that recorded issues is regenerated on resume instead of reused. Also: a long film must not fail: planning and the bible go through e4/bridge/scale.mjs (one call exactly as before for a short story, parts for a long one, a failed part split smaller); the writer's story and film plan and a reference repair's context are windowed past a budget (the same text below it).",
   "replacements": [
    {
@@ -32,12 +32,12 @@
     "replace": "\nexport async function planAndBible({ name, story, outRoot, resume, language = 'English', refwriter = 'default', score = 'off', bindPictures = null }) {\n  const dir = join(outRoot, name);\n"
    },
    {
-    "find": "    const chat = async (messages, attempt) => {\n      const text = (await call({ outRoot, dir: join(dir, 'planner'), name: attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages })).content;\n      if (parseBreakdown(text)) return text;\n",
-    "replace": "    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'planner'), name: attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages });\n      const text = c.content;\n      if (c.cut) return { text, cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      if (parseBreakdown(text)) return text;\n"
+    "find": "    const chat = async (messages, attempt) => {\n      const text = (await call({ outRoot, dir: join(dir, 'planner'), name: attempt > 1 ? `plan.retry${attempt}` : attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages })).content;\n      if (parseBreakdown(text)) return text;\n",
+    "replace": "    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'planner'), name: attempt > 1 ? `plan.retry${attempt}` : attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages });\n      const text = c.content;\n      if (c.cut) return { text, cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      if (parseBreakdown(text)) return text;\n"
    },
    {
-    "find": "  const bf = join(dir, 'bible.json');\n  if (resume && existsSync(bf)) ({ bible, bibleMeta } = rj(bf));\n  else {\n    const chat = async (messages, attempt) => parseJsonLoose((await call({ outRoot, dir: join(dir, 'bible'), name: attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages })).content);\n    const r = await makeBible(chat, story, plan, planMeta.rawAsks, { score });\n",
-    "replace": "  const bf = join(dir, 'bible.json');\n  if (resume && existsSync(bf) && rj(bf).bible && !rj(bf).bibleMeta?.issues?.length) ({ bible, bibleMeta } = rj(bf));\n  else {\n    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'bible'), name: attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages });\n      if (c.cut) return { ...parseJsonReply(c.content), cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      return parseJsonLoose(c.content);\n    };\n    const r = await makeBible(chat, story, plan, planMeta.rawAsks, { score });\n"
+    "find": "  const bf = join(dir, 'bible.json');\n  if (resume && existsSync(bf)) ({ bible, bibleMeta } = rj(bf));\n  else {\n    const chat = async (messages, attempt) => parseJsonLoose((await call({ outRoot, dir: join(dir, 'bible'), name: attempt > 1 ? `bible.retry${attempt}` : attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages })).content);\n    const r = await makeBible(chat, story, plan, planMeta.rawAsks, { score });\n",
+    "replace": "  const bf = join(dir, 'bible.json');\n  if (resume && existsSync(bf) && rj(bf).bible && !rj(bf).bibleMeta?.issues?.length) ({ bible, bibleMeta } = rj(bf));\n  else {\n    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'bible'), name: attempt > 1 ? `bible.retry${attempt}` : attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages });\n      if (c.cut) return { ...parseJsonReply(c.content), cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      return parseJsonLoose(c.content);\n    };\n    const r = await makeBible(chat, story, plan, planMeta.rawAsks, { score });\n"
    },
    {
     "find": "  }\n  const rf = join(dir, 'refs', 'refs.json');\n",
@@ -56,11 +56,11 @@
     "replace": "  wr(join(dir, 'story.txt'), story);\n  const { plan, planMeta, bible, bibleMeta } = await planAndBible({ name, story, outRoot, resume, language, refwriter, score, bindPictures });\n  if (score === 'on' && !bible.score) throw new Error('score on, but the bible has no score (a resumed bible from a score-off run)');\n"
    },
    {
-    "find": "    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'planner'), name: attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages });\n      const text = c.content;\n      if (c.cut) return { text, cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      if (parseBreakdown(text)) return text;\n      const r = repairJson(text);\n      return r.ok ? JSON.stringify(r.value) : text;\n    };\n    const r = await planStory(chat, withLanguage(story, language));\n    plan = r.breakdown; planMeta = { issues: r.issues, attempts: r.attempts, rawAsks: r.rawAsks };\n    wr(pf, { plan, planMeta });\n",
+    "find": "    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'planner'), name: attempt > 1 ? `plan.retry${attempt}` : attempt ? 'plan.retry' : 'plan', kind: 'planner', story: name, messages });\n      const text = c.content;\n      if (c.cut) return { text, cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      if (parseBreakdown(text)) return text;\n      const r = repairJson(text);\n      return r.ok ? JSON.stringify(r.value) : text;\n    };\n    const r = await planStory(chat, withLanguage(story, language));\n    plan = r.breakdown; planMeta = { issues: r.issues, attempts: r.attempts, rawAsks: r.rawAsks };\n    wr(pf, { plan, planMeta });\n",
     "replace": "    ({ plan, planMeta } = await planFilm({ name, story, wrap: (text) => withLanguage(text, language), outRoot, dir, resume }));\n    wr(pf, { plan, planMeta });\n"
    },
    {
-    "find": "    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'bible'), name: attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages });\n      if (c.cut) return { ...parseJsonReply(c.content), cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      return parseJsonLoose(c.content);\n    };\n    const r = await makeBible(chat, story, plan, planMeta.rawAsks, { score });\n",
+    "find": "    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'bible'), name: attempt > 1 ? `bible.retry${attempt}` : attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, messages });\n      if (c.cut) return { ...parseJsonReply(c.content), cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      return parseJsonLoose(c.content);\n    };\n    const r = await makeBible(chat, story, plan, planMeta.rawAsks, { score });\n",
     "replace": "    const r = await bibleFilm({ name, story, plan, planMeta, outRoot, dir, score, resume });\n"
    },
    {
@@ -70,7 +70,7 @@
   ]
  },
  {
-  "file": "planpath48/bible.mjs",
+  "file": "planpath410/bible.mjs",
   "why": "the bible's retry complaint names a cut reply and asks for shorter field values.",
   "replacements": [
    {
@@ -80,7 +80,7 @@
   ]
  },
  {
-  "file": "planpath48/lib.mjs",
+  "file": "planpath410/lib.mjs",
   "why": "a reply cut at max_tokens is sent once more with a larger cap up to the slot (never the identical request), and says why (cut / cutNote in the result and the call's meta).",
   "replacements": [
    {
@@ -98,7 +98,7 @@
   ]
  },
  {
-  "file": "planpath48/planner.mjs",
+  "file": "planpath410/planner.mjs",
   "why": "the planner takes a cut reply's note, asks again for shorter field values, and the PlanError names the cut instead of 'no usable JSON'. Also: a long film is planned in parts: planStory takes an optional `extra` block (the part's context: the film so far, the entity ledger, the speaker strings) placed between the visible-state rule and the output format; with no `extra` the request is byte-identical. Also: a retry whose reply cannot be parsed keeps the first reply's plan (with its issues) instead of discarding it and raising: a real run lost a plan that parsed on the first attempt (12 clips) because the retry came back unterminated.",
   "replacements": [
    {
@@ -122,8 +122,8 @@
     "replace": "  }\n  if (!parsed) throw new PlanError(`the story planner returned no usable JSON twice${cuts.length ? ` (${[...new Set(cuts)].join('; ')})` : ''}`);\n  return { breakdown: parsed, issues, attempts, rawAsks: [...parsed.clips].sort((a, b) => a.clip - b.clip).map((c) => rawAskForClip(parsed, c.clip)) };\n"
    },
    {
-    "find": "export function buildUserMessage(story, seconds = CLIP_SECONDS) {\n  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\\n\\n${CONTINUITY_RULE}\\n\\n${UTTERANCE_RULE}\\n\\n${VISIBLE_STATE_RULE}${outputShape(1, null, seconds)}`;\n}",
-    "replace": "export function buildUserMessage(story, seconds = CLIP_SECONDS, extra = '') {\n  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\\n\\n${CONTINUITY_RULE}\\n\\n${UTTERANCE_RULE}\\n\\n${VISIBLE_STATE_RULE}${extra ? `\\n\\n${extra}` : ''}${outputShape(1, null, seconds)}`;\n}"
+    "find": "export function buildUserMessage(story, seconds = CLIP_SECONDS) {\n  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\\n\\n${CONTINUITY_RULE}\\n\\n${UTTERANCE_RULE}\\n\\n${VISIBLE_STATE_RULE}\\n\\n${AFTERMATH_CHECKLIST}${outputShape(1, null, seconds)}`;\n}",
+    "replace": "export function buildUserMessage(story, seconds = CLIP_SECONDS, extra = '') {\n  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\\n\\n${CONTINUITY_RULE}\\n\\n${UTTERANCE_RULE}\\n\\n${VISIBLE_STATE_RULE}\\n\\n${AFTERMATH_CHECKLIST}${extra ? `\\n\\n${extra}` : ''}${outputShape(1, null, seconds)}`;\n}"
    },
    {
     "find": "export function buildUserContent(story, refs = null, seconds = CLIP_SECONDS) {\n  const body = buildUserMessage(story, seconds);",
@@ -148,7 +148,7 @@
   ]
  },
  {
-  "file": "planpath48/transport.mjs",
+  "file": "planpath410/transport.mjs",
   "why": "per-request max_tokens from the slot context and the prompt size (E4_LLM_SLOT_CTX, outputRoom/outputCap) instead of one fixed cap: a fixed 12288 cut a long Devanagari plan.",
   "replacements": [
    {
@@ -162,7 +162,7 @@
   ]
  },
  {
-  "file": "planpath48/writer.mjs",
+  "file": "planpath410/writer.mjs",
   "why": "a long film must not fail: planning and the bible go through e4/bridge/scale.mjs (one call exactly as before for a short story, parts for a long one, a failed part split smaller); the writer's story and film plan and a reference repair's context are windowed past a budget (the same text below it).",
   "replacements": [
    {
@@ -180,7 +180,7 @@
   ]
  },
  {
-  "file": "planpath48/refs.mjs",
+  "file": "planpath410/refs.mjs",
   "why": "a long film must not fail: planning and the bible go through e4/bridge/scale.mjs (one call exactly as before for a short story, parts for a long one, a failed part split smaller); the writer's story and film plan and a reference repair's context are windowed past a budget (the same text below it).",
   "replacements": [
    {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E4.8 on a long story, end to end, through the bridge the way e4_engine.py calls it, against the 5090 gateway's ninfer lane. No pictures.
+"""E4.10 on a long story, end to end, through the bridge the way e4_engine.py calls it, against the 5090 gateway's ninfer lane. No pictures.
 
   e4_longstory_proof.py --story story.txt --out DIR [--language Hindi] [--workers 4] [--slot-ctx 65536] [--max-tokens-ceiling 12288]
 

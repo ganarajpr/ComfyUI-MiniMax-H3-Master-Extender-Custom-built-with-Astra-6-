@@ -1,6 +1,6 @@
-"""story_engine=e4.8: the E4.8 engine inside the Master Extender's story mode.
+"""story_engine=e4.10: the E4.10 engine inside the Master Extender's story mode.
 
-  - EngineTests: ``rewrite_clips`` with story_engine=e4.8 runs the vendored E4 as a real Node subprocess against a mock model server that REPLAYS a
+  - EngineTests: ``rewrite_clips`` with story_engine=e4.10 runs the vendored E4 as a real Node subprocess against a mock model server that REPLAYS a
     stored real run (tests/fixtures/e4_replay.json.gz). Proves: valid clips in the extender's clip structure, the pictures bound and cited with the
     extender's own Picture numbers, integer durations, the builder not run, both wires (ninfer /v1/messages, llama.cpp chat), the logs, the progress.
   - BuilderUnchanged: story_engine absent or "builder" makes exactly the requests the base commit b12b03d made (tests/fixtures/builder_story_b12b03d.json).
@@ -55,7 +55,7 @@ def default_mapping(text):
 
 
 def settings_for(story, **extra):
-    s = dict(builder_scenario.BASE, rewrite_story=story, auto_clips=(META or {}).get("clips", 2), rewrite_parallel=2, story_engine="e4.8", e4_language="English", e4_score=(META or {}).get("score", "off"),
+    s = dict(builder_scenario.BASE, rewrite_story=story, auto_clips=(META or {}).get("clips", 2), rewrite_parallel=2, story_engine="e4.10", e4_language="English", e4_score=(META or {}).get("score", "off"),
              e4_decision_budget="off", e4_picture_notes="", rewrite_thinking=False)
     s.update(extra)
     return s
@@ -130,12 +130,12 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(clips), len([s for s in run.rec.streams if s[2] == "done"]))
 
     def test_a_visible_state_change_is_carried_into_every_later_clip(self):
-        """E4.8: the boat's oil sheen (set by clip 1 in the stored plan) is in the boat's subject line of clips 2 and 3, and not in clip 1."""
+        """E4.10: the boat's oil sheen (set by clip 1 in the stored plan) is in the boat's subject line of clips 2 and 3, and not in clip 1; the line holds no opening wording ("dry hull")."""
         run = self.run_engine("ninfer")
         carried = []
         for clip in run.clips:
             subjects = sections_of(clip["prompt"])["subject_definitions"]
-            carried.append("now with the Mohan's wooden boat has a fresh oil sheen" in subjects)
+            carried.append("now with a fresh oil sheen along the hull" in subjects)
         self.assertEqual([False, True, True], carried)
 
     def test_the_stored_run_is_replayed_byte_for_byte_at_engine_level(self):
@@ -155,10 +155,11 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(want, hashlib.sha256((out / "drama_two_hander" / rel).read_bytes()).hexdigest(), f"{rel} differs from the stored run")
 
     def test_engine_names(self):
-        self.assertEqual(["builder", "e4.8"], e4_engine.ENGINES)
-        self.assertEqual("e4.8", e4_engine.normalize_engine("e4"), "a workflow saved with the E4.6/E4.7 build says e4")
-        self.assertEqual("e4.8", e4_engine.normalize_engine("e4.8"))
-        for other in (None, "", "builder", "e4.7", "x"):
+        self.assertEqual(["builder", "e4.10"], e4_engine.ENGINES)
+        self.assertEqual("e4.10", e4_engine.normalize_engine("e4"), "a workflow saved with the E4.6/E4.7 build says e4")
+        self.assertEqual("e4.10", e4_engine.normalize_engine("e4.8"), "a workflow saved with the E4.8 build says e4.8")
+        self.assertEqual("e4.10", e4_engine.normalize_engine("e4.10"))
+        for other in (None, "", "builder", "e4.7", "e4.9", "x"):
             self.assertEqual("builder", e4_engine.normalize_engine(other))
 
     def test_the_builder_does_not_run(self):
@@ -313,7 +314,7 @@ class EngineTests(unittest.TestCase):
         run = self.run_engine("ninfer")
         messages = [m for _stage, m, _p in run.rec.progress]
         n = META["clips"]
-        for want in ("story_engine=e4.8", "E4: story planned", "E4: film bible written", "reference pictures bound", f"clip 1/{n} staged", f"clip {n}/{n} written"):
+        for want in ("story_engine=e4.10", "E4: story planned", "E4: film bible written", "reference pictures bound", f"clip 1/{n} staged", f"clip {n}/{n} written"):
             self.assertTrue(any(want in m for m in messages), f"no progress message with '{want}': {messages}")
         fractions = [p for _s, _m, p in run.rec.progress]
         self.assertTrue(all(0 <= p <= 1 for p in fractions))
@@ -327,7 +328,7 @@ class EngineTests(unittest.TestCase):
             rec, notes, done = stub_pack.run_rewrite(ROOT, settings_for(self.story, auto_clips=3), clips, refs=stub_pack.make_pictures((0, 1)), writer_suffix=".ninfer",
                                                     server_base=llm.url, user_dir=Path(tempfile.mkdtemp(dir=self.user)))
         self.assertEqual([], llm.requests, "E4 was not started")
-        self.assertTrue(any("story_engine=e4.8 is not used for this run" in m for _s, m, _p in rec.progress))
+        self.assertTrue(any("story_engine=e4.10 is not used for this run" in m for _s, m, _p in rec.progress))
         self.assertTrue(rec.chats, "the builder planner ran instead")
         self.assertTrue(all(c.get("rewrite_meta", {}).get("engine") != "e4" for c in done))
 
@@ -349,7 +350,7 @@ class EngineTests(unittest.TestCase):
         return llm, rec, clips, user
 
     def test_a_writer_that_cannot_see_binds_by_the_picture_notes(self):
-        notes = "1: a sherwani on a mannequin\n2: the tailor shop\n3: Pramod in a blue kurta\n4: a white button\n5: Haroon, the old tailor\n6: a glass of tea"
+        notes = "1: a sherwani on a mannequin\n2: the tailor shop\n3: Pramod in a blue kurta\n4: a white button\n5: Haroon, the old tailor"
         llm, rec, clips, user = self.run_strata(notes)
         self.assertEqual([], llm.misses)
         self.assertEqual({"chat"}, {r["wire"] for r in llm.requests}, "Strata is called on chat completions")
@@ -358,7 +359,7 @@ class EngineTests(unittest.TestCase):
         content = calls[0]["body"]["messages"][0]["content"]
         self.assertIsInstance(content, str, "no picture goes to a model that cannot see")
         self.assertIn("You cannot see the pictures", content)
-        self.assertIn("Picture 6: a glass of tea", content)
+        self.assertIn("Picture 5: Haroon, the old tailor", content)
         mapping = json.loads(next(user.rglob("map.json")).read_text(encoding="utf-8"))
         self.assertEqual("labels", mapping["mode"])
         self.assertTrue(all("<Picture" in c["prompt"] for c in clips))
@@ -391,7 +392,7 @@ class EngineTests(unittest.TestCase):
         self.assertIn("reply cut at max_tokens", warnings[0])
         self.assertIn("thinking 4121", warnings[0])
         self.assertIn(str(user), warnings[0], "the kept run directory is named")
-        self.assertTrue(any(n.startswith("WARNING: story_engine=e4.8 FAILED") for n in notes))
+        self.assertTrue(any(n.startswith("WARNING: story_engine=e4.10 FAILED") for n in notes))
         self.assertTrue(rec.chats, "the builder planner ran instead")
         self.assertTrue(all(c.get("rewrite_meta", {}).get("engine") != "e4" for c in done))
 
@@ -555,27 +556,27 @@ class FrozenCopy(unittest.TestCase):
 
     def test_a_changed_frozen_file_is_caught(self):
         tmp = self.tree()
-        target = tmp / "e4" / "planpath48" / "planner.mjs"
+        target = tmp / "e4" / "planpath410" / "planner.mjs"
         target.write_text(target.read_text(encoding="utf-8") + "\n// edited\n", encoding="utf-8")
         r = self.verify(tmp)
         self.assertEqual(1, r.returncode)
-        self.assertIn("CHANGED e4/planpath48/planner.mjs", r.stdout)
+        self.assertIn("CHANGED e4/planpath410/planner.mjs", r.stdout)
 
     def test_an_edit_inside_a_patched_file_outside_the_patch_is_caught(self):
         tmp = self.tree()
-        target = tmp / "e4" / "planpath48" / "film.mjs"
+        target = tmp / "e4" / "planpath410" / "film.mjs"
         text = target.read_text(encoding="utf-8")
         target.write_text(text.replace("const pad = (n)", "const padd = (n)", 1), encoding="utf-8")
         r = self.verify(tmp)
         self.assertEqual(1, r.returncode)
         manifest = json.loads((tmp / "e4" / "MANIFEST.json").read_text(encoding="utf-8"))
         for f in manifest["files"]:
-            if f["path"] == "e4/planpath48/film.mjs":
+            if f["path"] == "e4/planpath410/film.mjs":
                 f["vendoredSha256"] = __import__("hashlib").sha256(target.read_bytes()).hexdigest()
         (tmp / "e4" / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
         r = self.verify(tmp)
         self.assertEqual(1, r.returncode, "even with the manifest updated, the patched file must reverse to the source")
-        self.assertIn("DIFFERS e4/planpath48/film.mjs", r.stdout)
+        self.assertIn("DIFFERS e4/planpath410/film.mjs", r.stdout)
 
     def test_an_unlisted_file_is_caught(self):
         tmp = self.tree()
@@ -587,7 +588,7 @@ class FrozenCopy(unittest.TestCase):
     def test_the_declared_patches_are_the_only_differences_to_the_tag(self):
         tag = os.environ.get("E4_EVAL_REPO")
         if not tag:
-            self.skipTest("set E4_EVAL_REPO to the h3-prompt-eval checkout to compare with the git tag e4.8-frozen")
+            self.skipTest("set E4_EVAL_REPO to the h3-prompt-eval checkout to compare with the git tag e4.10-frozen")
         r = self.verify(ROOT, "--eval-repo", tag)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
         self.assertRegex(r.stdout, r"\d+ against the git tag")
@@ -596,7 +597,7 @@ class FrozenCopy(unittest.TestCase):
         home = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, home, True)
         env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
-        for entry in ("planpath48/film.mjs", "bridge/run.mjs"):
+        for entry in ("planpath410/film.mjs", "bridge/run.mjs"):
             if entry == "bridge/run.mjs":
                 continue
             r = subprocess.run([NODE, "--input-type=module", "-e", f"await import('{(ROOT / 'e4' / entry).as_uri()}'); console.log('ok')"], capture_output=True, text=True, env=env)
@@ -697,7 +698,7 @@ class PythonSide(unittest.TestCase):
             else:
                 c.update(prompt=f"subject_definitions:\nfinal {i}", duration=15, durationExact=15.08, pictures=[{"picture": 2, "entity": "a"}], checks={"citationIssues": []})
             clips.append(c)
-        return {"version": "e4.8-frozen", "clips": clips, "stats": {"wallSecs": 60}}
+        return {"version": "e4.10-frozen", "clips": clips, "stats": {"wallSecs": 60}}
 
     def test_apply_clips_fills_empty_clips_then_appends(self):
         clips = [{"id": 7, "title": "My opening", "prompt": "", "duration": 15, "seed": 5, "loras": ["x"]}, {"id": 8, "title": "Clip 2", "prompt": "", "duration": 10}]

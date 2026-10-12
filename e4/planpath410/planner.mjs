@@ -9,6 +9,7 @@ import { HERE } from './lib.mjs';
 import { sequenceIssues } from './sequence.mjs';
 import { planSpeechIssues } from './utterance.mjs';
 import { planStateIssues } from './state.mjs';
+import { AFTERMATH_CHECKLIST } from './aftermath.mjs';
 
 export const CAMERA_SHOTS = ['wide_establishing', 'medium', 'medium_close', 'close_up', 'extreme_close_up_macro', 'tracking_following', 'over_the_shoulder', 'top_down_overhead', 'low_angle', 'high_angle'];
 export const CAMERA_LABELS = {
@@ -69,7 +70,7 @@ export const CONTINUITY_RULE = 'CONTINUITY STATE — these rules sit on top of t
 export const UTTERANCE_RULE = 'UTTERANCE RULE — everything a character or a voice says aloud in the story, and everything the story implies is said aloud (counting, reciting, chanting, calling out, repeating another speaker, reading aloud), is written as the EXACT WORDS in that shot\'s dialogue_line, with has_dialogue true and the speaker in dialogue_speaker. Never describe speech in subject or action ("she counts aloud", "her mouth moves in a steady count", "the voice calls back"): write the words themselves ("One. Two. Three."). A sequence (numbers, a list, a chant) is written out in full, by the speaker the story names, in the order the story gives. When the story relates what two speakers say (one repeats the other, one is a beat behind, one is a number later, the next number), the words must show exactly that relation: a repeat is the same word, "one number later" is the following number, "the next number" continues the sequence. A count goes one way (up or down) by one each time across all clips unless the story says it restarts.';
 
 // E4.8: the one planner prompt addition of the state rule (founder 2026-10-08): a visible physical trace is a ledger axis, written as what shows, and it carries into the next clips' subject lines.
-export const VISIBLE_STATE_RULE = 'VISIBLE STATE RULE — when a story event leaves a VISIBLE physical trace on a person or an object (tears, sweat, wet or muddy clothing, smudged makeup, disheveled hair, a torn or removed garment, a wound, blood, dirt, a lamp lit, a door broken, water spilled), declare it in the ledger as an axis with "visible_trace": true, and list the change in state_changes in the clip and shot where it happens. Every option of such an axis is a visible physical description that names the thing it is on (the body part, the garment or the object) and completes the words "with ..." (for example "wet tear trails down both cheeks, eyes red-rimmed", "the left sleeve torn open at the shoulder", "the left shin grazed raw, a thin line of blood", "the candle lit, a small flame on the table"), never an emotion word ("sad", "upset", "angry"), never a bare word ("lit", "unlit", "wet", "on") and never a negation. The opening value is the plain look (for example "dry cheeks, clear eyes"). A trace stays until a later state change removes it. The end_state of every clip names each trace that holds at its last frame, in the option\'s own words, in the character\'s state, wardrobe or props (or in the location for a place). Posture, position, location and mood are not traces: leave visible_trace false for them.';
+export const VISIBLE_STATE_RULE = 'VISIBLE STATE RULE — when a story event leaves a VISIBLE physical trace on a person or an object (tears, sweat, wet or muddy clothing, smudged makeup, disheveled hair, a torn or removed garment, a wound, blood, dirt, a lamp lit, a door broken, water spilled), declare it in the ledger as an axis with "visible_trace": true, and list the change in state_changes in the clip and shot where it happens. Every option of such an axis is a visible physical description that names the thing it is on (the body part, the garment or the object\'s part) and is a NOUN PHRASE that reads correctly after the words "now with" (for example "wet tear trails down both cheeks, eyes red-rimmed", "the left sleeve torn open at the shoulder", "the left shin grazed raw, a thin line of blood", "a steady yellow flame on the wick", "a fresh oil sheen along the hull"). The option has no finite verb ("has", "is", "was"), does not start with the subject itself or with "the <subject>\'s" (the subject is already named before "now with"), and is not a bare participle phrase ("candle lit", "boat oiled"); it is never an emotion word ("sad", "upset", "angry"), never a bare word ("lit", "unlit", "wet", "on") and never a negation. The opening value is the plain look (for example "dry cheeks, clear eyes", "an unlit wick"). A trace stays until a later state change removes it. The end_state of every clip names each trace that holds at its last frame, in the option\'s own words, in the character\'s state, wardrobe or props (or in the location for a place). Posture, position, location and mood are not traces: leave visible_trace false for them.';
 
 export const OPENS_MARK = (n) => `CONTINUITY — THIS CLIP OPENS EXACTLY WHERE CLIP ${n} ENDED:`;
 export const ENDS_MARK = 'AT THE END OF THIS CLIP (the next clip opens exactly here):';
@@ -82,7 +83,7 @@ export function outputShape(start = 1, second = null, seconds = CLIP_SECONDS) {
 }
 
 export function buildUserMessage(story, seconds = CLIP_SECONDS, extra = '') {
-  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\n\n${CONTINUITY_RULE}\n\n${UTTERANCE_RULE}\n\n${VISIBLE_STATE_RULE}${extra ? `\n\n${extra}` : ''}${outputShape(1, null, seconds)}`;
+  return `${fillTemplate(loadPrompt('planner'), story, 'auto', null, seconds)}\n\n${CONTINUITY_RULE}\n\n${UTTERANCE_RULE}\n\n${VISIBLE_STATE_RULE}\n\n${AFTERMATH_CHECKLIST}${extra ? `\n\n${extra}` : ''}${outputShape(1, null, seconds)}`;
 }
 
 export const REFS_RULE = 'REFERENCE RULE — These are the only characters, props and locations that have a reference picture. Stage the story with them: a character keeps the face, build and hair of their picture, a prop or location keeps its material and layout. A character\'s clothing comes from the story, not from the picture (the picture\'s outfit is only the fallback when the story is silent). Anything without a picture stays off screen or unseen. Name a subject by its Picture number the first time it appears in a clip\'s shots.';
@@ -400,7 +401,7 @@ export async function planStory(chat, story, { seconds = CLIP_SECONDS, log = () 
       log(`attempt ${attempt + 1}: reply not parseable`);
       continue;
     }
-    const base = checkBreakdown(parsed, seconds), utter = [...planSpeechIssues(parsed), ...sequenceIssues(plannedLines(parsed), story).issues, ...planStateIssues(parsed)];
+    const base = checkBreakdown(parsed, seconds), utter = [...planSpeechIssues(parsed), ...sequenceIssues(plannedLines(parsed), story).issues, ...planStateIssues(parsed, { story })];
     issues = [...base, ...utter];
     kept = { parsed, issues };
     attempts.push({ attempt: attempt + 1, parsed: true, issues: [...issues], rebalanced });

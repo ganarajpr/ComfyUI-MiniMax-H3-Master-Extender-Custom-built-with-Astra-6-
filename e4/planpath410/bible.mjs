@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { HERE } from './lib.mjs';
 import { speakerIssues, voiceFieldIssues, voicesOf } from './speakers.mjs';
 import { slotInstructions, slotIssues, normalizeRef } from './refslots.mjs';
+import { bibleOpeningIssues, isOpeningIssue, bibleBaseWordingIssues, isBaseWordingIssue, openingStateBlock } from './state.mjs';
 
 const read = (rel) => readFileSync(join(HERE, rel), 'utf8').replace(/\r\n/g, '\n');
 export const ACTING_SCHEMA = JSON.parse(read('vendor/schemas/acting_master.schema.json'));
@@ -68,7 +69,7 @@ ${rawAsks.join('\n\n')}
 THE PLANNER'S STATE LEDGER ENTITIES (reuse these ids for the same thing; do not duplicate)
 ${JSON.stringify(ledger)}
 
-DISTINCT SPEAKER STRINGS IN THE PLAN (each must be mapped to a cast id)
+${openingStateBlock(plan)}DISTINCT SPEAKER STRINGS IN THE PLAN (each must be mapped to a cast id)
 ${JSON.stringify(speakers)}
 
 WHAT TO RETURN
@@ -199,6 +200,8 @@ export function validateBible(b, plan, { score = 'off' } = {}) {
   }
   issues.push(...speakerIssues(plan, b));
   if (score === 'on') issues.push(...scoreIssues(b.score));
+  issues.push(...bibleOpeningIssues(b, plan));
+  issues.push(...bibleBaseWordingIssues(b, plan));
   return issues;
 }
 
@@ -215,7 +218,10 @@ export async function makeBible(chat, story, plan, rawAsks, { score = 'off' } = 
   const messages = buildBibleMessages(story, plan, rawAsks, { score });
   let parsed = null, issues = [];
   const attempts = [];
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // E4.9: a base description that already shows a later state (bibleOpeningIssues) gets one more attempt, like the planner's state checks; every other failure keeps the two of E4.2.
+  // E4.10: so does a base line that names what a trace axis changes (bibleBaseWordingIssues); after the last attempt that finding is only reported (attempts[].issues): the subject line strips the wording itself.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt === 2 && !(issues.length && issues.every((x) => isOpeningIssue(x) || isBaseWordingIssue(x)))) break;
     const msgs = attempt && issues.length ? [{ role: 'user', content: `${messages[0].content}\n\nYOUR PREVIOUS REPLY FAILED THESE CHECKS — CORRECT EXACTLY THESE AND KEEP EVERYTHING ELSE:\n${issues.slice(0, 25).join('\n')}` }] : messages;
     const reply = await chat(msgs, attempt);
     parsed = reply.ok ? normalizeBible(reply.value) : null;
@@ -223,5 +229,5 @@ export async function makeBible(chat, story, plan, rawAsks, { score = 'off' } = 
     attempts.push({ attempt: attempt + 1, issues: [...issues], ...(reply.repaired ? { repaired: reply.repaired } : {}) });
     if (!issues.length) break;
   }
-  return { bible: parsed, issues, attempts };
+  return { bible: parsed, issues: issues.filter((x) => !isBaseWordingIssue(x)), attempts };
 }

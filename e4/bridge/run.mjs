@@ -9,7 +9,7 @@
 // Progress goes to stdout as lines "E4PROGRESS {json}"; every request and reply of every call is stored under <out>/<name>/ and listed in <out>/calls.jsonl.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { runStory } from '../planpath48/film.mjs';
+import { runStory } from '../planpath410/film.mjs';
 import { makeBinder } from './pictures.mjs';
 import { exportClips } from './export.mjs';
 
