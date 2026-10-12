@@ -118,7 +118,7 @@ test('E4 durations become whole seconds', () => {
 });
 
 const probe = (style, extra = {}, kind = 'decision') => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e',
-  `import('${new URL('../../planpath48/transport.mjs', import.meta.url).href}').then((m) => console.log(JSON.stringify(m.buildRequest([{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], { max_tokens: 32000, reasoning: { max_tokens: 4096 }, temperature: 0.5 }, '${kind}'))))`],
+  `import('${new URL('../../planpath410/transport.mjs', import.meta.url).href}').then((m) => console.log(JSON.stringify(m.buildRequest([{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], { max_tokens: 32000, reasoning: { max_tokens: 4096 }, temperature: 0.5 }, '${kind}'))))`],
   { env: { ...process.env, E4_LLM_API_STYLE: style, E4_LLM_URL: 'http://h:1', E4_LLM_MODEL: 'm', E4_LLM_MAX_TOKENS: '12288', E4_DECISION_THINKING: '', E4_LLM_BUDGET_PICTURE_MAP: '2048', ...extra } }).toString());
 
 test('the vendored transport: llama-chat sends the two top-level budget fields, ninfer a per-request thinking budget, decisions think off by default', () => {
@@ -235,8 +235,8 @@ test('a bad first reply gets one retry that names the failure, and a second clai
 });
 
 // ---- the per-call output cap and truncated replies
-import { estimatePromptTokens, outputRoom, outputCap } from '../../planpath48/transport.mjs';
-import { planStory, PlanError } from '../../planpath48/planner.mjs';
+import { estimatePromptTokens, outputRoom, outputCap } from '../../planpath410/transport.mjs';
+import { planStory, PlanError } from '../../planpath410/planner.mjs';
 
 const withEnv = (env, fn) => {
   const saved = { E4_LLM_SLOT_CTX: process.env.E4_LLM_SLOT_CTX, E4_LLM_MAX_TOKENS: process.env.E4_LLM_MAX_TOKENS };
@@ -295,7 +295,7 @@ async function cutScenario(cutBelow, env = {}, settings = { max_tokens: 6000, re
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   try {
-    const code = `import { chatWith, cutNote } from ${JSON.stringify(new URL('../../planpath48/lib.mjs', import.meta.url).href)};
+    const code = `import { chatWith, cutNote } from ${JSON.stringify(new URL('../../planpath410/lib.mjs', import.meta.url).href)};
       const c = await chatWith([{ role: 'user', content: 'hello' }], ${JSON.stringify(settings)}, { kind: 'planner' });
       console.log(JSON.stringify({ finish: c.finish, content: c.content, cut: c.cut, escalated: c.escalated, note: cutNote(c.cut) }));`;
     const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code],

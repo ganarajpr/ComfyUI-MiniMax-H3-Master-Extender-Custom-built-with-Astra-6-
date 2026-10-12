@@ -1,6 +1,6 @@
-# Deploying `story_engine=e4.8` to the box
+# Deploying `story_engine=e4.10` to the box
 
-Branch `e4-story-engine` of the founder's fork (`ganarajpr/ComfyUI-MiniMax-H3-Master-Extender-Custom-built-with-Astra-6-`). It is based on `b12b03d`, the commit the box runs. The vendored engine is E4.8 (tag `e4.8-frozen` of the eval repo). Deployment needs an empty queue.
+Branch `e4-story-engine` of the founder's fork (`ganarajpr/ComfyUI-MiniMax-H3-Master-Extender-Custom-built-with-Astra-6-`). It is based on `b12b03d`, the commit the box runs. The vendored engine is E4.8 (tag `e4.10-frozen` of the eval repo). Deployment needs an empty queue.
 
 ## Before you start
 
@@ -41,7 +41,7 @@ Order of lookup: `MINIMAX_H3_E4_NODE`, then `e4_node.txt`, then `node` on PATH. 
 ```
 "C:\Users\user\tools\node-v20.20.2-win-x64\node.exe" e4\verify-frozen.mjs
 ```
-Expected last line: `e4 E4.8 (e4.8-frozen): 91 files checked, 9 patched (patches reversed), 88 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.8-frozen`.
+Expected last line: `e4 E4.8 (e4.10-frozen): 91 files checked, 9 patched (patches reversed), 88 against the freeze record (offline: ...), 0 problem(s)`. Any other line means a file was changed after vendoring (or Git converted line endings): do not use story_engine=e4 until it is clean. The patches are listed with their reasons in `e4\PATCHES.json`; with the eval repo at hand, `--eval-repo <path to h3-prompt-eval>` also compares every file with the git tag `e4.10-frozen`.
 
 The tests need the embedded Python of ComfyUI (numpy and Pillow are there), Node, and no GPU (they use their own throw-away folders, so the node path comes from the environment, not from `e4_node.txt`):
 ```
@@ -58,13 +58,13 @@ set MINIMAX_H3_E4_NODE=C:\Users\user\tools\node-v20.20.2-win-x64\node.exe
 Python and the panel's JavaScript are read when ComfyUI starts, and the browser must be refreshed. **Restart only with an empty queue and the founder's OK** (the `never-restart-comfyui-with-queue` rule). Until then the running ComfyUI is still `b12b03d` in memory, whatever is on disk.
 
 After the restart:
-- the Master node has five new widgets at the end of its list: `story_engine` (`builder` (default) or `e4.8`; a saved `e4` reads as `e4.8`), `e4_language`, `e4_score`, `e4_decision_budget` (default `off`: the decision calls do not think), `e4_picture_notes`. Saved workflows load with the defaults, so they behave as before.
+- the Master node has five new widgets at the end of its list: `story_engine` (`builder` (default) or `e4.10`; a saved `e4` reads as `e4.10`), `e4_language`, `e4_score`, `e4_decision_budget` (default `off`: the decision calls do not think), `e4_picture_notes`. Saved workflows load with the defaults, so they behave as before.
 - the example workflows carry the new values (`builder`).
 
 ## First real use
 
-In the Story Auto workflow: connect the reference pictures, put the story in `rewrite_story`, `auto_clips` at 1 or more (it only switches planning on), one empty clip, `rewrite_mode` = `pending clips`, the Swift 1.5 NInfer writer, `story_engine` = `e4.8`. Queue it. Expected:
-- the panel's progress line walks through `story_engine=e4.8: planning and writing the film with E4.8 ...`, `E4: story planned`, `E4: film bible written`, `E4: reference pictures bound to the film's entities`, `E4: clip 1/N staged and referenced`, `E4: clip 1/N written` ...
+In the Story Auto workflow: connect the reference pictures, put the story in `rewrite_story`, `auto_clips` at 1 or more (it only switches planning on), one empty clip, `rewrite_mode` = `pending clips`, the Swift 1.5 NInfer writer, `story_engine` = `e4.10`. Queue it. Expected:
+- the panel's progress line walks through `story_engine=e4.10: planning and writing the film with E4.8 ...`, `E4: story planned`, `E4: film bible written`, `E4: reference pictures bound to the film's entities`, `E4: clip 1/N staged and referenced`, `E4: clip 1/N written` ...
 - the clip list fills with N finished clips (a ✎ badge, titles `Clip 1: <beat>`, 15 s), and the note `e4: planned and wrote N of N clip(s)` is in the status.
 - every request and reply is in `ComfyUI\user\minimax_h3_master\e4\<run>\story\` (`calls.jsonl` in `<run>` lists them; `story\pictures\map.json` is the picture binding; `clips.json` is what was put into the clip list).
 - a first run of the ninfer server loads the model once (about 20 s) and the whole film takes minutes, not seconds (the planner, the bible, one decision per clip, one writer per clip with up to 4 at a time, plus repairs).

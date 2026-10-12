@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { splitStory, estimateClips, weightOf, mergePlans, mergeBible, writerContext, refContext, unclosed, SINGLE_MAX_CLIPS } from '../scale.mjs';
-import { planStory } from '../../planpath48/planner.mjs';
+import { planStory } from '../../planpath410/planner.mjs';
 
 const filler = 'The lamp burned low while the two of them argued about the road, the rain, and who had lost the key to the old shed behind the mill. '.repeat(4).trim();
 const story = (n) => Array.from({ length: n }, (_, i) => `[P${String(i + 1).padStart(2, '0')}] ${filler}`).join('\n\n');
@@ -115,7 +115,7 @@ async function planScenario(storyText, { cutOver = Infinity, resumeTwice = false
   } finally { server.close(); }
 }
 
-test('a short story is planned in ONE call, exactly as E4.8 does: no part context, the same call names', async () => {
+test('a short story is planned in ONE call, exactly as E4.10 does: no part context, the same call names', async () => {
   const r = await planScenario(story(8));
   assert.equal(r.seen.length, 1);
   assert.equal(r.seen[0].part, null);
