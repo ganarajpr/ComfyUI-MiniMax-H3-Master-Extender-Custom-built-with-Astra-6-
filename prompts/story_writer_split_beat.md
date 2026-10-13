@@ -3,4 +3,8 @@ This beat of a film outline is too big for one moment. Split it into TWO consecu
 BEAT:
 {{beat}}
 
-Answer with ONE JSON object and nothing else: {"beats": ["first moment, one line", "second moment, one line"]}
+STATE WHEN THE BEAT ENDS (the second moment must end in it):
+{{end_state}}
+
+Answer with ONE JSON object and nothing else, with a short "end_state" ("place", "present", "state") for each moment, and spoken lines between curly quotes (“like this”), never straight double quotes:
+{"beats": [{"beat": "first moment, one line", "end_state": {"place": "...", "present": ["..."], "state": "..."}}, {"beat": "second moment, one line", "end_state": {"place": "...", "present": ["..."], "state": "..."}}]}

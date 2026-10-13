@@ -8,12 +8,16 @@ one paragraph each, every spoken line in quotes with its speaker.
 Two stages, both on the model server the rewriter pack opens for the Extender's E4 (same ``mtmd.session`` / ``open_strata`` path, same wires, same
 thinking budgets), closed again when the node finishes so the render that follows has the card:
 
-1. OUTLINE (one call): cast, locations and exactly N one-line beats, as JSON. The count is checked in code; a wrong count gets one retry that names the
-   mismatch, then a repair in code (merge neighbours, split a beat by one more call, or by code if that fails too).
-2. WRITE (calls of at most CHUNK_BEATS beats): each call gets the brief, the cast sheet, the whole outline and the last two paragraphs written. Beats are
-   delimited by ``=== N ===`` lines the code strips, so a cut reply still yields every complete beat. A call that is cut or returns the wrong count is
-   retried once with a larger cap and a terser instruction, then the chunk is split in half. Every accepted beat is written to disk at once; a run that
-   dies resumes from them when the same inputs run again.
+1. OUTLINE (one call, or acts then one call per act in parallel from ``TWO_LEVEL_MIN`` beats): cast, locations and exactly N one-line beats, each with an
+   ``end_state`` (place, who is present, visible state of clothes, body and props), as JSON. The reply is parsed tolerantly (alternate keys, beats as
+   objects, broken quoting salvaged by key). A wrong count is repaired without a second full outline: too many are merged in code (a few) or by one call
+   that names only the merges, too few are split in parallel, one call per longest beat.
+2. WRITE (chunks of 4 to 8 beats sized so a story goes out in one wave, ``concurrency`` requests at a time): no chunk reads another's prose. Each gets the brief, the cast sheet,
+   the locations, the whole outline with every beat's end state, the beats around its own, and the opening state of its first beat. Beats are delimited
+   by ``=== N ===`` lines the code strips, so a cut reply still yields every complete beat. A call that is cut or returns the wrong count is retried once
+   with a larger cap and a terser instruction, then the chunk is split in half. Every accepted beat is written to disk at once; a run that dies resumes
+   from them when the same inputs run again. Afterwards cheap code checks look for seams (an opening in a place or with a person the previous beat's end
+   state rules out, a name that is not in the cast sheet); they are reported as warnings and never cause a retry.
 
 The pure engine (``StoryEngine``) takes any ``chat(messages, max_tokens=, budget=, kind=) -> Reply``; ``ServerChat`` is the HTTP one. ComfyUI is imported
 lazily, so the engine runs and is tested without it.
@@ -28,9 +32,11 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,11 +53,14 @@ except ImportError:  # imported as a top-level module (tests)
 
 _LOG = logging.getLogger("minimax_h3_master_extender.story_writer")
 
-VERSION = "1"
+VERSION = "2"
 MIN_CLIPS, MAX_CLIPS = 1, 60
 DEFAULT_SECONDS = 15
 DEFAULT_LANGUAGE = "English"
-CHUNK_BEATS = 8
+MIN_CHUNK_BEATS, CHUNK_BEATS = 4, 8   # chunk size is auto: about one chunk per concurrent request, between these
+DEFAULT_CONCURRENCY, MAX_CONCURRENCY = 6, 8
+TWO_LEVEL_MIN = 31      # from this many beats the outline is acts first, then the beats of every act in parallel
+ACT_BEATS = 10
 THINKING_BUDGET = 4096
 BUDGET_MESSAGE = e4_engine.BUDGET_MESSAGE
 MIN_OUTPUT = 4096
@@ -178,11 +187,12 @@ def format_locations(locations: list) -> str:
     return "\n".join(f"- {c['name']}: {c['look']}" if c.get("look") else f"- {c['name']}" for c in locations) or "- (none named)"
 
 
-def format_outline(beats: list, first: int, last: int) -> str:
+def format_outline(beats: list, states: list, first: int, last: int) -> str:
     lines = []
     for i, beat in enumerate(beats, start=1):
         mark = "  <== WRITE THIS ONE" if first <= i <= last else ""
-        lines.append(f"{i}. {beat}{mark}")
+        state = state_text(states[i - 1]) if i - 1 < len(states) else ""
+        lines.append(f"{i}. {beat}" + (f"\n   ends: {state}" if state else "") + mark)
     return "\n".join(lines)
 
 
@@ -194,45 +204,88 @@ def strip_think(text: str) -> str:
     return text.split("</think>")[-1].strip()
 
 
-def _balanced_object(text: str):
-    start = text.find("{")
-    while start >= 0:
-        depth, in_str, esc = 0, False, False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if in_str:
-                if esc:
-                    esc = False
-                elif ch == "\\":
-                    esc = True
-                elif ch == '"':
-                    in_str = False
-                continue
-            if ch == '"':
-                in_str = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start:i + 1]
-        start = text.find("{", start + 1)
+def _balanced_at(text: str, start: int):
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
     return None
 
 
-def parse_json_object(text: str):
-    """The first JSON object in a model reply (fences and prose around it ignored, trailing commas forgiven), or None."""
-    body = strip_think(text)
-    body = re.sub(r"^```[a-zA-Z]*\s*", "", body.strip())
-    body = re.sub(r"```\s*$", "", body).strip()
-    chunk = _balanced_object(body)
-    if chunk is None:
-        return None
-    for candidate in (chunk, re.sub(r",\s*([}\]])", r"\1", chunk)):
+def _loads(candidate: str):
+    for text in (candidate, re.sub(r",\s*([}\]])", r"\1", candidate)):
         try:
-            value = json.loads(candidate)
+            return json.loads(text, strict=False)
         except ValueError:
             continue
+    return None
+
+
+def _clean_body(text: str) -> str:
+    body = strip_think(text)
+    body = re.sub(r"^```[a-zA-Z]*\s*", "", body.strip())
+    return re.sub(r"```\s*$", "", body).strip()
+
+
+def repair_brackets(text: str) -> str:
+    """JSON whose brackets are wrong: a closer that does not match the open bracket becomes the right one, what follows the root is dropped, missing closers are added."""
+    out, stack, in_str, esc = [], [], False, False
+    for ch in text:
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+            out.append(ch)
+        elif ch in "}]":
+            if not stack:
+                break
+            out.append(stack.pop())
+            if not stack:
+                break
+        else:
+            out.append(ch)
+    out.extend(reversed(stack))
+    return "".join(out)
+
+
+def parse_json_object(text: str, *, repair: bool = True):
+    """The first JSON object in a model reply (fences and prose around it ignored; trailing commas, raw line breaks inside strings and wrong or missing
+    closing brackets forgiven), or None.
+
+    Each ``{`` is tried in order, outermost first: an object whose own closing brace is missing is repaired as a whole, never mistaken for the first
+    complete object nested inside it (a cast entry, say), which is what an unrepaired scan would return.
+    """
+    body = _clean_body(text)
+    for match in list(re.finditer(r"\{", body))[:40]:
+        chunk = _balanced_at(body, match.start())
+        value = _loads(chunk) if chunk is not None else None
+        if not isinstance(value, dict) and repair:
+            value = _loads(repair_brackets(body[match.start():]))
         if isinstance(value, dict):
             return value
     return None
@@ -248,17 +301,203 @@ def _named_list(value) -> list:
     return out
 
 
+BEAT_KEYS = ("beats", "outline", "scenes", "shots", "story_beats", "moments", "beat_list", "clips", "sequence")
+TEXT_KEYS = ("beat", "text", "description", "summary", "moment", "content", "scene", "action", "line")
+STATE_KEYS = ("end_state", "endstate", "state_at_end", "ends")
+EMPTY_STATE = {"place": "", "present": [], "state": ""}
+
+
+def norm_state(value) -> dict:
+    """An end state as ``{place, present, state}`` from whatever shape the model used (a bare string becomes the visible state)."""
+    if isinstance(value, str):
+        return {"place": "", "present": [], "state": " ".join(value.split())}
+    if not isinstance(value, dict):
+        return dict(EMPTY_STATE, present=[])
+    present = value.get("present") or value.get("who") or value.get("characters") or []
+    if isinstance(present, str):
+        present = re.split(r"\s*[,;&]\s*|\s+and\s+", present)
+    present = [" ".join(str(p).split()) for p in present if isinstance(p, (str, int)) and str(p).strip()] if isinstance(present, list) else []
+    state = value.get("state") or value.get("visible_state") or value.get("status") or ""
+    if isinstance(state, dict):
+        state = "; ".join(f"{k}: {v}" for k, v in state.items())
+    elif isinstance(state, list):
+        state = "; ".join(str(v) for v in state)
+    return {"place": " ".join(str(value.get("place") or value.get("location") or "").split()), "present": present, "state": " ".join(str(state).split())}
+
+
+def state_text(state: dict) -> str:
+    parts = []
+    if state.get("place"):
+        parts.append(f"place: {state['place']}")
+    if state.get("present"):
+        parts.append("present: " + ", ".join(state["present"]))
+    if state.get("state"):
+        parts.append(f"visible state: {state['state']}")
+    return "; ".join(parts)
+
+
+def _beat_entry(item):
+    if isinstance(item, str):
+        text, state = item, None
+    elif isinstance(item, dict):
+        text = next((item[k] for k in TEXT_KEYS if isinstance(item.get(k), str) and item[k].strip()), "")
+        state = next((item[k] for k in STATE_KEYS if k in item), None)
+    else:
+        return None
+    text = " ".join(str(text).split())
+    return (text, norm_state(state)) if text else None
+
+
+def _beat_items(raw) -> list:
+    if isinstance(raw, str):
+        raw = [re.sub(r"^\s*(?:\d+\s*[.):\-]|[-*•])\s*", "", line) for line in raw.splitlines() if line.strip()]
+    if isinstance(raw, dict):
+        keyed = sorted(raw.items(), key=lambda kv: int(kv[0]) if str(kv[0]).strip().isdigit() else 10 ** 9)
+        raw = [v for _, v in keyed]
+    return [e for e in (_beat_entry(i) for i in raw if i is not None) if e] if isinstance(raw, list) else []
+
+
+def find_beats(obj: dict) -> list:
+    """The beats of an outline object under any of the usual keys, or (failing that) the biggest list of beat-like items."""
+    lowered = {str(k).lower(): v for k, v in obj.items()}
+    for key in BEAT_KEYS:
+        items = _beat_items(lowered.get(key))
+        if items:
+            return items
+    best = []
+    for key, value in lowered.items():
+        if key in ("cast", "characters", "locations", "settings", "places", "acts"):
+            continue
+        items = _beat_items(value) if isinstance(value, list) else []
+        if len(items) > len(best):
+            best = items
+    return best if len(best) >= 2 else []
+
+
 def coerce_outline(obj) -> dict | None:
-    """A reply's JSON as ``{title, minor, cast, locations, beats}``; None when it has no usable beats list and is not the minor refusal."""
+    """A reply's JSON as ``{title, minor, cast, locations, beats, end_states}``; None when it has no usable beats and is not the minor refusal."""
+    if isinstance(obj, list):
+        obj = {"beats": obj}
     if not isinstance(obj, dict):
         return None
     minor = obj.get("minor_in_sexual_content") is True
-    raw = obj.get("beats")
-    beats = [" ".join(b.split()) for b in raw if isinstance(b, str) and b.strip()] if isinstance(raw, list) else []
-    if not beats and not minor:
+    items = find_beats(obj)
+    if not items and not minor:
         return None
-    return {"title": str(obj.get("title") or "").strip(), "minor": minor, "cast": _named_list(obj.get("cast")),
-            "locations": _named_list(obj.get("locations")), "beats": beats}
+    lowered = {str(k).lower(): v for k, v in obj.items()}
+    return {"title": str(obj.get("title") or "").strip(), "minor": minor, "cast": _named_list(lowered.get("cast") or lowered.get("characters")),
+            "locations": _named_list(lowered.get("locations") or lowered.get("settings") or lowered.get("places")),
+            "beats": [t for t, _ in items], "end_states": [s for _, s in items]}
+
+
+def _array_after(body: str, key: str):
+    m = re.search(r'["\']?' + key + r'["\']?\s*[:=]\s*\[', body, re.IGNORECASE)
+    if not m:
+        return None
+    start = m.end() - 1
+    depth = 0
+    for i in range(start, len(body)):
+        if body[i] == "[":
+            depth += 1
+        elif body[i] == "]":
+            depth -= 1
+            if depth == 0:
+                return body[start:i + 1]
+    return body[start:]
+
+
+SALVAGE_ITEM = re.compile(r'"beat"\s*:\s*"(.*?)"\s*,\s*"end_state"\s*:\s*(\{[^{}]*\})', re.DOTALL)
+
+
+def salvage_outline(text: str) -> dict | None:
+    """Last resort for a reply whose JSON does not parse (typically a straight double quote inside a spoken line): the beats are cut out by their keys."""
+    body = _clean_body(text)
+    region = None
+    for key in BEAT_KEYS:
+        region = _array_after(body, key)
+        if region:
+            break
+    items = []
+    if region:
+        for m in SALVAGE_ITEM.finditer(region):
+            state = _loads(m.group(2))
+            items.append((" ".join(m.group(1).replace('\\"', '"').split()), norm_state(state)))
+        if not items:
+            inner = region.strip()[1:]
+            inner = inner[:inner.rfind("]")] if "]" in inner else inner
+            pieces = re.split(r'"\s*,\s*\n\s*"', inner.strip().strip(",").strip())
+            items = [(" ".join(p.strip().strip('"').replace('\\"', '"').split()), dict(EMPTY_STATE, present=[])) for p in pieces if len(p.strip().strip('"')) >= MIN_BEAT_CHARS]
+    if not items:
+        numbered = [m.group(1) for m in re.finditer(r"^\s*\d+\s*[.)]\s*(.{%d,})$" % MIN_BEAT_CHARS, body, re.MULTILINE)]
+        items = [(" ".join(t.split()), dict(EMPTY_STATE, present=[])) for t in numbered]
+    if len(items) < 2:
+        return None
+    cast = _array_after(body, "cast")
+    places = _array_after(body, "locations")
+    title = re.search(r'"title"\s*:\s*"(.*?)"\s*,', body)
+    return {"title": title.group(1).strip() if title else "", "minor": False, "cast": _named_list(_loads(cast) if cast else None),
+            "locations": _named_list(_loads(places) if places else None), "beats": [t for t, _ in items], "end_states": [s for _, s in items]}
+
+
+def parse_outline_reply(text: str, finish: str = "stop"):
+    """``(outline, why)``: the outline in a model reply, or None and the reason it was unusable.
+
+    A reply cut by the token cap is taken only when its JSON object is complete. A reply that stopped is parsed tolerantly (alternate keys, beats as
+    objects, trailing commas, raw line breaks) and, if the JSON itself is broken, salvaged by key.
+    """
+    body = _clean_body(text)
+    if not body:
+        return None, "empty reply (thinking used the whole budget?)"
+    obj = parse_json_object(body, repair=finish != "length")
+    if obj is None and body.startswith("["):
+        value = _loads(body)
+        obj = {"beats": value} if isinstance(value, list) else None
+    if obj is not None:
+        parsed = coerce_outline(obj)
+        if parsed:
+            return parsed, ""
+    if finish == "length":
+        return None, "cut by the token cap"
+    parsed = salvage_outline(body)
+    if parsed:
+        return parsed, ""
+    return None, "JSON without a beats list" if obj is not None else "no parseable JSON"
+
+
+def salvage_acts(text: str, count: int):
+    """The acts of a plan whose JSON is too broken to parse, cut out by their keys: ``(cast, locations, title, acts)`` or None."""
+    body = _clean_body(text)
+    summaries = [" ".join(m.group(1).split()) for m in re.finditer(r'"summary"\s*:\s*"(.*?)"\s*,\s*"(?:start_state|end_state)"', body, re.DOTALL)]
+    if len(summaries) != count:
+        return None
+    starts = [norm_state(_loads(m.group(1))) for m in re.finditer(r'"start_state"\s*:\s*(\{[^{}]*\})', body)]
+    ends = [norm_state(_loads(m.group(1))) for m in re.finditer(r'"end_state"\s*:\s*(\{[^{}]*\})', body)]
+    empty = dict(EMPTY_STATE, present=[])
+    acts = [{"summary": t, "start": starts[k] if len(starts) == count else empty, "end": ends[k] if len(ends) == count else empty} for k, t in enumerate(summaries)]
+    cast, places = _array_after(body, "cast"), _array_after(body, "locations")
+    title = re.search(r'"title"\s*:\s*"(.*?)"\s*,', body)
+    return (_named_list(_loads(repair_brackets(cast)) if cast else None), _named_list(_loads(repair_brackets(places)) if places else None),
+            title.group(1).strip() if title else "", acts)
+
+
+def coerce_acts(obj, count: int):
+    """The acts of an act-plan reply as a list of ``{summary, start, end}`` of exactly ``count`` acts, or None."""
+    acts = None
+    if isinstance(obj, dict):
+        lowered = {str(k).lower(): v for k, v in obj.items()}
+        acts = lowered.get("acts") or lowered.get("outline") or lowered.get("parts")
+    if not isinstance(acts, list):
+        return None
+    out = []
+    for item in acts:
+        if isinstance(item, str) and item.strip():
+            out.append({"summary": " ".join(item.split()), "start": dict(EMPTY_STATE, present=[]), "end": dict(EMPTY_STATE, present=[])})
+        elif isinstance(item, dict):
+            text = next((item[k] for k in TEXT_KEYS if isinstance(item.get(k), str) and item[k].strip()), "")
+            if text:
+                out.append({"summary": " ".join(text.split()), "start": norm_state(item.get("start_state") or item.get("start")),
+                            "end": norm_state(next((item[k] for k in STATE_KEYS if k in item), None))})
+    return out if len(out) == count else None
 
 
 MARKER = re.compile(r"^[ \t]*=+[ \t]*(END|\d+)[ \t]*=+[ \t]*$", re.IGNORECASE | re.MULTILINE)
@@ -278,17 +517,18 @@ def parse_beats(text: str, count: int, *, truncated: bool):
     """The beats of a writer reply, in order: ``(beats, saw_end)``.
 
     Blocks are cut at the ``=== N ===`` lines. A reply that was cut (``truncated``) or never reached ``=== END ===`` loses its last block, which may be
-    half a paragraph. A block shorter than MIN_BEAT_CHARS ends the accepted run. At most ``count`` beats are returned.
+    half a paragraph. A block shorter than MIN_BEAT_CHARS ends the accepted run. At most ``count`` beats are returned. An ``=== END ===`` line followed by
+    another beat (some models close every beat with one) is not the end.
     """
     text = strip_think(text)
     marks = list(MARKER.finditer(text))
-    blocks, saw_end = [], False
+    blocks = []
     for i, mark in enumerate(marks):
         if mark.group(1).upper() == "END":
-            saw_end = True
-            break
+            continue
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
         blocks.append(text[mark.end():end])
+    saw_end = bool(marks) and marks[-1].group(1).upper() == "END"
     if not marks:
         return [], False
     if truncated and not saw_end and blocks:
@@ -394,6 +634,100 @@ def raise_interrupt():
     raise mm.InterruptProcessingException()
 
 
+# --------------------------------------------------------------------------- seam checks (code, no model)
+
+
+def _aliases(name: str) -> list:
+    tokens = [t for t in re.split(r"[\s,.]+", name) if len(t) >= 3]
+    return [name] + [t for t in tokens if t != name]
+
+
+def mentions(text: str, name: str, *, whole: bool = False) -> bool:
+    haystack = text.casefold()
+    names = [name] if whole else _aliases(name)
+    return any(n.casefold() in haystack for n in names if n.strip())
+
+
+OPENING_CHARS = 320
+COMMON_CAPS = {"the", "and", "but", "then", "she", "he", "they", "his", "her", "its", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+               "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"}
+
+
+def seam_issues(index: int, beat: str, outline_line: str, previous_state: dict, own_state: dict, cast: list, locations: list) -> list:
+    """Obvious contradictions between the opening of beat ``index`` (0-based) and the state beat ``index - 1`` ended in. Cheap string checks only:
+
+    - the opening names a location that is neither where the previous beat ended, nor named by this beat's own outline line, nor where this beat ends;
+    - the opening names a cast member who was not present at the end of the previous beat and whom this beat's outline line (or end state) does not bring in.
+    """
+    if index <= 0 or not previous_state:
+        return []
+    opening = beat[:OPENING_CHARS]
+    issues = []
+    place = previous_state.get("place") or ""
+    if place:
+        expected = [loc["name"] for loc in locations if mentions(outline_line, loc["name"], whole=True)] + [place]
+        if own_state and own_state.get("place"):
+            expected.append(own_state["place"])
+        seen = [loc["name"] for loc in locations if mentions(opening, loc["name"], whole=True)]
+        if seen and not any(mentions(s, e, whole=True) or mentions(e, s, whole=True) for s in seen for e in expected):
+            issues.append(f"beat {index + 1} opens in '{seen[0]}' but beat {index} ended in '{place}' and its outline line does not move there")
+    present = previous_state.get("present") or []
+    if present:
+        for person in cast:
+            name = person["name"]
+            brought = list(present) + list((own_state or {}).get("present") or [])
+            if mentions(opening, name) and not any(mentions(p, name) or mentions(name, p) for p in brought) and not mentions(outline_line, name):
+                issues.append(f"beat {index + 1} opens with {name}, who was not present at the end of beat {index} and is not brought in by its outline line")
+    return issues
+
+
+def unknown_names(beats: list, cast: list, locations: list, language: str) -> list:
+    """Capitalised words in the middle of a sentence, used at least twice, that are in no cast or location name: a drifted or invented name. Latin script only."""
+    if is_wide(language):
+        return []
+    known = {t.casefold() for c in list(cast) + list(locations) for t in re.split(r"[\s,.'’-]+", c["name"]) if t}
+    counts: dict = {}
+    for beat in beats:
+        for m in re.finditer(r"(?<=[a-z,;] )([A-Z][a-z]{2,})\b", beat):
+            word = m.group(1)
+            if word.casefold() not in known and word.casefold() not in COMMON_CAPS:
+                counts[word] = counts.get(word, 0) + 1
+    return sorted(w for w, c in counts.items() if c >= 2)
+
+
+def split_chunks(n: int, have, chunk_beats: int) -> list:
+    """The runs of beats still to write as ``(start, end)`` ranges, each run cut into the fewest balanced chunks of at most ``chunk_beats``."""
+    out, i = [], 0
+    while i < n:
+        if have(i):
+            i += 1
+            continue
+        j = i
+        while j < n and not have(j):
+            j += 1
+        length = j - i
+        parts = -(-length // chunk_beats)
+        size, extra = divmod(length, parts)
+        start = i
+        for p in range(parts):
+            end = start + size + (1 if p < extra else 0)
+            out.append((start, end))
+            start = end
+        i = j
+    return out
+
+
+def auto_chunk_beats(n: int, concurrency: int) -> int:
+    """About one chunk per concurrent request, so a story goes out in a single wave: 40 beats on 8 slots is 5 a chunk, on 6 slots 7; never under 4 (more calls, more repeated outline) or over 8."""
+    return max(MIN_CHUNK_BEATS, min(CHUNK_BEATS, -(-n // max(1, concurrency))))
+
+
+def act_sizes(n: int, per_act: int = ACT_BEATS) -> list:
+    acts = max(2, -(-n // per_act))
+    size, extra = divmod(n, acts)
+    return [size + (1 if k < extra else 0) for k in range(acts)]
+
+
 # --------------------------------------------------------------------------- the engine
 
 
@@ -401,7 +735,8 @@ class StoryEngine:
     """Brief to story with an injected ``chat``. See the module docstring."""
 
     def __init__(self, chat, work_dir, *, brief: str, clips: int, seconds: int = DEFAULT_SECONDS, language: str = DEFAULT_LANGUAGE, slot_ctx: int = 65536,
-                 budget: int = THINKING_BUDGET, chunk_beats: int = CHUNK_BEATS, progress=None, say=None):
+                 budget: int = THINKING_BUDGET, chunk_beats: int | None = None, concurrency: int = DEFAULT_CONCURRENCY, two_level_min: int = TWO_LEVEL_MIN,
+                 progress=None, say=None):
         self.chat = chat
         self.work = Path(work_dir)
         self.brief = brief.strip()
@@ -410,45 +745,94 @@ class StoryEngine:
         self.language = (language or DEFAULT_LANGUAGE).strip() or DEFAULT_LANGUAGE
         self.slot_ctx = int(slot_ctx)
         self.budget = int(budget)
-        self.chunk_beats = max(1, int(chunk_beats))
+        self.concurrency = max(1, min(MAX_CONCURRENCY, int(concurrency)))
+        self.chunk_beats = max(1, int(chunk_beats)) if chunk_beats else auto_chunk_beats(self.clips, self.concurrency)
+        self.two_level_min = int(two_level_min)
         self.progress = progress or (lambda done, total: None)
         self.say = say or (lambda message: None)
         self.calls: list = []
         self.warnings: list = []
+        self.seam_issues: list = []
+        self.chunks: list = []
+        self.retries = {"outline": 0, "outline_fix": 0, "write": 0}
+        self.outline_mode = ""
         self.total_steps = self.clips + 1
+        self._lock = threading.Lock()
+        self._limit = threading.BoundedSemaphore(self.concurrency)
+        self._abort = threading.Event()
         (self.work / "beats").mkdir(parents=True, exist_ok=True)
         (self.work / "calls").mkdir(parents=True, exist_ok=True)
         self.calls_seen = len(list((self.work / "calls").glob("*.json")))
 
     # ---- calls
 
+    def _bump(self, key: str) -> None:
+        with self._lock:
+            self.retries[key] = self.retries.get(key, 0) + 1
+
+    def _map(self, fn, items) -> list:
+        """``fn`` over ``items`` on up to ``concurrency`` threads, results in item order; the first failure stops the queued work and is raised."""
+        items = list(items)
+        if len(items) <= 1 or self.concurrency <= 1:
+            return [fn(x) for x in items]
+        results = [None] * len(items)
+        with ThreadPoolExecutor(max_workers=min(len(items), self.concurrency)) as pool:
+            futures = {pool.submit(fn, x): i for i, x in enumerate(items)}
+            try:
+                for future in as_completed(futures):
+                    results[futures[future]] = future.result()
+            except BaseException:
+                self._abort.set()
+                for future in futures:
+                    future.cancel()
+                raise
+        return results
+
     def _ask(self, kind: str, messages, *, answer: int, budget=None, scale: float = 1.0, temperature: float = 0.6) -> Reply:
         budget = self.budget if budget is None else budget
         room = output_room(messages, self.slot_ctx)
         cap = int(min(room, max(budget + 512, int((budget + answer) * scale) + 512)))
-        reply = self.chat(messages, max_tokens=cap, budget=budget, kind=kind, temperature=temperature)
-        self.calls_seen += 1
-        meta = {"n": self.calls_seen, "kind": kind, "max_tokens": cap, "budget": budget, "finish": reply.finish, "prompt_tokens": reply.prompt_tokens,
-                "completion_tokens": reply.completion_tokens, "thinking_tokens": reply.thinking_tokens, "secs": round(reply.secs, 1)}
-        self.calls.append(meta)
-        record = dict(meta, at=time.strftime("%Y-%m-%d %H:%M:%S"), messages=messages, reply=reply.text)
-        (self.work / "calls" / f"{self.calls_seen:03d}_{kind}.json").write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
-        with open(self.work / "calls.jsonl", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(meta) + "\n")
+        with self._limit:
+            if self._abort.is_set():
+                raise StoryWriterError("stopped: another request failed")
+            reply = self.chat(messages, max_tokens=cap, budget=budget, kind=kind, temperature=temperature)
+        with self._lock:
+            self.calls_seen += 1
+            number = self.calls_seen
+            meta = {"n": number, "kind": kind, "max_tokens": cap, "budget": budget, "finish": reply.finish, "prompt_tokens": reply.prompt_tokens,
+                    "completion_tokens": reply.completion_tokens, "thinking_tokens": reply.thinking_tokens, "secs": round(reply.secs, 1)}
+            self.calls.append(meta)
+            record = dict(meta, at=time.strftime("%Y-%m-%d %H:%M:%S"), messages=messages, reply=reply.text)
+            (self.work / "calls" / f"{number:03d}_{kind}.json").write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+            with open(self.work / "calls.jsonl", "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(meta) + "\n")
         _LOG.info("story writer: %s -> %s, %d tokens (thinking %d), cap %d, %.0f s", kind, reply.finish, reply.completion_tokens, reply.thinking_tokens, cap, reply.secs)
         return reply
 
     def _lang(self) -> dict:
         return {"language": self.language, "script_note": script_note(self.language), "seconds": self.seconds, "clips": self.clips}
 
+    def _answer_room(self, n: int) -> int:
+        return 500 + n * (320 if is_wide(self.language) else 150)
+
     # ---- stage 1: the outline
 
     def outline(self) -> dict:
         stored = self.work / "outline.json"
         if stored.is_file():
-            return json.loads(stored.read_text(encoding="utf-8"))
+            out = json.loads(stored.read_text(encoding="utf-8"))
+            out.setdefault("end_states", [dict(EMPTY_STATE, present=[]) for _ in out["beats"]])
+            return out
         self.say(f"outline: cast, locations and {self.clips} beats")
-        out = self._outline_whole() or self._outline_in_parts()
+        out = None
+        if self.clips >= self.two_level_min:
+            out = self._outline_two_level()
+        if out is None:
+            out = self._outline_whole()
+            if out is not None and not out["minor"] and not plausible_count(len(out["beats"]), self.clips):
+                self.say(f"outline has {len(out['beats'])} beats, {self.clips} wanted: too far off to repair, planning it in parts")
+                out = None
+            out = out or self._outline_in_parts()
         if out is None:
             raise StoryWriterError("the model did not return a usable outline in three attempts (replies are kept in " + str(self.work / "calls") + ")", work_dir=str(self.work))
         if out["minor"]:
@@ -463,24 +847,32 @@ class StoryEngine:
         values["clips"] = n
         return [{"role": "user", "content": fill(load_prompt("outline"), **values)}]
 
-    def _outline_call(self, n: int, extra: str = "", total: int | None = None):
-        messages = self._outline_messages(n, extra, total)
-        answer = 500 + n * (200 if is_wide(self.language) else 90)
+    def _parsed_call(self, kind: str, messages, answer: int, *, temperature: float = 0.5):
+        """Up to two asks of one outline-shaped question; the second is larger only when the first was cut."""
+        cut = False
         for attempt in range(2):
-            reply = self._ask("outline", messages, answer=answer, scale=1.0 if attempt == 0 else 2.0, temperature=0.5)
-            parsed = coerce_outline(parse_json_object(reply.text)) if reply.finish != "length" else None
+            reply = self._ask(kind, messages, answer=answer, scale=2.0 if cut else 1.0, temperature=temperature)
+            parsed, why = parse_outline_reply(reply.text, reply.finish)
+            cut = reply.finish == "length"
             if parsed:
                 return parsed
-            self.say("outline reply unusable" + (" (cut)" if reply.finish == "length" else "") + ", asking again")
+            self.say(f"{kind} reply unusable ({why})" + (", asking again" if attempt == 0 else ""))
+            if attempt == 0:
+                self._bump("outline")
         return None
 
+    def _outline_call(self, n: int, extra: str = "", total: int | None = None):
+        return self._parsed_call("outline", self._outline_messages(n, extra, total), self._answer_room(n))
+
     def _outline_whole(self):
+        self.outline_mode = "whole"
         return self._outline_call(self.clips)
 
     def _outline_in_parts(self):
         """Fallback when the whole outline cannot be had in one reply: the first half, then the second half given the first."""
         if self.clips < 4:
             return None
+        self.outline_mode = "two parts"
         first = self.clips // 2
         second = self.clips - first
         self.say(f"outline in two parts ({first} + {second} beats)")
@@ -499,52 +891,140 @@ class StoryEngine:
         names = {c["name"] for c in head["cast"]}
         places = {c["name"] for c in head["locations"]}
         return {"title": head["title"] or tail["title"], "minor": head["minor"] or tail["minor"], "beats": head["beats"] + tail["beats"],
+                "end_states": head["end_states"] + tail["end_states"],
                 "cast": head["cast"] + [c for c in tail["cast"] if c["name"] not in names],
                 "locations": head["locations"] + [c for c in tail["locations"] if c["name"] not in places]}
 
+    def _outline_two_level(self):
+        """Acts first (one call: cast, locations, a summary and the start and end state of each act), then the beats of every act in parallel."""
+        sizes = act_sizes(self.clips)
+        acts_n = len(sizes)
+        self.say(f"outline in {acts_n} acts of about {sizes[0]} beats, written in parallel")
+        values = dict(self._lang(), brief=self.brief, act_count=acts_n, max_cast=max_cast(self.clips), max_words=max_speech_words(self.seconds))
+        messages = [{"role": "user", "content": fill(load_prompt("acts"), **values)}]
+        plan = None
+        for attempt in range(2):
+            reply = self._ask("outline_acts", messages, answer=700 + acts_n * (500 if is_wide(self.language) else 260), scale=1.0 if attempt == 0 else 2.0, temperature=0.5)
+            obj = parse_json_object(reply.text) if reply.finish != "length" else None
+            acts = coerce_acts(obj, acts_n)
+            if obj is not None and acts:
+                plan = (obj, acts)
+                break
+            salvaged = salvage_acts(reply.text, acts_n) if reply.finish != "length" else None
+            if salvaged:
+                plan = ({"cast": salvaged[0], "locations": salvaged[1], "title": salvaged[2]}, salvaged[3])
+                break
+            self.say("act plan unusable" + (", asking again" if attempt == 0 else ""))
+            if attempt == 0:
+                self._bump("outline")
+        if plan is None:
+            return None
+        obj, acts = plan
+        if obj.get("minor_in_sexual_content") is True:
+            return {"title": "", "minor": True, "cast": [], "locations": [], "beats": [], "end_states": []}
+        cast, locations = _named_list(obj.get("cast")), _named_list(obj.get("locations"))
+        for k, act in enumerate(acts):
+            if k and not act["start"].get("place"):
+                act["start"] = acts[k - 1]["end"]
+        overview = "\n".join(f"{k + 1}. ({sizes[k]} beats) {a['summary']} Ends: {state_text(a['end'])}" for k, a in enumerate(acts))
+
+        def one(k):
+            act = acts[k]
+            values = dict(self._lang(), brief=self.brief, cast=format_cast(cast), locations=format_locations(locations), acts=overview, act=k + 1, act_count=acts_n,
+                          count=sizes[k], start_state=state_text(act["start"]) or "as the previous act ends" if k else "the story opens here; nothing came before",
+                          end_state=state_text(act["end"]) or "as the act's summary ends", max_words=max_speech_words(self.seconds))
+            part = self._parsed_call("outline_act", [{"role": "user", "content": fill(load_prompt("act_beats"), **values)}], self._answer_room(sizes[k]))
+            if part is None:
+                raise StoryWriterError(f"act {k + 1} of the outline could not be had")
+            if part["minor"]:
+                raise MinorContentError("the brief puts a minor in a sexual context; no story was written")
+            part["cast"], part["locations"] = cast, locations
+            return self._fix_count(part, sizes[k])
+
+        try:
+            parts = self._map(one, range(acts_n))
+        except (MinorContentError, LLMUnavailable):
+            raise
+        except StoryWriterError as error:
+            self.say(f"{error}; falling back to one outline call")
+            self._abort.clear()
+            return None
+        self.outline_mode = f"{acts_n} acts"
+        return {"title": str(obj.get("title") or "").strip(), "minor": False, "cast": cast, "locations": locations,
+                "beats": [b for p in parts for b in p["beats"]], "end_states": [s for p in parts for s in p["end_states"]]}
+
+    # ---- count repair: in code where it can be, one small call where it cannot
+
     def _fix_count(self, out: dict, n: int) -> dict:
-        """Exactly ``n`` beats: one retry that names the mismatch, then merge in code (too many) or split (too few)."""
-        beats = out["beats"]
-        if len(beats) == n:
-            return out
-        self.say(f"outline has {len(beats)} beats, {n} wanted: repairing")
+        """Exactly ``n`` beats. Too many: a few by merging the shortest neighbours in code, more by one call that names only the merges. Too few: the longest beats are split, in parallel."""
+        beats, states = list(out["beats"]), list(out.get("end_states") or [])
+        states += [dict(EMPTY_STATE, present=[]) for _ in range(len(beats) - len(states))]
         got = len(beats)
+        if got == n:
+            return dict(out, end_states=states)
+        self.say(f"outline has {got} beats, {n} wanted: repairing")
+        self._bump("outline_fix")
         if got > n:
-            direction = f"that is {got - n} too many."
-            how = f"Merge neighbouring beats that belong to the same moment, or drop the least important, until exactly {n} remain. Keep the story's start and ending."
+            if got - n > small_excess(n):
+                beats, states = self._merge_call(beats, states, n)
+            while len(beats) > n:
+                i = min(range(len(beats) - 1), key=lambda k: len(beats[k]) + len(beats[k + 1]))
+                beats[i:i + 2] = [beats[i].rstrip() + " " + beats[i + 1].lstrip()]
+                states[i:i + 2] = [states[i + 1]]
         else:
-            direction = f"that is {n - got} too few."
-            how = f"Split the busiest beats into two consecutive distinct moments each, until exactly {n} beats exist. Keep the story's start and ending."
-        shape = {"title": out["title"], "minor_in_sexual_content": False, "cast": out["cast"], "locations": out["locations"], "beats": beats}
-        messages = [{"role": "user", "content": fill(load_prompt("fix_outline"), got=got, clips=n, direction=direction, how=how, outline_json=json.dumps(shape, ensure_ascii=False))}]
-        reply = self._ask("outline_fix", messages, answer=500 + n * (200 if is_wide(self.language) else 90), temperature=0.4)
-        parsed = coerce_outline(parse_json_object(reply.text)) if reply.finish != "length" else None
-        if parsed and len(parsed["beats"]) == n:
-            return dict(out, beats=parsed["beats"], cast=parsed["cast"] or out["cast"], locations=parsed["locations"] or out["locations"])
-        if parsed and abs(len(parsed["beats"]) - n) < abs(got - n):
-            beats = parsed["beats"]
-        beats = list(beats)
-        while len(beats) > n:
-            i = min(range(len(beats) - 1), key=lambda k: len(beats[k]) + len(beats[k + 1]))
-            beats[i:i + 2] = [beats[i].rstrip() + " " + beats[i + 1].lstrip()]
-        while len(beats) < n:
-            i = max(range(len(beats)), key=lambda k: len(beats[k]))
-            beats[i:i + 1] = self._split_beat(beats[i])
-            self.warnings.append(f"outline repaired: beat split to reach {n}")
+            while len(beats) < n:
+                need = n - len(beats)
+                order = sorted(range(len(beats)), key=lambda k: -len(beats[k]))[:need]
+                halves = self._map(lambda k: self._split_beat(beats[k], states[k]), order)
+                for k, pair in sorted(zip(order, halves), key=lambda x: -x[0]):
+                    beats[k:k + 1] = [pair[0][0], pair[1][0]]
+                    states[k:k + 1] = [pair[0][1], pair[1][1]]
         if len(beats) != n:
             raise StoryWriterError(f"could not bring the outline to {n} beats (have {len(beats)})", work_dir=str(self.work))
-        self.warnings.append(f"outline repaired in code from {got} to {n} beats")
-        return dict(out, beats=beats)
+        self.warnings.append(f"outline repaired from {got} to {n} beats")
+        return dict(out, beats=beats, end_states=states)
 
-    def _split_beat(self, beat: str) -> list:
-        messages = [{"role": "user", "content": fill(load_prompt("split_beat"), beat=beat, **self._lang())}]
+    def _merge_call(self, beats: list, states: list, n: int):
+        got = len(beats)
+        excess = got - n
+        values = dict(self._lang(), got=got, excess=excess, numbered="\n".join(f"{i}. {b}" for i, b in enumerate(beats, start=1)))
+        values["clips"] = n
+        reply = self._ask("outline_merge", [{"role": "user", "content": fill(load_prompt("merge"), **values)}], answer=300 + excess * (260 if is_wide(self.language) else 130),
+                          temperature=0.4)
+        obj = parse_json_object(reply.text) if reply.finish != "length" else None
+        groups, used, removed = [], set(), 0
+        for g in (obj or {}).get("merges", []) if isinstance(obj, dict) and isinstance(obj.get("merges"), list) else []:
+            nums = g.get("from") if isinstance(g, dict) else None
+            if not (isinstance(nums, list) and len(nums) >= 2 and all(isinstance(x, int) for x in nums)):
+                continue
+            nums = sorted(nums)
+            text = " ".join(str(g.get("beat") or "").split())
+            if (nums != list(range(nums[0], nums[0] + len(nums))) or nums[0] < 1 or nums[-1] > got or used & set(nums) or not text
+                    or removed + len(nums) - 1 > excess):
+                continue
+            used |= set(nums)
+            removed += len(nums) - 1
+            groups.append((nums[0] - 1, nums[-1] - 1, text, norm_state(g.get("end_state")) if g.get("end_state") else states[nums[-1] - 1]))
+        if not groups:
+            return beats, states
+        for first, last, text, state in sorted(groups, reverse=True):
+            beats[first:last + 1] = [text]
+            states[first:last + 1] = [state]
+        return beats, states
+
+    def _split_beat(self, beat: str, state: dict) -> list:
+        """One beat as two ``(text, end_state)`` pairs: by the model, else by code."""
+        values = dict(self._lang(), beat=beat, end_state=state_text(state) or "(not given)")
+        messages = [{"role": "user", "content": fill(load_prompt("split_beat"), **values)}]
         for _ in range(2):
-            reply = self._ask("split_beat", messages, answer=600, temperature=0.4)
-            obj = parse_json_object(reply.text) if reply.finish != "length" else None
-            parts = [" ".join(p.split()) for p in (obj or {}).get("beats", []) if isinstance(p, str) and p.strip()]
-            if len(parts) == 2:
-                return parts
-        return code_split(beat)
+            reply = self._ask("split_beat", messages, answer=700, temperature=0.4)
+            parsed, _why = parse_outline_reply(reply.text, reply.finish)
+            if parsed and len(parsed["beats"]) == 2:
+                ends = parsed["end_states"]
+                ends[1] = ends[1] if state_text(ends[1]) else state
+                return list(zip(parsed["beats"], ends))
+        first, second = code_split(beat)
+        return [(first, dict(EMPTY_STATE, present=[])), (second, state)]
 
     # ---- stage 2: the beats
 
@@ -560,18 +1040,9 @@ class StoryEngine:
 
     def write_all(self, out: dict) -> list:
         n = self.clips
-        i = 0
-        while i < n:
-            if self._have(i) is not None:
-                i += 1
-                continue
-            end = min(n, i + self.chunk_beats)
-            for k in range(i, end):
-                if self._have(k) is not None:
-                    end = k
-                    break
-            self._write_range(out, i, end)
-            i = end
+        self.chunks = split_chunks(n, lambda k: self._beat_file(k).is_file(), self.chunk_beats)
+        self.say(f"writing {len(self.chunks)} chunk(s) on {min(self.concurrency, max(1, len(self.chunks)))} at a time")
+        self._map(lambda c: self._write_range(out, c[0], c[1]), self.chunks)
         beats = [self._have(k) for k in range(n)]
         if any(b is None for b in beats):
             raise StoryWriterError("some beats are still missing after writing", work_dir=str(self.work))
@@ -579,14 +1050,21 @@ class StoryEngine:
 
     def _write_messages(self, out: dict, start: int, end: int, *, extra: str = "") -> list:
         count = end - start
-        previous = ""
-        before = [self._have(k) for k in range(max(0, start - 2), start)]
-        before = [b for b in before if b]
-        if before:
-            previous = ("\nTHE LAST PARAGRAPHS ALREADY WRITTEN (the story continues from the end of the last one; do not repeat them, keep their names, places, clothes and "
-                        "physical state):\n" + "\n\n".join(before) + "\n")
+        states = out.get("end_states") or []
+        beats = out["beats"]
+        if start == 0:
+            opening = "OPENING STATE: beat 1 opens the story; nothing came before it."
+        else:
+            prev = state_text(states[start - 1]) if start - 1 < len(states) else ""
+            opening = (f"OPENING STATE OF BEAT {start + 1} (the world as beat {start} left it; your first beat begins in it unless its outline line names a cut): "
+                       + (prev or f"not given, take it from the outline line of beat {start}") + ".")
+        neighbours = []
+        if start > 0:
+            neighbours.append(f"THE BEAT BEFORE YOURS (beat {start}, written by someone else at the same time; do not repeat it): {beats[start - 1]}")
+        if end < len(beats):
+            neighbours.append(f"THE BEAT AFTER YOURS (beat {end + 1}, written by someone else; do not run into it, end beat {end} in the state its \"ends:\" line gives): {beats[end]}")
         values = dict(self._lang(), brief=self.brief, cast=format_cast(out["cast"]), locations=format_locations(out["locations"]),
-                      outline=format_outline(out["beats"], start + 1, end), previous=previous, first=start + 1, last=end, count=count,
+                      outline=format_outline(beats, states, start + 1, end), opening=opening, neighbours="\n".join(neighbours), first=start + 1, last=end, count=count,
                       plural="" if count == 1 else "s", beat_words=beat_words(self.seconds, self.language), max_words=max_speech_words(self.seconds), extra=extra)
         return [{"role": "user", "content": fill(load_prompt("write"), **values)}]
 
@@ -597,6 +1075,7 @@ class StoryEngine:
             terse = attempt > 0
             extra = ""
             if terse:
+                self._bump("write")
                 words = max(40, int(beat_words(self.seconds, self.language) * 0.7))
                 extra = (f"- Your earlier answer was cut off or had the wrong number of beats. Write exactly {count} beat{'' if count == 1 else 's'}, "
                          f"each at most {words} words, and finish with the === END === line.")
@@ -609,17 +1088,20 @@ class StoryEngine:
                 self._store(start + k, beat)
                 self._check_beat(start + k, beat)
             if beats:
-                self.progress(1 + start + len(beats), self.total_steps)
+                with self._lock:
+                    self.progress(1 + sum(1 for k in range(self.clips) if self._beat_file(k).is_file()), self.total_steps)
             start += len(beats)
             if start >= end:
                 return
             self.say(f"beats {start + 1}-{end}: {'cut' if reply.finish == 'length' else 'wrong count'}, retrying")
         count = end - start
         if count > 1:
+            self._bump("write")
             mid = start + count // 2
             self._write_range(out, start, mid)
             self._write_range(out, mid, end)
             return
+        self._bump("write")
         messages = self._write_messages(out, start, end, extra="- Write ONE beat of at most 70 words and finish with the === END === line.")
         reply = self._ask("write_last", messages, answer=answer_tokens(1, self.seconds, self.language), budget=1024, scale=2.5)
         beats, _ = parse_beats(reply.text, 1, truncated=reply.finish == "length")
@@ -627,7 +1109,8 @@ class StoryEngine:
             raise StoryWriterError(f"beat {start + 1} could not be written in three attempts (replies are kept in {self.work / 'calls'}); run again to resume", work_dir=str(self.work))
         self._store(start, beats[0])
         self._check_beat(start, beats[0])
-        self.progress(2 + start, self.total_steps)
+        with self._lock:
+            self.progress(1 + sum(1 for k in range(self.clips) if self._beat_file(k).is_file()), self.total_steps)
 
     def _check_beat(self, i: int, beat: str) -> None:
         words = quoted_words(beat)
@@ -635,13 +1118,36 @@ class StoryEngine:
         if words > cap:
             self.warnings.append(f"beat {i + 1}: {words} spoken words, over the {int(cap)} that fit {self.seconds} s")
 
+    def check_seams(self, out: dict, beats: list) -> list:
+        """Run the cheap seam checks over the finished story; findings are kept in ``seam_issues`` and reported as warnings, never retried."""
+        states = out.get("end_states") or []
+        found = []
+        for i in range(1, len(beats)):
+            prev = states[i - 1] if i - 1 < len(states) else {}
+            own = states[i] if i < len(states) else {}
+            found += seam_issues(i, beats[i], out["beats"][i], prev, own, out["cast"], out["locations"])
+        for name in unknown_names(beats, out["cast"], out["locations"], self.language):
+            found.append(f"the name '{name}' appears in more than one beat but is in neither the cast sheet nor the locations")
+        self.seam_issues = found
+        self.warnings.extend("seam: " + f for f in found)
+        return found
+
     # ---- the whole
 
     def run(self) -> dict:
         outline = self.outline()
         beats = self.write_all(outline)
+        self.check_seams(outline, beats)
         story = "\n\n".join(beats)
         return {"story": story, "beats": beats, "outline": outline}
+
+
+def plausible_count(got: int, n: int) -> bool:
+    return n / 2 <= got <= n * 2
+
+
+def small_excess(n: int) -> int:
+    return max(2, n // 10)
 
 
 def code_split(beat: str) -> list:
@@ -693,7 +1199,8 @@ def write_outputs(root: Path, engine: StoryEngine, result: dict, *, model: str, 
         "story_chars": len(result["story"]), "story_words": len(result["story"].split()), "e4_estimated_clips": int(math.ceil(e4_weight(result["story"]))),
         "spoken_words_per_beat": [quoted_words(b) for b in beats], "calls": len(calls),
         "tokens": {"prompt": sum(c["prompt_tokens"] for c in calls), "completion": sum(c["completion_tokens"] for c in calls), "thinking": sum(c["thinking_tokens"] for c in calls)},
-        "stop_reasons": stops, "warnings": engine.warnings, "wall_seconds": round(wall, 1), "work_dir": str(engine.work),
+        "stop_reasons": stops, "warnings": engine.warnings, "seam_issues": engine.seam_issues, "retries": engine.retries, "outline_mode": engine.outline_mode,
+        "concurrency": engine.concurrency, "chunk_beats": engine.chunk_beats, "chunks": engine.chunks, "wall_seconds": round(wall, 1), "work_dir": str(engine.work),
         "call_log": calls, "written_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     json_path = root / f"{stem}.json"
@@ -702,7 +1209,7 @@ def write_outputs(root: Path, engine: StoryEngine, result: dict, *, model: str, 
 
 
 def write_story(chat, *, brief: str, clips: int, seconds: int = DEFAULT_SECONDS, language: str = DEFAULT_LANGUAGE, seed: int = 0, model: str = "model", style: str = "",
-                budget: int = THINKING_BUDGET, slot_ctx: int = 65536, out_dir=None, progress=None, say=None, chunk_beats: int = CHUNK_BEATS) -> dict:
+                budget: int = THINKING_BUDGET, slot_ctx: int = 65536, out_dir=None, progress=None, say=None, chunk_beats: int | None = None, concurrency: int = DEFAULT_CONCURRENCY, two_level_min: int = TWO_LEVEL_MIN) -> dict:
     """The whole job with an injected ``chat``: validate, resume or start, write, save. Returns ``{story, story_path, json_path, sidecar}``."""
     brief = str(brief or "").strip()
     if not brief:
@@ -714,7 +1221,7 @@ def write_story(chat, *, brief: str, clips: int, seconds: int = DEFAULT_SECONDS,
     work = root / "_work" / job_hash(brief, clips, seconds, language, seed, model, budget)
     started = time.time()
     engine = StoryEngine(chat, work, brief=brief, clips=clips, seconds=seconds, language=language, slot_ctx=slot_ctx, budget=budget, chunk_beats=chunk_beats,
-                         progress=progress, say=say)
+                         concurrency=concurrency, two_level_min=two_level_min, progress=progress, say=say)
     result = engine.run()
     story_path, json_path, side = write_outputs(root, engine, result, model=model, seed=seed, wall=time.time() - started, style=style)
     (work / ".done").write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
@@ -775,6 +1282,8 @@ class H3StoryWriter:
             "seed": ("INT", {"default": 42, "min": 0, "max": 2147483647, "control_after_generate": True, "tooltip": "Part of the key under which a half-finished run is resumed; change it to write a different version of the same brief. Leave the control on fixed: ComfyUI then reuses the story until an input changes."}),
             "writer_model": (prompt_rewriter.writer_choices(), {"tooltip": "The rewriter pack's model list, the same as the Extender's rewrite_writer_model: a vision model on ninfer-serve or llama-server, or Strata. The server is started for this node and closed after it, so the render that follows has the GPU."}),
             "thinking_budget": (prompt_rewriter.REASONING_BUDGETS, {"default": "4096", "tooltip": "Thinking tokens at most per call, on top of the answer."}),
+        }, "optional": {
+            "concurrency": ("INT", {"default": DEFAULT_CONCURRENCY, "min": 1, "max": MAX_CONCURRENCY, "tooltip": "Requests sent to the model server at the same time: the chunks of beats are written in parallel (each from the outline and its neighbours' end states, not from each other's prose), and so are the acts of a long outline. Set it to the number of slots the server was started with (6 to 8 on ninfer); 1 writes one chunk after another."}),
         }}
 
     RETURN_TYPES = ("STRING",)
@@ -787,7 +1296,7 @@ class H3StoryWriter:
     def VALIDATE_INPUTS(cls, thinking_budget=None):
         return True
 
-    def write(self, brief, clips, seconds, language, seed, writer_model, thinking_budget="4096"):
+    def write(self, brief, clips, seconds, language, seed, writer_model, thinking_budget="4096", concurrency=DEFAULT_CONCURRENCY):
         budget = int(prompt_rewriter.reasoning_budget(thinking_budget))
         slot_ctx = e4_engine.slot_ctx()
         bar = None
@@ -810,7 +1319,7 @@ class H3StoryWriter:
         with open_model(str(writer_model), budget, slot_ctx=slot_ctx, say=say) as (endpoint, runner):
             chat = ServerChat(endpoint, interrupted=getattr(runner, "interrupted", None))
             result = write_story(chat, brief=brief, clips=clips, seconds=seconds, language=language, seed=seed, model=endpoint["model"], style=endpoint["style"],
-                                 budget=budget, slot_ctx=slot_ctx, progress=progress, say=say)
+                                 budget=budget, slot_ctx=slot_ctx, progress=progress, say=say, concurrency=concurrency)
         side = result["sidecar"]
         print(f"[H3 Story Writer] {side['beats_written']} beats, {side['story_words']} words, ~{side['e4_estimated_clips']} clips by E4's size estimate, "
               f"{side['wall_seconds']:.0f} s -> {result['story_path']}", flush=True)
