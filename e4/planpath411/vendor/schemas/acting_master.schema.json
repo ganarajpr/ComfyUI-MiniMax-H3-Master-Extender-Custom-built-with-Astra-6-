@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "characterId",
+    "masterProfile",
+    "voicePrompt",
+    "objectiveEngine",
+    "physicalBaseline",
+    "eyeLife",
+    "signatureTics",
+    "mask",
+    "crackTrigger"
+  ],
+  "properties": {
+    "characterId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact story-bible character id for this profile."
+    },
+    "masterProfile": {
+      "type": "string",
+      "minLength": 750,
+      "maxLength": 1800,
+      "description": "One flowing 150–220 word paragraph of observable, wardrobe-independent behavior. Aim for 150-220 words; the character budget above is what enforces it."
+    },
+    "voicePrompt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Fixed one- or two-sentence vocal identity, reused verbatim whenever this character speaks."
+    },
+    "objectiveEngine": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The recurring objective-driven behavior engine, expressed in filmable terms."
+    },
+    "physicalBaseline": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Observable center of gravity, tempo, openness, breath and posture baseline."
+    },
+    "eyeLife": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Continuous gaze targeting, micro-saccades, blink quality, catchlights and eyes-leading-thought behavior."
+    },
+    "signatureTics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tic",
+          "trigger"
+        ],
+        "properties": {
+          "tic": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A visible recurring physical habit."
+          },
+          "trigger": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The concrete situation that triggers the tic."
+          }
+        }
+      }
+    },
+    "mask": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The character's observable social mask."
+    },
+    "crackTrigger": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The exact observable condition under which the mask cracks."
+    },
+    "softeningTarget": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional one person, animal or object that visibly softens the character."
+    }
+  }
+}

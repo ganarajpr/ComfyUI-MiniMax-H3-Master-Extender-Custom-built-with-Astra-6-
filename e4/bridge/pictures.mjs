@@ -5,8 +5,11 @@
 import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL, cutNote } from '../planpath410/lib.mjs';
-import { outputCap } from '../planpath410/transport.mjs';
+
+// The engine in use (E4_PLANPATH, set by run.mjs; planpath410 when unset) provides the model client; the picture binding is the same for every engine.
+const PLANPATH = process.env.E4_PLANPATH || 'planpath410';
+const { chatWith, parseJsonLoose, wr, rj, API_STYLE, MODEL, cutNote } = await import(`../${PLANPATH}/lib.mjs`);
+const { outputCap } = await import(`../${PLANPATH}/transport.mjs`);
 
 // Its own call kind, not 'decision': the decision calls think off (E4.7 onward), but this one looks at pictures, and on the lane thinking off missed a character
 // (Pramod) that thinking 2048 and 4096 both found. E4_LLM_BUDGET_PICTURE_MAP sets its budget (2048 here).

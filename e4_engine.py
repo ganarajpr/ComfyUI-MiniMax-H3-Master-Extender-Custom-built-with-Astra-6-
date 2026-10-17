@@ -1,4 +1,4 @@
-"""story_engine=e4.10: the E4.10 story-to-film pipeline as the Master Extender's story planner and clip writer.
+"""story_engine=e4.10 / e4.11: the E4.10 or E4.11.1 story-to-film pipeline as the Master Extender's story planner and clip writer.
 
 E4 is plain Node (no npm package) vendored under ``e4/`` (see ``e4/MANIFEST.json``, ``e4/verify-frozen.mjs``). Story mode runs it
 as ONE subprocess per film (``e4/bridge/run.mjs``) against the SAME model server the rewriter already opened, and puts E4's final prompts
@@ -27,18 +27,36 @@ from pathlib import Path
 
 _LOG = logging.getLogger("minimax_h3_master_extender.e4")
 
-ENGINES = ["builder", "e4.10"]
-ENGINE_ID = "e4.10"
+ENGINES = ["builder", "e4.10", "e4.11"]
+# The vendored engines, side by side under e4/ (each in its own planpath folder; the shared folders hybrid3, templater, staging and audit are byte-identical in both tags).
+ENGINE_INFO = {
+    "e4.10": {"name": "E4.10", "tag": "e4.10-frozen", "dir": "planpath410"},
+    "e4.11": {"name": "E4.11.1", "tag": "e4.11.1-frozen", "dir": "planpath411"},
+}
+E4_ENGINES = tuple(ENGINE_INFO)
+ENGINE_ID = "e4.10"   # the engine an old saved value stands for, and the default of plan_film
 LEGACY_ENGINES = {"e4": ENGINE_ID, "e4.8": ENGINE_ID}   # the values a workflow saved with the E4.6/E4.7 build ("e4") or the E4.8 build ("e4.8") carries
 SCORES = ["off", "on"]
 DECISION_THINKING = ["off", "1024", "2048", "4096"]
 DECISION_BUDGETS = DECISION_THINKING
-ENGINE_NAME = "E4.10"
-ENGINE_TAG = "e4.10-frozen"
+ENGINE_NAME = ENGINE_INFO[ENGINE_ID]["name"]
+ENGINE_TAG = ENGINE_INFO[ENGINE_ID]["tag"]
+
+
+def is_e4(engine) -> bool:
+    return engine in ENGINE_INFO
+
+
+def engine_name(engine) -> str:
+    return ENGINE_INFO.get(engine, ENGINE_INFO[ENGINE_ID])["name"]
+
+
+def engine_tag(engine) -> str:
+    return ENGINE_INFO.get(engine, ENGINE_INFO[ENGINE_ID])["tag"]
 
 
 def normalize_engine(value) -> str:
-    """A story_engine value from a widget or a saved workflow: builder, e4.10, or an old name (e4 and e4.8 are e4.10 now); anything else is builder."""
+    """A story_engine value from a widget or a saved workflow: builder, e4.10, e4.11, or an old name (e4 and e4.8 are e4.10 now); anything else is builder."""
     value = str(value or "builder").strip()
     value = LEGACY_ENGINES.get(value, value)
     return value if value in ENGINES else "builder"
@@ -51,7 +69,7 @@ BUDGET_MESSAGE = "Time to stop thinking. Give the final answer now."
 SLOT_CTX = 65536            # context of one server slot an E4 call may use. 32768 was too small for a long non-Latin story: a 4.3k-token planner prompt got 12288 tokens for thinking AND the plan, and the plan (about 29k characters of Devanagari JSON) was cut
 SLOT_CTX_ENV = "MINIMAX_H3_E4_SLOT_CTX"
 MAX_TOKENS_ENV = "MINIMAX_H3_E4_MAX_TOKENS"   # optional hard ceiling on one reply, over the per-call cap the node computes from the prompt
-MAX_WORKERS = 4
+MAX_WORKERS = 4             # model requests in flight at once, and the slots of a server this node starts: 4 slots of SLOT_CTX fit the card with the model (the gateway lane runs 4 at 196608)
 NODE_ENV = "MINIMAX_H3_E4_NODE"
 NODE_FILE = "e4_node.txt"
 MIN_NODE_MAJOR = 18         # global fetch, AbortSignal.timeout and top-level await
@@ -90,7 +108,7 @@ def slot_ctx() -> int:
 
 
 def max_tokens() -> int:
-    """The most one reply may ever use: the slot minus the margin. The node (e4/planpath410/transport.mjs ``outputRoom``) lowers it per request to the slot minus
+    """The most one reply may ever use: the slot minus the margin. The node (``outputRoom`` in the engine's transport.mjs) lowers it per request to the slot minus
     the estimated prompt minus the margin, so a 4.3k-token planner prompt gets about 60k of a 65536 slot, not a fixed share."""
     return max(4096, slot_ctx() - 1024)
 
@@ -179,7 +197,7 @@ def find_node(user_dir: Path | None = None) -> str:
             tried.append(f"{where}: '{path}' is Node {major}, E4 needs {MIN_NODE_MAJOR} or newer")
             continue
         return path
-    raise E4SetupError("story_engine=e4.10 needs Node.js " + str(MIN_NODE_MAJOR) + "+ (no package install, just the executable). Set "
+    raise E4SetupError("story_engine=e4.10 / e4.11 needs Node.js " + str(MIN_NODE_MAJOR) + "+ (no package install, just the executable). Set "
                   + NODE_ENV + " or write its path on the first line of " + (str(folder / NODE_FILE) if folder else NODE_FILE)
                   + (". Tried: " + "; ".join(tried) if tried else ". Nothing found on PATH."))
 
@@ -214,8 +232,8 @@ def runs_dir(user_dir: Path | None = None) -> Path:
     return base
 
 
-def job_hash(story: str, language: str, score: str, labels, pictures_sha: list[str], endpoint: dict) -> str:
-    payload = json.dumps([story.strip(), language, score, list(labels), pictures_sha, endpoint["model"], endpoint["style"], ENGINE_TAG], ensure_ascii=False)
+def job_hash(story: str, language: str, score: str, labels, pictures_sha: list[str], endpoint: dict, engine: str = ENGINE_ID) -> str:
+    payload = json.dumps([story.strip(), language, score, list(labels), pictures_sha, endpoint["model"], endpoint["style"], engine_tag(engine)], ensure_ascii=False)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
 
 
@@ -238,10 +256,13 @@ def decode_picture(data_uri: str) -> bytes:
     return base64.b64decode(data)
 
 
-def build_env(endpoint: dict, *, decision: int, score: str, budget_message: str = BUDGET_MESSAGE) -> dict:
-    """E4's config layer, as environment variables. ``decision`` 0 = the per-clip decision calls think off (E4_DECISION_THINKING=off), else their budget."""
+def build_env(endpoint: dict, *, decision: int, score: str, budget_message: str = BUDGET_MESSAGE, engine: str = ENGINE_ID, concurrency: int = 1) -> dict:
+    """E4's config layer, as environment variables. ``decision`` 0 = the per-clip decision calls think off (E4_DECISION_THINKING=off), else their budget.
+
+    ``concurrency`` is the number of requests E4.11 may have in flight (its E4_CONCURRENCY, which defaults to 6 and would otherwise overrun a 3 or 4 slot server);
+    E4.10 ignores it and keeps its own ``workers``."""
     env = dict(os.environ)
-    for key in [k for k in env if k.startswith("E4_LLM_") or k == "E4_DECISION_THINKING"]:
+    for key in [k for k in env if k.startswith("E4_LLM_") or k in ("E4_DECISION_THINKING", "E4_CONCURRENCY", "E4_PLANPATH")]:
         del env[key]
     env.update({
         "E4_LLM_URL": endpoint["url"], "E4_LLM_MODEL": endpoint["model"] or "local", "E4_LLM_API_STYLE": endpoint["style"],
@@ -250,6 +271,7 @@ def build_env(endpoint: dict, *, decision: int, score: str, budget_message: str 
         "E4_DECISION_THINKING": str(decision) if decision else "off",
         "E4_LLM_SLOT_CTX": str(slot_ctx()), "E4_LLM_BUDGET_MESSAGE": budget_message or BUDGET_MESSAGE,
         "E4_SCORE": score, "NODE_NO_WARNINGS": "1",
+        "E4_PLANPATH": ENGINE_INFO.get(engine, ENGINE_INFO[ENGINE_ID])["dir"], "E4_CONCURRENCY": str(max(1, min(MAX_WORKERS, int(concurrency)))),
     })
     if hard_max_tokens():
         env["E4_LLM_MAX_TOKENS"] = str(hard_max_tokens())
@@ -317,12 +339,14 @@ def plan_clip_count(run: Path) -> int | None:
 
 
 def plan_film(*, story: str, language: str, score: str, labels: list[int], pictures: dict[int, str], notes: dict[int, str], sees: bool,
-              endpoint: dict, decision: int, workers: int, user_dir: Path | None = None, say=None, interrupted=None) -> dict:
+              endpoint: dict, decision: int, workers: int, user_dir: Path | None = None, say=None, interrupted=None, engine: str = ENGINE_ID) -> dict:
     """Run E4 on one story and return its ``clips.json`` (see ``e4/bridge/export.mjs``).
 
     ``labels`` are the extender's Picture numbers (slot + 1); ``pictures`` maps a number to the PNG data URI the extender sends to its writer
     (only when the writer sees). Every request and reply is stored under the run directory (``<user>/minimax_h3_master/e4/<hash>/story/``).
     """
+    if not is_e4(engine):
+        raise E4SetupError(f"story_engine {engine!r} is not an E4 engine ({', '.join(E4_ENGINES)})")
     say = say or (lambda message, fraction: None)
     node = find_node(user_dir)
     if not (e4_dir() / "bridge" / "run.mjs").is_file():
@@ -330,7 +354,7 @@ def plan_film(*, story: str, language: str, score: str, labels: list[int], pictu
     language = (language or DEFAULT_LANGUAGE).strip() or DEFAULT_LANGUAGE
     score = "on" if score == "on" else "off"
     shas = [hashlib.sha1(pictures[n].encode("ascii")).hexdigest()[:12] if n in pictures else "" for n in labels]
-    digest = job_hash(story, language, score, labels, shas, endpoint)
+    digest = job_hash(story, language, score, labels, shas, endpoint, engine)
     run, resume = pick_run_dir(runs_dir(user_dir), digest)
     pdir = run / "pictures"
     pdir.mkdir(exist_ok=True)
@@ -342,15 +366,15 @@ def plan_film(*, story: str, language: str, score: str, labels: list[int], pictu
             files.append({"label": n, "file": str(path)})
         else:
             files.append({"label": n, "file": None})
-    job = {"name": "story", "story": story, "language": language, "score": score, "workers": max(1, min(MAX_WORKERS, int(workers))), "resume": resume,
+    job = {"name": "story", "engine": engine, "version": engine_tag(engine), "story": story, "language": language, "score": score, "workers": max(1, min(MAX_WORKERS, int(workers))), "resume": resume,
            "out": str(run), "vision": bool(sees), "pictures": files, "notes": {str(k): v for k, v in notes.items()},
            "decision_thinking": decision_label(decision), "endpoint": {"style": endpoint["style"], "model": endpoint["model"]}}
     (run / "job.json").write_text(json.dumps(job, indent=1, ensure_ascii=False), encoding="utf-8")
     command = [node, str(e4_dir() / "bridge" / "run.mjs"), str(run / "job.json")]
     _LOG.info("E4: %s (resume=%s) -> %s", " ".join(command), resume, run)
-    say(f"E4: starting {ENGINE_NAME} on the story ({len(labels)} picture(s), {'resuming' if resume else 'new run'})", 0.0)
+    say(f"E4: starting {engine_name(engine)} on the story ({len(labels)} picture(s), {'resuming' if resume else 'new run'})", 0.0)
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-    proc = subprocess.Popen(command, cwd=str(e4_dir()), env=build_env(endpoint, decision=decision, score=score), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    proc = subprocess.Popen(command, cwd=str(e4_dir()), env=build_env(endpoint, decision=decision, score=score, engine=engine, concurrency=job["workers"]), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", creationflags=flags)
     stderr: deque = deque(maxlen=60)
     stdout: deque = deque(maxlen=60)
@@ -394,14 +418,14 @@ def plan_film(*, story: str, language: str, score: str, labels: list[int], pictu
     if proc.returncode != 0:
         last = [line for line in list(stderr)[-12:] if line.strip()] or list(stdout)[-6:]
         cause = next((line.strip() for line in reversed(last) if re.search(r"Error\b|failed|cut", line)), (last[-1].strip() if last else ""))
-        raise E4Error(f"{ENGINE_NAME} failed (exit {proc.returncode}); the run is kept in {run} and resumes when the same story is run again:\n" + "\n".join(last),
+        raise E4Error(f"{engine_name(engine)} failed (exit {proc.returncode}); the run is kept in {run} and resumes when the same story is run again:\n" + "\n".join(last),
                       run=str(run), cause=cause[:400])
     try:
         result = json.loads((run / "clips.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        raise E4Error(f"{ENGINE_NAME} finished but wrote no readable clips.json in {run}: {error}") from error
+        raise E4Error(f"{engine_name(engine)} finished but wrote no readable clips.json in {run}: {error}") from error
     if result.get("engine") != "e4" or not result.get("clips"):
-        raise E4Error(f"{ENGINE_NAME} produced no clips ({run})")
+        raise E4Error(f"{engine_name(engine)} produced no clips ({run})")
     (run / ".done").write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
     result["run_dir"] = str(run)
     return result
