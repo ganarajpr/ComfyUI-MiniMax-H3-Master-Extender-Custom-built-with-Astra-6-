@@ -5,6 +5,7 @@ import http from 'node:http';
 import { mkdtempSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { splitStory, estimateClips, weightOf, mergePlans, mergeBible, writerContext, refContext, unclosed, SINGLE_MAX_CLIPS } from '../scale.mjs';
@@ -255,7 +256,7 @@ test('the bible of a film planned in parts: a base line that names what a trace 
     try {
       const code = `import { bibleFilm } from ${JSON.stringify(new URL('../scale.mjs', import.meta.url).href)};
         import { readFileSync } from 'node:fs';
-        const fx = JSON.parse(readFileSync(${JSON.stringify(new URL('../../../tests/fixtures/e4_bible_fixture.json', import.meta.url).pathname)}, 'utf8'));
+        const fx = JSON.parse(readFileSync(${JSON.stringify(fileURLToPath(new URL('../../../tests/fixtures/e4_bible_fixture.json', import.meta.url)))}, 'utf8'));
         const plan = { ...fx.plan, parts: [{ first: 1, last: fx.plan.clips.length, start: 0, end: 10 }] };
         const r = await bibleFilm({ name: 's', story: 'a story of a boat', plan, planMeta: { rawAsks: fx.rawAsks }, outRoot: ${JSON.stringify(out)}, dir: ${JSON.stringify(out)}, score: 'off' });
         console.log(JSON.stringify({ issues: r.issues, attempts: r.attempts.map((a) => [a.attempt, a.issues.length, a.issues.every((x) => /^BASE WORDING:/.test(x))]) }));`;
