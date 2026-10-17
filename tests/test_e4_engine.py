@@ -155,7 +155,11 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(want, hashlib.sha256((out / "drama_two_hander" / rel).read_bytes()).hexdigest(), f"{rel} differs from the stored run")
 
     def test_engine_names(self):
-        self.assertEqual(["builder", "e4.10"], e4_engine.ENGINES)
+        self.assertEqual(["builder", "e4.10", "e4.11"], e4_engine.ENGINES)
+        self.assertEqual("e4.11", e4_engine.normalize_engine("e4.11"))
+        self.assertEqual(("E4.11.1", "e4.11.1-frozen"), (e4_engine.engine_name("e4.11"), e4_engine.engine_tag("e4.11")))
+        self.assertEqual(("E4.10", "e4.10-frozen"), (e4_engine.engine_name("e4.10"), e4_engine.engine_tag("e4.10")))
+        self.assertTrue(e4_engine.is_e4("e4.10") and e4_engine.is_e4("e4.11") and not e4_engine.is_e4("builder"))
         self.assertEqual("e4.10", e4_engine.normalize_engine("e4"), "a workflow saved with the E4.6/E4.7 build says e4")
         self.assertEqual("e4.10", e4_engine.normalize_engine("e4.8"), "a workflow saved with the E4.8 build says e4.8")
         self.assertEqual("e4.10", e4_engine.normalize_engine("e4.10"))
@@ -424,6 +428,42 @@ class EngineTests(unittest.TestCase):
         self.assertEqual([], json.loads(bible_file.read_text(encoding="utf-8"))["bibleMeta"]["issues"])
         self.assertEqual(hashlib.sha256(good).hexdigest(), hashlib.sha256(bible_file.read_bytes()).hexdigest(), "and it is the stored run's bible again")
 
+    def test_e411_a_cut_planner_reply_is_resent_larger_asked_for_shorter_values_and_falls_back(self):
+        """The same cut-reply handling on the E4.11.1 engine: its planner prompt is E4.11's (the ledger bookkeeping rule), the cut reply is resent with a larger cap, the retry asks for shorter field
+        values, and when the plan cannot be had the node does not raise but plans with the builder and says so."""
+        user = Path(tempfile.mkdtemp(dir=self.user))
+        with e4_mock_llm.MockLLM(REPLAY, cut_all=True) as llm:
+            rec, notes, done = stub_pack.run_rewrite(ROOT, settings_for(self.story, auto_clips=2, story_engine="e4.11"), builder_scenario.clips_empty(1), refs=stub_pack.make_pictures((0, 1)),
+                                                    writer_suffix=".ninfer", server_base=llm.url, user_dir=user)
+        planner = [r["body"] for r in llm.requests]
+        self.assertGreaterEqual(len(planner), 4, "two planner attempts, each resent once with a larger cap")
+        self.assertIn("LEDGER BOOKKEEPING", json.dumps(planner[0]["messages"]), "the planner prompt is E4.11's")
+        caps = [b["max_tokens"] for b in planner]
+        self.assertGreater(max(caps), min(caps), "a cut reply is not resent with the same cap")
+        self.assertIn("cut off at the output limit", json.dumps(planner[-1]["messages"]), "the retry says the reply was cut and asks for shorter field values")
+        warnings = [m for _s, m, _p in rec.progress if m.startswith("WARNING")]
+        self.assertTrue(warnings and "reply cut at max_tokens" in warnings[0] and str(user) in warnings[0], warnings)
+        self.assertTrue(any(n.startswith("WARNING: story_engine=e4.11 FAILED") for n in notes))
+        self.assertTrue(rec.chats, "the builder planner ran instead")
+        self.assertTrue(any(f.startswith("story_engine=e4.11: planning and writing the film with E4.11.1") for _s, f, _p in rec.progress))
+
+    def test_e411_loads_and_asks_its_own_planner_first_with_the_bridge_pointed_at_planpath411(self):
+        """No recording of an E4.11.1 run can be replayed (its decision calls overwrite their own request files), so this is the load test: the job names the engine, every module of
+        planpath411 and its patches import, and the first model request is E4.11's planner prompt, sent through the job's own limiter."""
+        out = Path(tempfile.mkdtemp(dir=self.user))
+        job = {"name": "story", "engine": "e4.11", "version": "e4.11.1-frozen", "story": self.story, "language": "English", "score": "off", "workers": 2, "resume": False, "out": str(out),
+               "vision": False, "pictures": [], "notes": {}}
+        (out / "job.json").write_text(json.dumps(job), encoding="utf-8")
+        with e4_mock_llm.MockLLM({}) as llm:
+            env = e4_engine.build_env({"url": llm.url, "model": "mock", "style": "ninfer-messages"}, decision=0, score="off", engine="e4.11", concurrency=2)
+            proc = subprocess.run([NODE, str(ROOT / "e4" / "bridge" / "run.mjs"), str(out / "job.json")], env=env, capture_output=True, text=True, cwd=str(ROOT / "e4"))
+        self.assertNotEqual(0, proc.returncode, "the mock has no answer, so the run fails at the planner")
+        self.assertNotIn("Cannot find module", proc.stderr)
+        self.assertNotIn("ERR_MODULE_NOT_FOUND", proc.stderr)
+        self.assertTrue(llm.requests, "the planner was asked")
+        self.assertIn("LEDGER BOOKKEEPING", json.dumps(llm.requests[0]["body"]["messages"]))
+        self.assertEqual("planpath411", env["E4_PLANPATH"])
+
     def test_request_bodies_differ_from_the_old_fixed_cap_only_in_max_tokens(self):
         """The same story through the same replayed server, once with the old fixed cap (E4_LLM_MAX_TOKENS only) and once with the slot context: every request body is
         equal except max_tokens, and every stored output is byte-identical."""
@@ -597,7 +637,7 @@ class FrozenCopy(unittest.TestCase):
         home = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, home, True)
         env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
-        for entry in ("planpath410/film.mjs", "bridge/run.mjs"):
+        for entry in ("planpath410/film.mjs", "planpath411/film.mjs", "bridge/run.mjs"):
             if entry == "bridge/run.mjs":
                 continue
             r = subprocess.run([NODE, "--input-type=module", "-e", f"await import('{(ROOT / 'e4' / entry).as_uri()}'); console.log('ok')"], capture_output=True, text=True, env=env)
@@ -605,7 +645,7 @@ class FrozenCopy(unittest.TestCase):
         self.assertFalse(list((ROOT / "e4").rglob("package-lock.json")) or list((ROOT / "e4").rglob("node_modules")))
 
     def test_bridge_unit_tests(self):
-        r = subprocess.run([NODE, "--test", str(ROOT / "e4" / "bridge" / "test" / "bridge.test.mjs")], capture_output=True, text=True, cwd=str(ROOT / "e4"))
+        r = subprocess.run([NODE, "--test", *sorted(str(p) for p in (ROOT / "e4" / "bridge" / "test").glob("*.test.mjs"))], capture_output=True, text=True, cwd=str(ROOT / "e4"))
         self.assertEqual(0, r.returncode, r.stdout[-2500:] + r.stderr[-1000:])
 
 
@@ -655,6 +695,25 @@ class PythonSide(unittest.TestCase):
         self.assertEqual("on", env["E4_SCORE"])
         off = e4_engine.build_env({"url": "u", "model": "m", "style": "llama-chat"}, decision=0, score="off")
         self.assertEqual("off", off["E4_DECISION_THINKING"])
+
+    def test_the_engine_reaches_the_job_the_hash_and_the_environment(self):
+        endpoint = {"url": "u", "model": "m", "style": "ninfer-messages"}
+        self.assertNotEqual(e4_engine.job_hash("s", "English", "off", [1], [""], endpoint, "e4.10"), e4_engine.job_hash("s", "English", "off", [1], [""], endpoint, "e4.11"),
+                            "a run of one engine is never resumed by the other")
+        self.assertEqual(e4_engine.job_hash("s", "English", "off", [1], [""], endpoint), e4_engine.job_hash("s", "English", "off", [1], [""], endpoint, "e4.10"))
+        env10 = e4_engine.build_env(endpoint, decision=0, score="off")
+        env11 = e4_engine.build_env(endpoint, decision=0, score="off", engine="e4.11", concurrency=3)
+        self.assertEqual(("planpath410", "planpath411"), (env10["E4_PLANPATH"], env11["E4_PLANPATH"]))
+        self.assertEqual("3", env11["E4_CONCURRENCY"], "E4.11's own default of 6 would overrun a 3-slot server")
+        self.assertEqual("4", e4_engine.build_env(endpoint, decision=0, score="off", engine="e4.11", concurrency=8)["E4_CONCURRENCY"], "never above the 4 slots a server of ours has")
+        self.assertEqual("1", e4_engine.build_env(endpoint, decision=0, score="off", engine="e4.11", concurrency=0)["E4_CONCURRENCY"])
+        os.environ["E4_CONCURRENCY"] = "8"
+        try:
+            self.assertEqual("2", e4_engine.build_env(endpoint, decision=0, score="off", engine="e4.11", concurrency=2)["E4_CONCURRENCY"], "a stale value in ComfyUI's environment does not leak in")
+        finally:
+            del os.environ["E4_CONCURRENCY"]
+        with self.assertRaises(e4_engine.E4SetupError):
+            e4_engine.plan_film(story="s", language="English", score="off", labels=[1], pictures={}, notes={}, sees=False, endpoint=endpoint, decision=0, workers=1, engine="builder")
 
     def test_env_sends_the_slot_context_and_no_fixed_reply_cap(self):
         saved = os.environ.pop(e4_engine.MAX_TOKENS_ENV, None)

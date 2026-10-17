@@ -76,7 +76,7 @@ Turn on `rewrite_mode` and each clip's text is rewritten into an H3 prompt on a 
 
 `prompts/builder.md` and `prompts/planner.md` are copies of the Studio's `DEFAULT_REWRITE_SYSTEM_PROMPT` and `CHAPTER_BREAKDOWN_TEMPLATE`; the canonical copy lives here, and the Studio has a test that fails when they drift.
 
-## Story engine: `story_engine` = `builder` | `e4.10`
+## Story engine: `story_engine` = `builder` | `e4.10` | `e4.11`
 
 Story mode (`rewrite_story` + `auto_clips`) has two engines. **`builder`** (the default) is everything described above: `planner.md` plans the story, then `builder.md` writes every clip from the reference pictures. **`e4.10`** plans the whole film and writes every clip's FINAL prompt with the E4.10 story-to-film pipeline; `builder.md` is not run for those clips.
 
@@ -86,7 +86,7 @@ Story mode (`rewrite_story` + `auto_clips`) has two engines. **`builder`** (the 
 
 | widget | values | meaning |
 | --- | --- | --- |
-| `story_engine` | `builder` (default), `e4.10` | the engine of the first plan. `e4` (a workflow saved with the E4.6/E4.7 build) and `e4.8` (the E4.8 build) are read as `e4.10` |
+| `story_engine` | `builder` (default), `e4.10`, `e4.11` | the engine of the first plan. `e4` (a workflow saved with the E4.6/E4.7 build) and `e4.8` (the E4.8 build) are read as `e4.10`. `e4.11` is E4.11.1: the same pipeline built for few repair calls (fixes in code first) and parallel requests (up to `rewrite_parallel`, at most 4, in flight at once); the first run on the box is its proof, no E4.11.1 run is replayed in the tests |
 | `e4_language` | text, default `English` | the language every spoken line is written in |
 | `e4_score` | `off` (default), `on` | `off`: `non_diegetic_music: N/A`. `on`: the film bible writes one instrumental score that every clip carries |
 | `e4_decision_budget` | `off` (default), `1024`, `2048`, `4096` | thinking of each per-clip decision call (who is on screen, staging, tactic). `off`: no thinking. Measured on 1,937 decision questions with Swift 1.5: off is 0.6 points below thinking 2048 (p = 0.48, not significant) and about 4.7 times faster (2.9 s against 13.8 s per call); 1024 is worse than both. The planner, the film bible, the writer and the repairs always think up to 4096, and so does the picture-binding call (2048: it looks at images, and with thinking off it missed a character that thinking 2048 and 4096 found) |

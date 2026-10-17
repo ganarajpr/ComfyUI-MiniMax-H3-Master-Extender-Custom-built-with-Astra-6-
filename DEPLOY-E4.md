@@ -106,3 +106,9 @@ An H3 render left about 6 GB reserved in ComfyUI, so the rewriter's in-process `
 ## E4.8 to E4.10 (2026-10-12)
 
 The widget's options are `builder` and `e4.10`. Every long-story patch (`tools/patch_frozen.py`, `e4/PATCHES.json`) was re-applied to E4.10's files and their tests pass; `scale.mjs` additionally gives the long-film bible the third attempt and a report-only base-wording finding. Restart ComfyUI only with running and pending both empty.
+
+## E4.11.1 and the parallel story writer (2026-10-17)
+
+`story_engine` = `e4.11` runs E4.11.1 (vendored in `e4/planpath411`, tag `e4.11.1-frozen`); `e4.10` and `builder` are unchanged and `builder` is still the default, so a saved workflow keeps working. No new required widget: `story_engine` is an existing combo with one more value. Deploy on disk only (`git fetch origin` + `git merge --ff-only origin/all-features`); it takes effect at the next ComfyUI restart.
+- Verify without ComfyUI: `node e4\verify-frozen.mjs` (last line: `e4 E4.10 (e4.10-frozen) + E4.11.1 (e4.11.1-frozen): 143 files checked ... 0 problem(s)`), `node --test e4\bridge\test\*.test.mjs`, `python tests\test_e4_engine.py`.
+- The H3 Story Writer starts its model server with `min(concurrency, 4)` slots (it was 1). Nothing in the gateway's `backends.json` changed; if a gateway lane already holds the card, the node's own server competes with it as before.

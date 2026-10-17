@@ -1238,9 +1238,17 @@ def _pack():
             prompt_rewriter._mod("runner"))
 
 
+def server_slots(concurrency: int) -> int:
+    """Slots of the model server this node starts: as many as the writer sends requests at once, at most ``e4_engine.MAX_WORKERS`` (4 slots of ``slot_ctx`` fit the card with the model)."""
+    return max(1, min(e4_engine.MAX_WORKERS, int(concurrency)))
+
+
 @contextlib.contextmanager
-def open_model(writer_label: str, budget: int, *, slot_ctx: int, say=None):
-    """The model server for the story writer: the rewriter pack's own session (a vision model from its list, on ninfer-serve or llama-server) or Strata, closed on exit."""
+def open_model(writer_label: str, budget: int, *, slot_ctx: int, concurrency: int = 1, say=None):
+    """The model server for the story writer: the rewriter pack's own session (a vision model from its list, on ninfer-serve or llama-server) or Strata, closed on exit.
+
+    The local server is started with ``server_slots(concurrency)`` slots and a pool of ``slot_ctx`` per slot (ninfer-serve: ``--max-concurrency`` = slots, ``--max-context`` = the pool
+    divided by the slots), so the writer's parallel requests run at the same time instead of queueing behind one slot. The endpoint says how many slots it has (``slots``)."""
     say = say or (lambda message: None)
     nodes, paths, mtmd, server_engine, runner = _pack()
     if not writer_label or writer_label.startswith("("):
@@ -1251,6 +1259,7 @@ def open_model(writer_label: str, budget: int, *, slot_ctx: int, say=None):
         raise StoryWriterError("the story writer needs a model that runs on a server (a vision model from the pack's list, or Strata); "
                                f"'{writer_label}' does not. Pick another writer_model.")
     reasoning = {"enabled": True, "budget": budget, "message": BUDGET_MESSAGE}
+    slots = server_slots(concurrency)
     try:
         with contextlib.ExitStack() as stack:
             if strata:
@@ -1259,11 +1268,13 @@ def open_model(writer_label: str, budget: int, *, slot_ctx: int, say=None):
             else:
                 say(f"loading {os.path.basename(model_path)}")
                 server = stack.enter_context(mtmd.session(model_path, mmproj_path, assets=0, attachments=1, gpu_layers=-1, n_ctx=0, device="auto", backend="auto",
-                                                         auto_download=True, progress=None, slots=1, force=True, reasoning=reasoning, pool_ctx=slot_ctx))
+                                                         auto_download=True, progress=None, slots=slots, force=True, reasoning=reasoning, pool_ctx=slot_ctx * slots))
             if server is None:
                 raise StoryWriterError(f"the model server for '{writer_label}' did not start (see the ComfyUI log: minimax_h3_rewriter.server_engine)")
             endpoint = e4_engine.endpoint_of(server, model_path=model_path, strata=strata, is_ninfer=server_engine.is_ninfer)
             endpoint["label"] = os.path.basename(model_path) or writer_label
+            if not strata:
+                endpoint["slots"] = slots
             yield endpoint, runner
     finally:
         vram_release.release("h3 story writer finished")
@@ -1283,7 +1294,7 @@ class H3StoryWriter:
             "writer_model": (prompt_rewriter.writer_choices(), {"tooltip": "The rewriter pack's model list, the same as the Extender's rewrite_writer_model: a vision model on ninfer-serve or llama-server, or Strata. The server is started for this node and closed after it, so the render that follows has the GPU."}),
             "thinking_budget": (prompt_rewriter.REASONING_BUDGETS, {"default": "4096", "tooltip": "Thinking tokens at most per call, on top of the answer."}),
         }, "optional": {
-            "concurrency": ("INT", {"default": DEFAULT_CONCURRENCY, "min": 1, "max": MAX_CONCURRENCY, "tooltip": "Requests sent to the model server at the same time: the chunks of beats are written in parallel (each from the outline and its neighbours' end states, not from each other's prose), and so are the acts of a long outline. Set it to the number of slots the server was started with (6 to 8 on ninfer); 1 writes one chunk after another."}),
+            "concurrency": ("INT", {"default": DEFAULT_CONCURRENCY, "min": 1, "max": MAX_CONCURRENCY, "tooltip": "Requests sent to the model server at the same time: the chunks of beats are written in parallel (each from the outline and its neighbours' end states, not from each other's prose), and so are the acts of a long outline. The model server this node starts gets that many slots, at most 4 (4 slots of 65536 tokens fit the card with the model); a higher value is lowered to the slots the server has. 1 writes one chunk after another."}),
         }}
 
     RETURN_TYPES = ("STRING",)
@@ -1316,7 +1327,8 @@ class H3StoryWriter:
         def say(message):
             _LOG.info("H3 Story Writer: %s", message)
 
-        with open_model(str(writer_model), budget, slot_ctx=slot_ctx, say=say) as (endpoint, runner):
+        with open_model(str(writer_model), budget, slot_ctx=slot_ctx, concurrency=concurrency, say=say) as (endpoint, runner):
+            concurrency = min(int(concurrency), int(endpoint.get("slots") or concurrency))
             chat = ServerChat(endpoint, interrupted=getattr(runner, "interrupted", None))
             result = write_story(chat, brief=brief, clips=clips, seconds=seconds, language=language, seed=seed, model=endpoint["model"], style=endpoint["style"],
                                  budget=budget, slot_ctx=slot_ctx, progress=progress, say=say, concurrency=concurrency)

@@ -822,8 +822,8 @@ class NodeTests(unittest.TestCase):
     def test_write_runs_the_engine_and_returns_the_story(self):
         with stub_server() as url, tempfile.TemporaryDirectory() as tmp:
             @contextlib.contextmanager
-            def fake_open(label, budget, slot_ctx, say):
-                yield {"url": url, "model": "m", "style": "ninfer-messages"}, mock.Mock(interrupted=lambda: False)
+            def fake_open(label, budget, slot_ctx, concurrency, say):
+                yield {"url": url, "model": "m", "style": "ninfer-messages", "slots": 4}, mock.Mock(interrupted=lambda: False)
 
             with mock.patch.object(sw, "open_model", fake_open), mock.patch.object(sw, "output_root", lambda base=None: Path(tmp) / "out"):
                 (story,) = sw.H3StoryWriter().write("a brief", 3, 15, "English", 1, "w", 4096)
@@ -853,6 +853,47 @@ class NodeTests(unittest.TestCase):
                     raise RuntimeError("boom")
         self.assertEqual(closed, [True])
         release.assert_called_once()
+
+    def _open_with(self, concurrency, *, strata=False):
+        seen = {}
+
+        @contextlib.contextmanager
+        def session(*args, **kwargs):
+            seen.update(kwargs)
+            yield mock.Mock(base="http://127.0.0.1:1", model_id="mid")
+
+        pack = (mock.Mock(), mock.Mock(), mock.Mock(session=session), mock.Mock(is_ninfer=lambda p: True), mock.Mock())
+        with mock.patch.object(sw, "_pack", lambda: pack), mock.patch.object(sw.prompt_rewriter, "_vision_files", lambda n, p, l: ("w.ninfer", "")), mock.patch.object(sw.vram_release, "release"):
+            with sw.open_model("writer", 4096, slot_ctx=65536, concurrency=concurrency) as (endpoint, runner):
+                seen["endpoint"] = endpoint
+        return seen
+
+    def test_the_server_gets_the_writers_concurrency_as_slots_and_a_pool_per_slot(self):
+        """Before: slots=1, pool_ctx=65536 whatever the concurrency, so the parallel chunks queued behind one slot. Now ninfer-serve starts with --max-concurrency = slots
+        and --max-context = pool / slots = 65536."""
+        for asked, slots in ((1, 1), (2, 2), (4, 4), (6, 4), (8, 4)):
+            seen = self._open_with(asked)
+            self.assertEqual(slots, seen["slots"], asked)
+            self.assertEqual(65536 * slots, seen["pool_ctx"], asked)
+            self.assertEqual(slots, seen["endpoint"]["slots"], asked)
+        self.assertEqual(4, sw.server_slots(99))
+        self.assertEqual(1, sw.server_slots(0))
+
+    def test_the_writer_never_sends_more_requests_than_the_server_has_slots(self):
+        seen = {}
+
+        @contextlib.contextmanager
+        def fake_open(label, budget, slot_ctx, concurrency, say):
+            seen["opened_for"] = concurrency
+            yield {"url": "http://127.0.0.1:1", "model": "m", "style": "ninfer-messages", "slots": 4}, mock.Mock(interrupted=lambda: False)
+
+        def fake_write_story(chat, **kwargs):
+            seen["concurrency"] = kwargs["concurrency"]
+            return {"story": "s", "story_path": "p", "json_path": "j", "sidecar": {"beats_written": 1, "story_words": 1, "e4_estimated_clips": 1, "wall_seconds": 1.0, "warnings": []}}
+
+        with mock.patch.object(sw, "open_model", fake_open), mock.patch.object(sw, "write_story", fake_write_story):
+            sw.H3StoryWriter().write("a brief", 3, 15, "English", 1, "w", 4096, concurrency=8)
+        self.assertEqual((8, 4), (seen["opened_for"], seen["concurrency"]))
 
     def test_writer_without_a_server_is_refused(self):
         pack = (mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock())

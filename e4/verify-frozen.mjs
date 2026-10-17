@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Prove that the vendored E4.10 copy under e4/ is the frozen one.
+// Prove that the vendored engines under e4/ (E4.10 and E4.11.1) are the frozen ones.
 //   node e4/verify-frozen.mjs                          offline: every vendored file against MANIFEST.json, patches reversed, and against the
-//                                                      hashes of the freeze record (planpath410/E4.10-FROZEN.md) where the record lists the file
-//   node e4/verify-frozen.mjs --eval-repo DIR [--ref e4.10-frozen]
+//                                                      hashes of the freeze record (planpath410/E4.10-FROZEN.md, planpath411/E4.11-FROZEN.md) where the record lists the file
+//   node e4/verify-frozen.mjs --eval-repo DIR [--ref TAG]   (TAG overrides the tag of every file; by default each file is read from the tag of its engine)
 //                                                      also: every file the git tag holds, read from the tag (git show), reversed the same way
 // A file is "frozen" when, with the declared replacements of PATCHES.json reversed, its bytes equal the source's. Exit 1 on any difference.
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
@@ -18,7 +18,8 @@ const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i
 const evalRepo = opt('eval-repo', null) && resolve(opt('eval-repo'));
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 const manifest = JSON.parse(readFileSync(join(HERE, 'MANIFEST.json'), 'utf8'));
-const ref = opt('ref', manifest.ref);
+const refOverride = opt('ref', null);
+const engineNames = (manifest.engines || [{ name: manifest.engine, ref: manifest.ref }]).map((e) => `${e.name} (${e.ref})`).join(' + ');
 const patches = JSON.parse(readFileSync(join(HERE, 'PATCHES.json'), 'utf8'));
 
 function unpatch(rel, bytes) {
@@ -48,14 +49,14 @@ for (const f of manifest.files) {
   if (sha(u.bytes) !== f.sourceSha256) problems.push(`DIFFERS ${f.path}: with the declared patches reversed it is not the source`);
   if (f.freezeRecordSha256) {
     recordChecked += 1;
-    if (f.freezeRecordSha256 !== f.sourceSha256) problems.push(`RECORD ${f.path}: the source hash is not the one in E4.10-FROZEN.md`);
+    if (f.freezeRecordSha256 !== f.sourceSha256) problems.push(`RECORD ${f.path}: the source hash is not the one in the freeze record of its engine`);
   }
   if (evalRepo && f.inTag) {
     const rel = f.source.replace(/^h3-prompt-eval:/, '');
     let blob;
-    try { blob = execFileSync('git', ['-C', evalRepo, 'show', `${ref}:${rel}`], { maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'ignore'] }); } catch { problems.push(`TAG ${f.path}: ${rel} is not in ${ref}`); continue; }
+    try { blob = execFileSync('git', ['-C', evalRepo, 'show', `${refOverride || f.ref || manifest.ref}:${rel}`], { maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'ignore'] }); } catch { problems.push(`TAG ${f.path}: ${rel} is not in ${refOverride || f.ref || manifest.ref}`); continue; }
     tagChecked += 1;
-    if (sha(blob) !== sha(u.bytes)) problems.push(`TAG ${f.path}: differs from ${ref}:${rel} (patches reversed)`);
+    if (sha(blob) !== sha(u.bytes)) problems.push(`TAG ${f.path}: differs from ${refOverride || f.ref || manifest.ref}:${rel} (patches reversed)`);
   }
 }
 
@@ -73,5 +74,5 @@ const unfrozen = manifest.files.filter((f) => f.sourceSha256 && !f.inTag && !f.i
 if (unfrozen.length) note.push(`${unfrozen.length} vendored inputs are in neither the git tag nor the freeze record (checked against MANIFEST.json only): ${unfrozen.join(', ')}`);
 for (const p of problems) console.log(p);
 for (const n of note) console.log(`note: ${n}`);
-console.log(`e4 ${manifest.engine} (${ref}): ${checked} files checked, ${patched} patched (patches reversed), ${recordChecked} against the freeze record${evalRepo ? `, ${tagChecked} against the git tag` : ' (offline: pass --eval-repo for the git tag)'}, ${problems.length} problem(s)`);
+console.log(`e4 ${engineNames}: ${checked} files checked, ${patched} patched (patches reversed), ${recordChecked} against the freeze record${evalRepo ? `, ${tagChecked} against the git tag` : ' (offline: pass --eval-repo for the git tag)'}, ${problems.length} problem(s)`);
 process.exit(problems.length ? 1 : 0);

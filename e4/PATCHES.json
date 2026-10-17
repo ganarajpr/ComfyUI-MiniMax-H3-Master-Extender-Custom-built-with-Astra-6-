@@ -192,5 +192,149 @@
     "replace": "messages: [{ role: 'user', content: repairPrompt({ kind, ent, ...refContext({ story, rawAsks, plan, ent }), issues: msgs(first), landmarks }) }] });"
    }
   ]
+ },
+ {
+  "file": "planpath411/hybrid46/validate.mjs",
+  "why": "the h3-audit runner is vendored under e4/audit instead of ~/.kshana/runners.",
+  "replacements": [
+   {
+    "find": "import { auditShot } from '/Users/ganaraj/.kshana/runners/dhee-runner-h3-audit/dist/index.js';",
+    "replace": "import { auditShot } from '../../audit/dist/index.js';"
+   }
+  ]
+ },
+ {
+  "file": "planpath411/transport.mjs",
+  "why": "per-request max_tokens from the slot context and the prompt size (E4_LLM_SLOT_CTX, outputRoom/outputCap) instead of one fixed cap: a fixed 12288 cut a long Devanagari plan.",
+  "replacements": [
+   {
+    "find": "//     reasoning_budget_message (E4_LLM_BUDGET_MESSAGE), the same per-kind budgets as ninfer-messages\n//   - E4_LLM_MAX_TOKENS caps max_tokens of every call to what the server's context slot holds\n// Every other call kind, on the two E4.6 wires, builds exactly the request E4.6 builds (test/e47.test.mjs and replay-check.mjs prove it).\nimport { API_STYLE, BASE, MODEL, buildRequest as buildRequest46, thinkBudget } from '../hybrid3/lib.mjs';\n\n",
+    "replace": "//     reasoning_budget_message (E4_LLM_BUDGET_MESSAGE), the same per-kind budgets as ninfer-messages\n//   - E4_LLM_SLOT_CTX (the context of one server slot) caps max_tokens of every call per request: the slot minus the estimated prompt minus a margin (outputRoom), never above\n//     the call's own setting and never below 4096. E4_LLM_MAX_TOKENS stays an optional hard ceiling over that.\n// Every other call kind, on the two E4.6 wires, builds exactly the request E4.6 builds (test/e47.test.mjs and replay-check.mjs prove it).\nimport { API_STYLE, BASE, MODEL, buildRequest as buildRequest46, thinkBudget } from '../hybrid3/lib.mjs';\n\nconst MIN_OUTPUT = 4096;          // a reply always gets this much, whatever the prompt\nconst MARGIN = 1024;              // slack for the chat template and the estimate's error\nconst IMAGE_TOKENS = 1100;        // a reference picture is sent at most 1,024 tokens\nconst LATIN_CHARS_PER_TOKEN = 2.5; // English is nearer 4; this over-counts on purpose\n\n// Conservative prompt size in tokens: Latin text at 2.5 characters a token, every character outside Latin (Devanagari, Kannada, CJK ...) at one token, a picture at 1100.\nexport function estimatePromptTokens(messages) {\n  let latin = 0, wide = 0, images = 0;\n  const count = (text) => { for (const ch of String(text ?? '')) { if (ch.codePointAt(0) < 0x250) latin += 1; else wide += 1; } };\n  for (const m of messages || []) {\n    if (typeof m.content === 'string') count(m.content);\n    else for (const part of m.content || []) {\n      if (part.type === 'text') count(part.text);\n      else if (part.type === 'image' || part.type === 'image_url') images += 1;\n      else count(JSON.stringify(part));\n    }\n    latin += 10;\n  }\n  return Math.ceil(latin / LATIN_CHARS_PER_TOKEN + wide + images * IMAGE_TOKENS);\n}\n\n// The most a reply to these messages may use: the slot (E4_LLM_SLOT_CTX) minus the prompt minus a margin, under the optional hard ceiling E4_LLM_MAX_TOKENS.\n// Infinity when neither is set.\nexport function outputRoom(messages) {\n  const slot = Number(process.env.E4_LLM_SLOT_CTX) || 0, hard = Number(process.env.E4_LLM_MAX_TOKENS) || 0;\n  let room = Infinity;\n  if (slot) { const prompt = estimatePromptTokens(messages); room = Math.max(MIN_OUTPUT, slot - Math.ceil(prompt * 1.05) - MARGIN); }\n  if (hard) room = Math.min(room, hard);\n  return room;\n}\n\n// The max_tokens of a call: its own setting, lowered to the room the prompt leaves.\nexport const outputCap = (messages, requested) => Math.min(requested, outputRoom(messages));\n\n"
+   },
+   {
+    "find": "  }\n  const cap = Number(process.env.E4_LLM_MAX_TOKENS) || 0;\n  if (cap && r.body.max_tokens > cap) r.body.max_tokens = cap;\n  return r;\n",
+    "replace": "  }\n  if (r.body.max_tokens > 0) r.body.max_tokens = outputCap(messages, r.body.max_tokens);\n  return r;\n"
+   }
+  ]
+ },
+ {
+  "file": "planpath411/lib.mjs",
+  "why": "a reply cut at max_tokens is sent once more with a larger cap up to the slot (never the identical request), and says why (cut / cutNote in the result and the call's meta). (E4.11: the limiter, priority and t0 of its chatWith are kept; the wrapper sits around them.)",
+  "replacements": [
+   {
+    "find": "import { SETTINGS, MODEL, BASE, API_STYLE, normalizeResponse, parseJsonReply, wr, rj } from '../hybrid3/lib.mjs';\nimport { buildRequest } from './transport.mjs';\n\n",
+    "replace": "import { SETTINGS, MODEL, BASE, API_STYLE, normalizeResponse, parseJsonReply, wr, rj } from '../hybrid3/lib.mjs';\nimport { buildRequest, outputRoom } from './transport.mjs';\n\n"
+   },
+   {
+    "find": "// One chat-completions call on the normal OpenRouter endpoint with explicit settings; transient errors retried.\nexport async function chatWith(messages, settings = SETTINGS, { retries = 3, kind = 'writer', priority = 1 } = {}) {\n  const { url, headers, body } = buildRequest(messages, settings, kind);\n",
+    "replace": "// One chat-completions call on the normal OpenRouter endpoint with explicit settings; transient errors retried.\nexport async function chatWith(messages, settings = SETTINGS, opts = {}) {\n  const first = await chatWithOnce(messages, settings, opts);\n  const cap = first.body?.max_tokens || 0;\n  if (first.finish !== 'length') return first;\n  // The reply was cut at max_tokens: do not send the same request again. Send it once with a larger cap, up to the room the slot leaves (at most double).\n  const limit = outputRoom(messages);\n  const room = Number.isFinite(limit) ? Math.min(limit, cap * 2) : 0;\n  if (!(room > cap * 1.05)) return { ...first, cut: cutOf(first) };\n  const second = await chatWithOnce(messages, { ...settings, max_tokens: Math.floor(room) }, opts);\n  const escalated = { from: cap, to: second.body?.max_tokens ?? Math.floor(room), firstOutputTokens: first.usage?.completion_tokens ?? null, firstThinkingTokens: thinkingOf(first) };\n  return { ...second, escalated, cut: second.finish === 'length' ? cutOf(second) : null };\n}\nexport const thinkingOf = (c) => c?.usage?.completion_tokens_details?.reasoning_tokens ?? null;\n// Why a reply is unusable when the server stopped it at max_tokens: \"reply cut at max_tokens 12288 (thinking 4121)\".\nexport const cutOf = (c) => ({ max_tokens: c.body?.max_tokens ?? null, thinking: thinkingOf(c), output: c.usage?.completion_tokens ?? null });\nexport const cutNote = (cut) => (cut ? `reply cut at max_tokens ${cut.max_tokens}${cut.thinking != null ? ` (thinking ${cut.thinking})` : ''}` : '');\nasync function chatWithOnce(messages, settings = SETTINGS, { retries = 3, kind = 'writer', priority = 1 } = {}) {\n  const { url, headers, body } = buildRequest(messages, settings, kind);\n"
+   },
+   {
+    "find": "attempt: c.attempt, t0: c.t0 ?? null, model: c.resp?.model || null };\n  wr(join(dir, `${name}.meta.json`), meta);",
+    "replace": "attempt: c.attempt, t0: c.t0 ?? null, model: c.resp?.model || null };\n  if (c.cut) meta.cut = c.cut;\n  if (c.escalated) meta.escalated = c.escalated;\n  wr(join(dir, `${name}.meta.json`), meta);"
+   }
+  ]
+ },
+ {
+  "file": "planpath411/bible.mjs",
+  "why": "the bible's retry complaint names a cut reply and asks for shorter field values.",
+  "replacements": [
+   {
+    "find": "    if (!parsed) { complaint = ['the reply was not one valid JSON object']; attempts.push(",
+    "replace": "    if (!parsed) { complaint = [reply.cut ? `the reply was not one valid JSON object: ${reply.cut.note}; write the SAME structure with shorter field values and close every brace` : 'the reply was not one valid JSON object']; attempts.push("
+   }
+  ]
+ },
+ {
+  "file": "planpath411/planner.mjs",
+  "why": "the planner takes a cut reply's note, asks again for shorter field values, and the PlanError names the cut instead of 'no usable JSON'. (E4.11 keeps the better of its two plans itself, so only the cut handling is patched.)",
+  "replacements": [
+   {
+    "find": "// Of the two plans the one with fewer hard issues is kept (the first on a tie, so a retry never makes a plan worse). Soft issues are warnings. `chat(messages, attempt) -> reply text`.\n",
+    "replace": "// Of the two plans the one with fewer hard issues is kept (the first on a tie, so a retry never makes a plan worse). Soft issues are warnings. `chat(messages, attempt) -> reply text`,\n// or `{ text, cut: { note, max_tokens } }` when the server stopped the reply at max_tokens (the retry then asks for shorter field values).\n"
+   },
+   {
+    "find": "  let complaint = [], best = null;\n  const attempts = [];\n  for (let attempt = 0; attempt < 2; attempt++) {\n    const content = complaint.length ? `${user}",
+    "replace": "  let complaint = [], best = null;\n  const attempts = [], cuts = [];\n  for (let attempt = 0; attempt < 2; attempt++) {\n    const content = complaint.length ? `${user}"
+   },
+   {
+    "find": "    const reply = await chat([{ role: 'user', content }], attempt);\n    const parsed = parseBreakdown(reply);\n    if (!parsed) {\n      attempts.push({ attempt: attempt + 1, parsed: false, issues: ['not parseable'], hard: ['not parseable'], soft: [], fixes: [] });\n      complaint = ['Your reply was not one valid JSON object in the OUTPUT FORMAT above (or had no clips). Reply with that JSON object only.'];",
+    "replace": "    const got = await chat([{ role: 'user', content }], attempt);\n    const reply = typeof got === 'string' ? got : got.text;\n    const cut = typeof got === 'string' ? null : got.cut || null;\n    if (cut) cuts.push(cut.note);\n    const parsed = parseBreakdown(reply);\n    if (!parsed) {\n      attempts.push({ attempt: attempt + 1, parsed: false, issues: ['not parseable', ...(cut ? [cut.note] : [])], hard: ['not parseable'], soft: [], fixes: [] });\n      complaint = cut\n        ? [`Your reply was cut off at the output limit (max_tokens ${cut.max_tokens}) before the JSON object was complete. Write the SAME structure with shorter field values (fewer words in every description, one short sentence per shot where you can), and close every brace.`]\n        : ['Your reply was not one valid JSON object in the OUTPUT FORMAT above (or had no clips). Reply with that JSON object only.'];"
+   },
+   {
+    "find": "  if (!best) throw new PlanError('the story planner returned no usable JSON twice');",
+    "replace": "  if (!best) throw new PlanError(`the story planner returned no usable JSON twice${cuts.length ? ` (${[...new Set(cuts)].join('; ')})` : ''}`);"
+   }
+  ]
+ },
+ {
+  "file": "planpath411/film.mjs",
+  "why": "hook for the Master Extender: bindPictures replaces the reference-image stage (buildRefs) when the user's own pictures are connected. Also (cut-reply handling): the planner and bible get the cut note, the failed 'no parseable reply' names it, and a bible.json that recorded issues is regenerated on resume instead of reused. Everything else is untouched; E4.11's own skeleton planner handles a long story.",
+  "replacements": [
+   {
+    "find": "import { call, parseJsonReply, parseJsonLoose, wr, rj, SETTINGS, MODEL, exists, limiterStats, CONCURRENCY } from './lib.mjs';",
+    "replace": "import { call, parseJsonReply, parseJsonLoose, wr, rj, SETTINGS, MODEL, exists, limiterStats, CONCURRENCY, cutNote } from './lib.mjs';"
+   },
+   {
+    "find": "language = 'English', refwriter = 'default', score = 'off' }) {\n  const dir = join(outRoot, name);\n  let plan, planMeta, bible, bibleMeta;",
+    "replace": "language = 'English', refwriter = 'default', score = 'off', bindPictures = null }) {\n  const dir = join(outRoot, name);\n  let plan, planMeta, bible, bibleMeta;"
+   },
+   {
+    "find": "      const text = (await call({ outRoot, dir: join(dir, 'planner'), name: attempt ? `${stem}.retry` : stem, kind: 'planner', story: name, priority: 0, messages })).content;\n      if (stem === 'plan.skeleton'",
+    "replace": "      const c = await call({ outRoot, dir: join(dir, 'planner'), name: attempt ? `${stem}.retry` : stem, kind: 'planner', story: name, priority: 0, messages });\n      const text = c.content;\n      if (c.cut && stem === 'plan') return { text, cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      if (stem === 'plan.skeleton'"
+   },
+   {
+    "find": "  if (resume && existsSync(bf)) ({ bible, bibleMeta } = rj(bf));\n  else {\n    const chat = async (messages, attempt) => parseJsonLoose((await call({ outRoot, dir: join(dir, 'bible'), name: attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, priority: 0, messages })).content);\n",
+    "replace": "  if (resume && existsSync(bf) && rj(bf).bible && !rj(bf).bibleMeta?.issues?.length) ({ bible, bibleMeta } = rj(bf));\n  else {\n    const chat = async (messages, attempt) => {\n      const c = await call({ outRoot, dir: join(dir, 'bible'), name: attempt ? 'bible.retry' : 'bible', kind: 'bible', story: name, priority: 0, messages });\n      if (c.cut) return { ...parseJsonReply(c.content), cut: { note: cutNote(c.cut), max_tokens: c.cut.max_tokens } };\n      return parseJsonLoose(c.content);\n    };\n"
+   },
+   {
+    "find": "  }\n  const rf = join(dir, 'refs', 'refs.json');",
+    "replace": "  }\n  if (bindPictures) { const refs = await bindPictures({ name, story, outRoot, bible, plan, planMeta }); wr(bf, { bible, bibleMeta }); return { plan, planMeta, bible, bibleMeta, refs }; }\n  const rf = join(dir, 'refs', 'refs.json');"
+   },
+   {
+    "find": "failed: 'no parseable reply', cost:",
+    "replace": "failed: `no parseable reply${gen?.cut ? ` (${cutNote(gen.cut)})` : ''}`, cost:"
+   },
+   {
+    "find": "refsOnly = false, score = 'off' }) {\n  const t0 = Date.now(), at",
+    "replace": "refsOnly = false, score = 'off', bindPictures = null }) {\n  const t0 = Date.now(), at"
+   },
+   {
+    "find": "await planAndBible({ name, story, outRoot, resume, language, refwriter, score });",
+    "replace": "await planAndBible({ name, story, outRoot, resume, language, refwriter, score, bindPictures });"
+   }
+  ]
+ },
+ {
+  "file": "planpath411/writer.mjs",
+  "why": "a long film must not fail: the writer's story and film plan and a reference repair's context are windowed past a budget (the same text below it). E4.11: only the windowing is patched; its own skeleton planner plans a long film.",
+  "replacements": [
+   {
+    "find": "import { stateFacts } from './state.mjs';\n",
+    "replace": "import { stateFacts } from './state.mjs';\nimport { writerContext } from '../bridge/context.mjs';\n"
+   },
+   {
+    "find": "  const masters = Object.fromEntries(shot.references.filter((r) => r.type === 'character').map((r) => [r.id, bible.cast.find((c) => c.id === r.id).acting]));\n  const vars = {",
+    "replace": "  const masters = Object.fromEntries(shot.references.filter((r) => r.type === 'character').map((r) => [r.id, bible.cast.find((c) => c.id === r.id).acting]));\n  const big = writerContext({ plan, rawAsks, story, clipNumber: rec.clip.clip });\n  const vars = {"
+   },
+   {
+    "find": "    screenplay: screenplaySlot(plan, rawAsks, rec.clip.clip),\n    narrative_seed: { hasStory: true, storyText: story },",
+    "replace": "    screenplay: big ? big.screenplay : screenplaySlot(plan, rawAsks, rec.clip.clip),\n    narrative_seed: { hasStory: true, storyText: big ? big.storyText : story },"
+   }
+  ]
+ },
+ {
+  "file": "planpath411/refs.mjs",
+  "why": "a long film must not fail: planning and the bible go through e4/bridge/context.mjs (one call exactly as before for a short story, parts for a long one, a failed part split smaller); the writer's story and film plan and a reference repair's context are windowed past a budget (the same text below it).",
+  "replacements": [
+   {
+    "find": "import { checkEntity, wordCount, plateObjects, namedObjectCount, objectCoverage, appearances, needsRef } from './refchecks.mjs';\n",
+    "replace": "import { checkEntity, wordCount, plateObjects, namedObjectCount, objectCoverage, appearances, needsRef } from './refchecks.mjs';\nimport { refContext } from '../bridge/context.mjs';\n"
+   },
+   {
+    "find": "messages: [{ role: 'user', content: repairPrompt({ kind, ent, story, rawAsks, issues: msgs(first), landmarks }) }] });",
+    "replace": "messages: [{ role: 'user', content: repairPrompt({ kind, ent, ...refContext({ story, rawAsks, plan, ent }), issues: msgs(first), landmarks }) }] });"
+   }
+  ]
  }
 ]
