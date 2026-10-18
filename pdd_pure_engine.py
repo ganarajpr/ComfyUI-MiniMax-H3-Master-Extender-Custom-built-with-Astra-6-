@@ -725,6 +725,30 @@ class PurePDDEngine:
     # a background decode instead of evicting it.
     BACKGROUND_TOLERANT_TOKENS = 30000
 
+    @staticmethod
+    def _release_node_scoped_vram():
+        # ComfyUI frees these when a node finishes, but this engine runs a whole job
+        # inside one node, so after every eviction they kept ~4 GB that later passes
+        # and clips then started without (outside ComfyUI's model manager, so
+        # free_memory cannot reach it):
+        #  - bypass-LoRA hooks (HyperFlow's backbone LoRA) copy their adapter weights
+        #    to the GPU on inject and never move them back on eject (~2 GB);
+        #  - the compiler's CUDA graphs and prefetch state of the last sampled model (~2 GB).
+        import gc
+        try:
+            from comfy.weight_adapter.bypass import BypassForwardHook
+            cpu = torch.device("cpu")
+            for obj in gc.get_objects():
+                if isinstance(obj, BypassForwardHook) and obj.original_forward is None:
+                    obj._move_adapter_weights_to_device(cpu)
+        except ImportError:
+            pass
+        try:
+            import comfy.model_prefetch
+        except ImportError:
+            return
+        comfy.model_prefetch.cleanup_prefetch_queues()
+
     def _reclaim_vram(self, model_patcher, samples=None, tokens=None):
         import gc
         mm = comfy.model_management
@@ -755,6 +779,7 @@ class PurePDDEngine:
             # weights. The VAEs reload in a second or two when the decode needs
             # them, which is far cheaper than a paging pass.
             mm.free_memory(1e30, device, keep_loaded=keep)
+            self._release_node_scoped_vram()
             mm.soft_empty_cache(force=True)
             after = mm.get_free_memory(device)
             _LOG.info("PDD engine: VRAM reclaim before sampling -- %d tokens, need ~%.1f GB, evicted all but the "
