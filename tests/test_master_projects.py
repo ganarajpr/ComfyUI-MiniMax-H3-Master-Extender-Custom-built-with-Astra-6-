@@ -148,6 +148,18 @@ class MasterProjectTests(unittest.TestCase):
         other = [dict(clips[0], prompt="another project")]
         self.assertEqual(self.ns["clip_cache_states"](other)[0], ["none"])
 
+    def test_pass1_fingerprint_keys_pass1_inputs_only(self):
+        p1 = self.ns["_pass1_fingerprint"]
+        clip = {"prompt": "a", "duration": 5, "seed": 7}
+        settings = {"p1_res": [608, 352], "accel_mode": "HyperFlow"}
+        base = p1(None, clip, 7, settings)
+        self.assertEqual(base, p1(None, dict(clip), 7, dict(settings)))
+        self.assertNotEqual(base, p1(None, clip, 8, settings))
+        self.assertNotEqual(base, p1(None, clip, 7, dict(settings, p1_res=[704, 384])))
+        self.assertNotEqual(base, p1(None, dict(clip, prompt="b"), 7, settings))
+        self.assertNotEqual(p1(base, clip, 7, settings), base)
+        self.assertNotEqual(p1(base, clip, 7, settings), p1("other", clip, 7, settings))
+
     def test_clear_rejects_bad_input(self):
         for final in ("*", "../", "6.*", "", "6/7"):
             with self.assertRaises(ValueError):

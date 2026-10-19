@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import secrets
+import hashlib
 import threading
 import time
 from pathlib import Path
@@ -21,7 +22,7 @@ from server import PromptServer
 
 import folder_paths
 import nodes
-from .master_projects import load_reference_images, _clip_identity, _chain_key, _clip_fingerprint, _audio_refine_signature
+from .master_projects import load_reference_images, _clip_identity, _chain_key, _clip_fingerprint, _pass1_fingerprint, _audio_refine_signature
 from . import prompt_rewriter
 
 from . import motion_context_disk
@@ -31,6 +32,7 @@ from .motion_context_disk import (
     MiniMaxH3MotionContextDiskJoin,
     _manifest_for_first,
     _load_manifest_from_paths,
+    _proxy_at,
     _truncate_chain,
     _write_json_atomic,
     _load_guide_frame,
@@ -52,6 +54,8 @@ from .pdd_pure_engine import (
     parse_resolution,
     duration_to_h3_frames,
 )
+
+PASS2_OFF = "off (pass 1 only)"
 
 _LOG = logging.getLogger("minimax_h3_master_extender")
 _LOG.addFilter(prompt_rewriter.ConsoleSafeFilter())
@@ -210,6 +214,28 @@ def _send_clips(owner, clips, fields=None, chain=None):
         pass
 
 
+def _media_digest(value):
+    """Stable hash of reference pictures / videos / audio (tensors, dicts, lists) for the pass-1 fingerprint."""
+    h = hashlib.sha256()
+
+    def feed(v):
+        if torch.is_tensor(v):
+            x = v.detach().cpu().contiguous()
+            h.update(f"{tuple(x.shape)}{x.dtype}".encode())
+            h.update(x.reshape(-1).view(torch.uint8).numpy().tobytes() if x.numel() else b"")
+        elif isinstance(v, dict):
+            for key in sorted(v, key=str):
+                h.update(str(key).encode())
+                feed(v[key])
+        elif isinstance(v, (list, tuple)):
+            for item in v:
+                feed(item)
+        else:
+            h.update(repr(v).encode())
+    feed(value)
+    return h.hexdigest()[:16]
+
+
 def _stored_fingerprints(data_path, manifest_path):
     state = _load_manifest_from_paths(data_path, manifest_path) or {}
     count = len(state.get("segments", []))
@@ -340,8 +366,9 @@ class MiniMaxH3MasterExtender:
                      "1280x720", "720x1280 (9:16)",
                      "1344x768 (16:9)", "768x1344 (9:16)",
                      "1920x1088 (16:9)", "1088x1920 (9:16)",
-                     "1024x1024 (1:1)"],
-                    {"default": "1344x768 (16:9)", "tooltip": "Stage 2 (Pass 2) target resolution. 1920x1088 is 1080p on H3's 32-px grid; it needs ~2x the VRAM of 1344x768, so keep clips shorter (~5-8 s) at 1080p on a 32 GB card."},
+                     "1024x1024 (1:1)",
+                     PASS2_OFF],
+                    {"default": "1344x768 (16:9)", "tooltip": "Stage 2 (Pass 2) target resolution. 1920x1088 is 1080p on H3's 32-px grid; it needs ~2x the VRAM of 1344x768, so keep clips shorter (~5-8 s) at 1080p on a 32 GB card. 'off (pass 1 only)' skips pass 2 and decodes the pass-1 result at the pass-1 size (2x with the X2 final decode). Pass-1 results stay cached, so switching pass 2 back on later only runs pass 2."},
                 ),
                 "pass2_denoise": ("FLOAT", {"default": 0.25, "min": 0.05, "max": 1.0, "step": 0.01, "tooltip": "PDD Quality Tail refinement denoise factor (trained at 0.25)"}),
                 "pdd_nfe": (["8", "4", "6", "5", "10", "12", "16", "20"], {"default": "8", "tooltip": "Sampling steps. PDD mode: model evaluations, only 4 / 6 / 8 are valid (8 = full trained quality). Turbo LoRA mode: the turbo step count (e.g. 4-6 for a 4-step LoRA, 8 for an 8-step one)."}),
@@ -564,7 +591,11 @@ class MiniMaxH3MasterExtender:
 
         # Parse resolution settings
         w1, h1 = parse_resolution(pass1_resolution, 608, 352)
-        w2, h2 = parse_resolution(pass2_resolution, 1344, 768)
+        pass2_enabled = not str(pass2_resolution).lower().startswith("off")
+        if pass2_enabled:
+            w2, h2 = parse_resolution(pass2_resolution, 1344, 768)
+        else:
+            w2, h2 = w1, h1
         # H3's 2x2 latent patch grid requires pixel dimensions divisible by 32.
         w2, h2 = ((w2 + 31) // 32) * 32, ((h2 + 31) // 32) * 32
 
@@ -626,7 +657,7 @@ class MiniMaxH3MasterExtender:
             def rewrite_stream(index, clip_id, phase, text, source=""):
                 _send_rewrite(owner, index, clip_id, phase, text, source)
             rewrite_notes = prompt_rewriter.rewrite_clips(
-                clips, refs, kwargs, aspect_text=str(pass2_resolution),
+                clips, refs, kwargs, aspect_text=str(pass2_resolution if pass2_enabled else pass1_resolution),
                 progress_cb=rewrite_progress, stream_cb=rewrite_stream,
                 videos=ref_videos, video_audios=ref_video_audios, audios=ref_audios,
                 plan_cb=lambda planned_clips, positions: _send_plan(owner, planned_clips, positions),
@@ -662,19 +693,24 @@ class MiniMaxH3MasterExtender:
         # the previous clip's latents, so the chain must keep one geometry. Every other
         # setting (LoRAs, turbo/accel, SLA, pass 2, semantic bridge, context lengths,
         # references) applies to the clips rendered from now on and keeps what is on disk.
-        resolution = [int(w1), int(h1), int(w2), int(h2)]
-        for dp, mp, state, (w, h) in ((data_path, manifest_path, manifest, (w2, h2)),
-                                      (draft_path, draft_manifest_path, draft_manifest, (w1, h1))):
+        # The draft chain holds pass-1 results, which only depend on the pass-1 size: it
+        # survives any change to pass 2 (resolution, LoRA, off/on) and the final decode.
+        for dp, mp, state, (w, h), resolution in (
+                (data_path, manifest_path, manifest, (w2, h2), [int(w1), int(h1), int(w2), int(h2)]),
+                (draft_path, draft_manifest_path, draft_manifest, (w1, h1), [int(w1), int(h1)])):
             stored = state.get("chain_resolution")
             geom = state.get("geometry") or {}
             if stored is not None:
-                changed = stored != resolution
+                changed = list(stored)[:len(resolution)] != resolution
             else:  # chains from before chain_resolution: judge by the latents on disk
                 changed = bool(geom) and not (
                     int(geom.get("video_w", 0)) in (w // 16, -(-w // 16))
                     and int(geom.get("video_h", 0)) in (h // 16, -(-h // 16)))
             if changed:
-                _LOG.info(f"Disk cache chain: resolution changed to {w1}x{h1} -> {w2}x{h2}; re-rendering from clip 1")
+                if dp == draft_path:
+                    _LOG.info(f"Disk cache chain: pass-1 resolution changed to {w1}x{h1}; pass-1 cache dropped, re-rendering from clip 1")
+                else:
+                    _LOG.info(f"Disk cache chain: output resolution changed to {w2}x{h2}; final clips dropped, pass-1 cache kept")
                 state = _truncate_chain(dp, mp, state, 0)
             if state.get("chain_resolution") != resolution:
                 state["chain_resolution"] = resolution
@@ -682,11 +718,14 @@ class MiniMaxH3MasterExtender:
         manifest = _load_manifest_from_paths(data_path, manifest_path)
         draft_manifest = _load_manifest_from_paths(draft_path, draft_manifest_path)
         # Recover interrupted paired writes and removed clips together.
-        common = min(len(manifest["segments"]), len(draft_manifest["segments"]), len(clips))
-        for dp, mp, state in ((data_path, manifest_path, manifest),
-                               (draft_path, draft_manifest_path, draft_manifest)):
-            if len(state["segments"]) > common:
-                _truncate_chain(dp, mp, state, common)
+        # The draft chain may run ahead of the final chain (pass-1 results kept while the
+        # final clips were dropped); the final chain never runs ahead of it.
+        for dp, mp, state, limit in (
+                (data_path, manifest_path, manifest,
+                 min(len(manifest["segments"]), len(draft_manifest["segments"]), len(clips))),
+                (draft_path, draft_manifest_path, draft_manifest, len(clips))):
+            if len(state["segments"]) > limit:
+                _truncate_chain(dp, mp, state, limit)
         manifest = _load_manifest_from_paths(data_path, manifest_path)
 
         # If clips were removed in the UI, truncate disk cache
@@ -770,6 +809,20 @@ class MiniMaxH3MasterExtender:
             kwargs.get("semantic_bridge_match", "per_token"),
         )
 
+        p1_settings = {
+            "p1_res": [int(w1), int(h1)], "pdd_file": str(pdd_file), "pdd_nfe": str(pdd_nfe),
+            "accel_mode": str(accel_mode), "turbo_lora": str(turbo_lora), "turbo_lora_strength": float(turbo_lora_strength),
+            "sampler": str(turbo_sampler), "scheduler": str(turbo_scheduler),
+            "attention": str(attention_backend), "sla": [bool(sla_enabled), float(sla_sparsity)],
+            "sparse": [str(sparse_method), float(sparse_tau), float(sparse_start_percent), str(sparse_dense_blocks), str(sparse_sink)],
+            "hyperflow": [str(kwargs.get("hyperflow_file") or HYPERFLOW_DEFAULT_FILE), bool(kwargs.get("hyperflow_curve_refit", True)),
+                          float(kwargs.get("hyperflow_strength", 1.0)), str(kwargs.get("hyperflow_lora_mode") or "bypass")],
+            "context": [str(context_length), int(audio_context_length), bool(identity_continuity)],
+            "bridge": [str(bridge), kwargs.get("semantic_bridge_alpha", 0.12), str(kwargs.get("semantic_bridge_match", "per_token"))],
+            "single_te": bool(single_te),
+            "refs": _media_digest([refs, ref_videos, ref_video_audios, ref_audios]),
+        }
+
         previous_handle = None
         previous_proxy = None
         draft_handle = None
@@ -783,7 +836,9 @@ class MiniMaxH3MasterExtender:
         )
 
         fingerprints = {}
+        p1_fingerprints = {}
         previous_fp = None
+        previous_p1_fp = None
         unvalidated_any = False
         for i, clip_cfg in enumerate(clips):
             current_manifest = _load_manifest_from_paths(data_path, manifest_path)
@@ -824,6 +879,13 @@ class MiniMaxH3MasterExtender:
             # 1. Reuse the cached clip
             if reuse:
                 _finish_background()
+                expected_p1 = _pass1_fingerprint(previous_p1_fp, clip_cfg, clip_cfg.get("seed", 42), p1_settings)
+                stored_p1 = _stored_fingerprints(draft_path, draft_manifest_path)
+                if i < len(stored_p1) and stored_p1[i] == expected_p1:
+                    p1_fingerprints[i] = expected_p1
+                    previous_p1_fp = expected_p1
+                else:
+                    previous_p1_fp = f"unverified-{i}"
                 _LOG.info(f"Clip {i + 1}: {'validated, ' if is_validated else ''}unchanged since it was rendered - reusing disk cache")
                 result = disk_join.join(
                     samples=None,
@@ -858,10 +920,9 @@ class MiniMaxH3MasterExtender:
             # 2. Check if we should render this clip
             # Drop both suffixes before starting so a failed replacement cannot
             # leave a new draft paired with an old final checkpoint.
-            for dp, mp in ((data_path, manifest_path), (draft_path, draft_manifest_path)):
-                state = _load_manifest_from_paths(dp, mp)
-                if len(state["segments"]) > i:
-                    _truncate_chain(dp, mp, state, i)
+            state = _load_manifest_from_paths(data_path, manifest_path)
+            if len(state["segments"]) > i:
+                _truncate_chain(data_path, manifest_path, state, i)
             _LOG.info(f"Rendering Clip {i + 1}/{len(clips)}: '{clip_cfg.get('prompt', '')[:60]}...'")
 
             def progress_hook(stage, msg, pct):
@@ -880,6 +941,22 @@ class MiniMaxH3MasterExtender:
                 seed_val = max(0, seed_val - 1)
                 clip_cfg["seed"] = seed_val
             clip_fp = _clip_fingerprint(previous_fp, clip_cfg, seed_val, audio_refine, single_te)
+            clip_p1_fp = _pass1_fingerprint(previous_p1_fp, clip_cfg, seed_val, p1_settings)
+
+            # A pass-1 result rendered from exactly these pass-1 inputs is loaded instead of
+            # re-sampled, whatever pass 2 / the final decode did or will do with it.
+            cached_p1, cached_trim = None, 0
+            draft_state = _load_manifest_from_paths(draft_path, draft_manifest_path)
+            stored_p1 = _stored_fingerprints(draft_path, draft_manifest_path)
+            if i < len(draft_state["segments"]) and i < len(stored_p1) and stored_p1[i] == clip_p1_fp:
+                cached_p1 = _proxy_at(draft_path, draft_state, i)
+                cached_trim = int(draft_state["segments"][i].get("trim_frames", 0))
+                _LOG.info(f"Clip {i + 1}: PASS 1 LOADED FROM CACHE (pass-1 fingerprint {clip_p1_fp}, {w1}x{h1}); "
+                          + (f"running pass 2 at {w2}x{h2} only" if pass2_enabled else "pass 2 is off, decoding the cached pass-1 result"))
+            else:
+                state = _load_manifest_from_paths(draft_path, draft_manifest_path)
+                if len(state["segments"]) > i:
+                    _truncate_chain(draft_path, draft_manifest_path, state, i)
 
             # Render clip through Pure 2-Stage PDD Engine
             sampled_latent, _ = engine.render_clip(
@@ -900,19 +977,32 @@ class MiniMaxH3MasterExtender:
                 ref_videos=ref_videos,
                 ref_video_audios=ref_video_audios,
                 ref_audios=ref_audios,
+                pass2_enabled=pass2_enabled,
+                cached_pass1=cached_p1,
+                cached_trim=cached_trim,
             )
 
             # Save clip to disk cache (the manifest is shared with a running
             # background decode, so that must be finished first).
             _finish_background()
             trim_frames = engine.last_trim_frames
-            draft_result = disk_join.join(
-                samples=engine.last_draft, trim_frames=trim_frames, validated=False,
-                run_mode=str(run_mode), fps=float(FPS), previous_cache=draft_handle,
-                unique_id=draft_owner, computed=(str(run_mode) == "full_batch"),
-            )
+            if cached_p1 is not None:
+                draft_result = disk_join.join(
+                    samples=None, validated=True, run_mode=str(run_mode),
+                    fps=float(FPS), previous_cache=draft_handle, unique_id=draft_owner,
+                )
+            else:
+                draft_result = disk_join.join(
+                    samples=engine.last_draft, trim_frames=trim_frames, validated=False,
+                    run_mode=str(run_mode), fps=float(FPS), previous_cache=draft_handle,
+                    unique_id=draft_owner, computed=(str(run_mode) == "full_batch"),
+                )
             draft_handle, previous_draft = draft_result[:2]
             engine.last_draft = None
+            p1_fingerprints = {k: v for k, v in p1_fingerprints.items() if k < i}
+            p1_fingerprints[i] = clip_p1_fp
+            previous_p1_fp = clip_p1_fp
+            _store_fingerprints(draft_path, draft_manifest_path, p1_fingerprints)
             join_result = disk_join.join(
                 samples=sampled_latent,
                 trim_frames=trim_frames,
@@ -970,6 +1060,7 @@ class MiniMaxH3MasterExtender:
         _finish_background()
         # Re-apply after any background decode rewrote the manifest.
         _store_fingerprints(data_path, manifest_path, fingerprints)
+        _store_fingerprints(draft_path, draft_manifest_path, p1_fingerprints)
         status_msg = f"Rendered {rendered_count} clip(s), reused {validated_count}/{len(clips)} from cache"
         if rewrite_notes:
             status_msg += " | " + "; ".join(rewrite_notes)
