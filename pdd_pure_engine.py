@@ -1028,6 +1028,7 @@ class PurePDDEngine:
         pass2_enabled: bool = True,
         cached_pass1: dict = None,
         cached_trim: int = 0,
+        p1_text_size: tuple = None,
     ):
         """Execute the complete 2-Stage 2-Pass Pure PDD Pipeline for a single clip.
 
@@ -1036,6 +1037,7 @@ class PurePDDEngine:
         and ``ref_audios`` (``ref_audio_N`` -> AUDIO) go straight to the core
         reference node, which labels them <Video k> / <Audio j> after the pictures.
 
+        ``p1_text_size`` is the encode size for the single text/reference pass when pass 2 is off.
         ``pass2_enabled=False`` stops after pass 1: the pass-1 latent is returned as the clip
         (``pass2_res`` must equal ``pass1_res``). ``cached_pass1`` is a LATENT-like object holding
         an earlier pass-1 result for this exact clip; pass-1 conditioning and sampling are skipped
@@ -1077,14 +1079,18 @@ class PurePDDEngine:
         trim_p1 = 0
         if cached:
             pass
-        elif pass2_enabled and getattr(self, "single_text_encode", False):
+        elif getattr(self, "single_text_encode", False):
+            # The text encoder sees the reference pictures at the encode size, so with pass 2 off the
+            # single encode runs at ``p1_text_size`` (the size a standard final would use) to give the
+            # same pass-1 conditioning as a full render that is finalised at that size.
+            enc_w, enc_h = (w2, h2) if pass2_enabled or not p1_text_size else p1_text_size
             out_p2 = MiniMaxH3ReferenceToVideo.execute(
                 clip=self.clip,
                 vae=self.vae,
                 audio_vae=self.audio_vae,
                 prompt=prompt,
-                width=w2,
-                height=h2,
+                width=enc_w,
+                height=enc_h,
                 length=frame_count,
                 ref_image_size="match",
                 ref_images=ref_images,

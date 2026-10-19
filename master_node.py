@@ -57,6 +57,13 @@ from .pdd_pure_engine import (
 
 PASS2_OFF = "off (pass 1 only)"
 
+
+def _nominal_final_size(w, h):
+    """720p-class final size (on H3's 32-px grid) matching the aspect of a pass-1 size."""
+    if w > h:
+        return (1280, 736)
+    return (736, 1280) if h > w else (1024, 1024)
+
 _LOG = logging.getLogger("minimax_h3_master_extender")
 _LOG.addFilter(prompt_rewriter.ConsoleSafeFilter())
 EVENT_PROGRESS = "master_extender_progress"
@@ -980,6 +987,7 @@ class MiniMaxH3MasterExtender:
                 pass2_enabled=pass2_enabled,
                 cached_pass1=cached_p1,
                 cached_trim=cached_trim,
+                p1_text_size=_nominal_final_size(w1, h1),
             )
 
             # Save clip to disk cache (the manifest is shared with a running
