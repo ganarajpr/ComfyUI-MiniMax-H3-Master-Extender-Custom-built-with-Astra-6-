@@ -961,6 +961,9 @@ class MiniMaxH3MasterExtender:
                 _LOG.info(f"Clip {i + 1}: PASS 1 LOADED FROM CACHE (pass-1 fingerprint {clip_p1_fp}, {w1}x{h1}); "
                           + (f"running pass 2 at {w2}x{h2} only" if pass2_enabled else "pass 2 is off, decoding the cached pass-1 result"))
             else:
+                if i < len(draft_state["segments"]):
+                    _LOG.info(f"Clip {i + 1}: pass-1 cache not reusable (stored pass-1 fingerprint "
+                              f"{stored_p1[i] if i < len(stored_p1) else None}, wanted {clip_p1_fp}); sampling pass 1")
                 state = _load_manifest_from_paths(draft_path, draft_manifest_path)
                 if len(state["segments"]) > i:
                     _truncate_chain(draft_path, draft_manifest_path, state, i)
