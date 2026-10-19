@@ -83,6 +83,15 @@ def _clip_fingerprint(previous, clip, seed, audio_refine=None, single_te=False):
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+def _pass1_fingerprint(previous, clip, seed, settings):
+    """Fingerprint of clip i's PASS-1 result: its inputs + seed + the pass-1 settings (``settings``,
+    built by the Master node) + every earlier clip's pass-1 fingerprint. Nothing about pass 2, the
+    final decode or the pass-2 resolution enters it, so a pass-1 result survives changes to those."""
+    blob = json.dumps(["pass1", previous or "", _clip_identity(clip), int(seed), settings],
+                      sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
 def clip_cache_states(clips, audio_refine=None, single_te=False):
     """Per clip: 'cached' (on disk, rendered from exactly these inputs), 'stale' (on disk,
     inputs changed since), 'unverified' (on disk, cached before fingerprints) or 'none'.

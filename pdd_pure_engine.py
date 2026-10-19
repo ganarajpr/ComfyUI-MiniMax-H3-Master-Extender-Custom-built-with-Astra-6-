@@ -1025,6 +1025,10 @@ class PurePDDEngine:
         ref_videos: dict = None,
         ref_video_audios: dict = None,
         ref_audios: dict = None,
+        pass2_enabled: bool = True,
+        cached_pass1: dict = None,
+        cached_trim: int = 0,
+        p1_text_size: tuple = None,
     ):
         """Execute the complete 2-Stage 2-Pass Pure PDD Pipeline for a single clip.
 
@@ -1032,6 +1036,13 @@ class PurePDDEngine:
         (``ref_video_audio_N`` -> AUDIO, the soundtrack of the same-numbered video)
         and ``ref_audios`` (``ref_audio_N`` -> AUDIO) go straight to the core
         reference node, which labels them <Video k> / <Audio j> after the pictures.
+
+        ``p1_text_size`` is the encode size for the single text/reference pass when pass 2 is off.
+        ``pass2_enabled=False`` stops after pass 1: the pass-1 latent is returned as the clip
+        (``pass2_res`` must equal ``pass1_res``). ``cached_pass1`` is a LATENT-like object holding
+        an earlier pass-1 result for this exact clip; pass-1 conditioning and sampling are skipped
+        and it is used as if just sampled (``cached_trim`` is its motion-context trim, needed only
+        when pass 2 is off).
         """
         model, pdd_sigmas_p1 = self.initialize_pdd_model()
 
@@ -1051,23 +1062,35 @@ class PurePDDEngine:
         # =====================================================================
         # STAGE 1: PASS 1 (Low-Res Ref2VA PDD Generation)
         # =====================================================================
+        cached = cached_pass1 is not None
         if progress_cb:
-            progress_cb("pass1", f"Rendering Clip {clip_index + 1} - Pass 1 (Draft {w1}x{h1})...", 0.1)
+            progress_cb("pass1", f"Clip {clip_index + 1} - Pass 1 " + (f"loaded from cache ({w1}x{h1})" if cached else f"(Draft {w1}x{h1})") + "...", 0.1)
 
-        _LOG.info(
-            f"Clip {clip_index + 1}: Pass 1 Ref2VA at {w1}x{h1}, {frame_count} frames, seed={seed}"
-        )
+        if cached:
+            _LOG.info(f"Clip {clip_index + 1}: Pass 1 ({w1}x{h1}, {frame_count} frames, seed={seed}) loaded from the pass-1 disk cache; pass-1 sampling skipped")
+        else:
+            _LOG.info(
+                f"Clip {clip_index + 1}: Pass 1 Ref2VA at {w1}x{h1}, {frame_count} frames, seed={seed}"
+            )
 
         # Generate Pass 1 conditioning + empty latent
         out_p1 = out_p2 = None
-        if getattr(self, "single_text_encode", False):
+        pos_p1 = latent_p1 = None
+        trim_p1 = 0
+        if cached:
+            pass
+        elif getattr(self, "single_text_encode", False):
+            # The text encoder sees the reference pictures at the encode size, so with pass 2 off the
+            # single encode runs at ``p1_text_size`` (the size a standard final would use) to give the
+            # same pass-1 conditioning as a full render that is finalised at that size.
+            enc_w, enc_h = (w2, h2) if pass2_enabled or not p1_text_size else p1_text_size
             out_p2 = MiniMaxH3ReferenceToVideo.execute(
                 clip=self.clip,
                 vae=self.vae,
                 audio_vae=self.audio_vae,
                 prompt=prompt,
-                width=w2,
-                height=h2,
+                width=enc_w,
+                height=enc_h,
                 length=frame_count,
                 ref_image_size="match",
                 ref_images=ref_images,
@@ -1076,7 +1099,7 @@ class PurePDDEngine:
                 ref_audios=ref_audios or None,
             )
             out_p1 = self._pass1_from_pass2(out_p2, ref_images, w1, h1, frame_count, clip_index)
-        if out_p1 is None:
+        if out_p1 is None and not cached:
             out_p1 = MiniMaxH3ReferenceToVideo.execute(
                 clip=self.clip,
                 vae=self.vae,
@@ -1091,13 +1114,14 @@ class PurePDDEngine:
                 ref_video_audios=ref_video_audios or None,
                 ref_audios=ref_audios or None,
             )
-        pos_p1 = self._bridge(_safe_get_output(out_p1, 0, "positive"), "pass 1")
-        latent_p1 = _safe_get_output(out_p1, 1, "latent")
+        if not cached:
+            pos_p1 = self._bridge(_safe_get_output(out_p1, 0, "positive"), "pass 1")
+            latent_p1 = _safe_get_output(out_p1, 1, "latent")
 
         # If extending (clip_index > 0) and previous latent available: attach motion context
         self.last_trim_frames = 0
         self.last_draft = None
-        if clip_index > 0 and previous_draft is not None:
+        if not cached and clip_index > 0 and previous_draft is not None:
             _LOG.info(f"Clip {clip_index + 1}: Applying Pass 1 motion context ({context_length}f video)")
             pos_p1, trim_p1, _, _, _ = self.motion_ram.apply(
                 pos_p1,
@@ -1113,7 +1137,7 @@ class PurePDDEngine:
         # previous clip's final latent, all of which are known here -- so the
         # UNet can stay resident straight through pass 1 -> upscale -> pass 2
         # and the text-encoder/UNet round trip per clip is halved.
-        if out_p2 is None:
+        if pass2_enabled and out_p2 is None:
             out_p2 = MiniMaxH3ReferenceToVideo.execute(
                 clip=self.clip,
                 vae=self.vae,
@@ -1128,27 +1152,39 @@ class PurePDDEngine:
                 ref_video_audios=ref_video_audios or None,
                 ref_audios=ref_audios or None,
             )
-        pos_p2 = self._bridge(_safe_get_output(out_p2, 0, "positive"), "pass 2")
-        latent_p2 = _safe_get_output(out_p2, 1, "latent")
-        if clip_index > 0 and previous_latent is not None:
-            pos_p2, trim_p2, _, _, _ = self.motion_ram.apply(
-                pos_p2,
-                latent_p2,
-                previous_latent,
-                str(context_length),
-                int(audio_context_length),
-            )
-            self.last_trim_frames = int(trim_p2)
+        if pass2_enabled:
+            pos_p2 = self._bridge(_safe_get_output(out_p2, 0, "positive"), "pass 2")
+            latent_p2 = _safe_get_output(out_p2, 1, "latent")
+            if clip_index > 0 and previous_latent is not None:
+                pos_p2, trim_p2, _, _, _ = self.motion_ram.apply(
+                    pos_p2,
+                    latent_p2,
+                    previous_latent,
+                    str(context_length),
+                    int(audio_context_length),
+                )
+                self.last_trim_frames = int(trim_p2)
+        elif cached:
+            self.last_trim_frames = int(cached_trim)
+        else:
+            self.last_trim_frames = int(trim_p1)
         del out_p1, out_p2
 
-        # Sample Pass 1 with Euler + PDD 8-step sigmas
-        sampled_p1 = self._sample_euler(
-            model=model,
-            positive=pos_p1,
-            latent_image=latent_p1,
-            sigmas=pdd_sigmas_p1,
-            seed=seed,
-        )
+        if cached:
+            sampled_p1 = {"samples": cached_pass1["samples"]}
+        else:
+            # Sample Pass 1 with Euler + PDD 8-step sigmas
+            sampled_p1 = self._sample_euler(
+                model=model,
+                positive=pos_p1,
+                latent_image=latent_p1,
+                sigmas=pdd_sigmas_p1,
+                seed=seed,
+            )
+
+        if not pass2_enabled:
+            self.last_draft = None if cached else sampled_p1
+            return sampled_p1, None
 
         # =====================================================================
         # LATENT 3D UPSCALE & ALIGNMENT
@@ -1158,7 +1194,7 @@ class PurePDDEngine:
 
         _LOG.info(f"Clip {clip_index + 1}: Separating AV latent and upscaling video to {w2}x{h2}...")
 
-        self.last_draft = sampled_p1
+        self.last_draft = None if cached else sampled_p1
         # Separate AV latent
         video_p1, audio_p1 = _streams_from_latent(sampled_p1, "samples")
 
