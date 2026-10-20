@@ -1058,6 +1058,8 @@ class PurePDDEngine:
                 if key not in ref_images:
                     ref_images[key] = last_frame_guide
                     break
+        _LOG.debug("Clip %d: %d reference picture(s)%s", clip_index + 1, len(ref_images),
+                   " (the last is the previous clip's last frame)" if last_frame_guide is not None else "")
 
         # =====================================================================
         # STAGE 1: PASS 1 (Low-Res Ref2VA PDD Generation)

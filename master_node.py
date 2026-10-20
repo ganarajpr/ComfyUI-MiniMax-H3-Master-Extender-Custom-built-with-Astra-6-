@@ -22,7 +22,7 @@ from server import PromptServer
 
 import folder_paths
 import nodes
-from .master_projects import load_reference_images, _clip_identity, _chain_key, _clip_fingerprint, _pass1_fingerprint, _audio_refine_signature
+from .master_projects import load_reference_images, clip_picture_keys, _clip_identity, _chain_key, _clip_fingerprint, _pass1_fingerprint, _audio_refine_signature
 from . import prompt_rewriter
 
 from . import motion_context_disk
@@ -830,6 +830,15 @@ class MiniMaxH3MasterExtender:
             "refs": _media_digest([refs, ref_videos, ref_video_audios, ref_audios]),
         }
 
+        clip_pictures = [clip_picture_keys(c, refs, n + 1) for n, c in enumerate(clips)]
+        if any(p is not None for p in clip_pictures):
+            if str(kwargs.get("rewrite_mode", "off")) != "off":
+                _LOG.warning("Per-clip refs: the prompt rewriter still writes every clip against all %d job pictures", len(refs))
+            for n, c in enumerate(clips):
+                if clip_pictures[n] is not None:
+                    _LOG.info("Clip %d: per-clip refs %s -> %d of %d job pictures (<Picture 1..%d> in that order)",
+                              n + 1, c.get("refs"), len(clip_pictures[n]), len(refs), len(clip_pictures[n]))
+
         previous_handle = None
         previous_proxy = None
         draft_handle = None
@@ -977,7 +986,7 @@ class MiniMaxH3MasterExtender:
                 pass1_res=(w1, h1),
                 pass2_res=(w2, h2),
                 pass2_denoise=float(pass2_denoise),
-                ref_images=refs,
+                ref_images=refs if clip_pictures[i] is None else clip_pictures[i],
                 previous_latent=previous_proxy,
                 previous_draft=previous_draft,
                 context_length=str(context_length),
