@@ -53,6 +53,7 @@ from .pdd_pure_engine import (
     MasterEngine,
     parse_resolution,
     duration_to_h3_frames,
+    with_dual_p1_settings,
 )
 
 PASS2_OFF = "off (pass 1 only)"
@@ -481,6 +482,10 @@ class MiniMaxH3MasterExtender:
                 "sparse_start_percent": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.01, "tooltip": "Fraction of the schedule that stays dense before sparse attention starts. -1 = auto: 0.16 with HyperFlow 8-step + sol-attn (HyperFlow's validated recipe), otherwise 0.20 (the long-standing value). Any value 0-1 overrides."}),
                 "sparse_dense_blocks": ("STRING", {"default": "auto", "multiline": False, "tooltip": "Transformer blocks that stay dense, e.g. 0,1. auto = 0,1 with HyperFlow 8-step + sol-attn (HyperFlow's recipe), otherwise none. Empty = no dense blocks; any list overrides."}),
                 "sparse_sink": (["auto", "exact_kv_and_rows", "exact_kv", "off"], {"default": "auto", "tooltip": "Sink conditioning of core BlockSparseAttention. auto = off with HyperFlow 8-step + sol-attn (HyperFlow's recipe), otherwise exact_kv_and_rows (the long-standing value). Any other choice overrides."}),
+                # --- HyperFlow dual sampling (appended last; all off by default) ---
+                "dual_sampling": ("BOOLEAN", {"default": False, "tooltip": "HyperFlow 8-step only. Pass 2 becomes the tail of HyperFlow's trained 8-step grid starting at dual_split_step (2 -> 6 steps from sigma 0.9843): the image is generated at the pass-2 size and pass 1 only sets the layout. No pass-2 LoRA is used (pass2_lora is ignored) and pass2_denoise is ignored. Pair it with a small pass 1 (1056x608) and a larger pass 2 (1344x768). Off = the normal refine pass. Ignored in Turbo LoRA mode."}),
+                "dual_split_step": ("INT", {"default": 2, "min": 1, "max": 6, "step": 1, "tooltip": "Dual sampling: the grid index where pass 2 takes over, so pass 2 runs 8 minus this many steps (2 -> 6 steps, 6 -> 2 steps). Higher = pass 2 changes less of pass 1's image."}),
+                "pass1_early_stop": ("BOOLEAN", {"default": False, "tooltip": "EXPERIMENTAL, dual sampling only. Pass 1 runs only the first dual_split_step steps instead of all 8; its clean estimate is upscaled and pass 2 re-noises it to the split sigma and continues. Saves most of pass 1, but the 3D latent upscaler was trained on clean latents, so quality is not validated. Off keeps the full 8-step pass 1."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -797,6 +802,12 @@ class MiniMaxH3MasterExtender:
             kwargs.get("pass2_lora_mode", "replace engine LoRA"),
             kwargs.get("pass2_steps", 4),
         )
+        dual_active = (bool(kwargs.get("dual_sampling", False)) and not str(accel_mode).lower().startswith("turbo"))
+        engine.configure_dual_sampling(
+            kwargs.get("dual_sampling", False),
+            kwargs.get("dual_split_step", 2),
+            kwargs.get("pass1_early_stop", False),
+        )
         audio_refine = _audio_refine_signature(
             kwargs.get("audio_refine_steps", 0), kwargs.get("audio_refine_denoise", 0.5),
             kwargs.get("audio_refine_cache", True))
@@ -833,6 +844,10 @@ class MiniMaxH3MasterExtender:
             "single_te": bool(single_te),
             "refs": _media_digest([refs, ref_videos, ref_video_audios, ref_audios]),
         }
+
+        p1_settings = with_dual_p1_settings(
+            p1_settings, dual_active and pass2_enabled, kwargs.get("dual_split_step", 2),
+            bool(kwargs.get("pass1_early_stop", False)))
 
         clip_pictures = [clip_picture_keys(c, refs, n + 1) for n, c in enumerate(clips)]
         if any(p is not None for p in clip_pictures):

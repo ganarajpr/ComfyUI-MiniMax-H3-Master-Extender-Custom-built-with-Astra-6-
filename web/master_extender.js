@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { createProjectControls } from "./master_projects.js";
-import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode } from "./widget_migration.js";
+import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue } from "./widget_migration.js";
 
 const TARGET_NODE = "MiniMaxH3MasterExtender";
 const EVENT_PROGRESS = "master_extender_progress";
@@ -193,6 +193,9 @@ const ALWAYS_HIDDEN_WIDGETS = ["pdd_file"];
 const TURBO_STEPS_WIDGETS = ["pdd_nfe"];
 const HYPERFLOW_ONLY_WIDGETS = ["hyperflow_file", "hyperflow_curve_refit", "hyperflow_strength", "hyperflow_lora_mode"];
 const SLA_ONLY_WIDGETS = ["sla_sparsity"];
+// Dual sampling (appended last, after sparse_sink): HyperFlow only; the split step and early stop only while it is on.
+const DUAL_WIDGET = "dual_sampling";
+const DUAL_DETAIL_WIDGETS = ["dual_split_step", "pass1_early_stop"];
 // Widgets appended after master_ui-less workflows were saved: a missing/invalid value is put back to the default.
 const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
 // auto_clips is appended after rewrite_story; a workflow saved before it carries the empty master_ui value there.
@@ -282,7 +285,15 @@ function repairStoryEngine(node) {
     if (w && (w.value === "e4" || w.value === "e4.8")) w.value = "e4.10";
 }
 
+function repairDualWidgets(node) {
+    for (const name of [DUAL_WIDGET, ...DUAL_DETAIL_WIDGETS]) {
+        const w = node.widgets?.find(x => x.name === name);
+        if (w) w.value = dualWidgetValue(name, w.value);
+    }
+}
+
 function repairHyperflowWidgets(node, defaults) {
+    repairDualWidgets(node);
     repairFinalDecode(node);
     repairStoryEngine(node);
     repairReasoningBudget(node);
@@ -311,6 +322,9 @@ function setupModeWidgets(node) {
         const slaOn = sla ? !!sla.value : false;
         TURBO_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), turbo));
         HYPERFLOW_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), hyperflow));
+        const dualOn = hyperflow && !!byName(DUAL_WIDGET)?.value;
+        setWidgetVisible(byName(DUAL_WIDGET), hyperflow);
+        DUAL_DETAIL_WIDGETS.forEach(n => setWidgetVisible(byName(n), dualOn));
         ALWAYS_HIDDEN_WIDGETS.forEach(n => setWidgetVisible(byName(n), false));
         TURBO_STEPS_WIDGETS.forEach(n => setWidgetVisible(byName(n), turbo));
         SLA_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), slaOn));
@@ -322,7 +336,7 @@ function setupModeWidgets(node) {
     };
     node.applyModeWidgets = apply;
 
-    for (const w of [accel, sla]) {
+    for (const w of [accel, sla, byName(DUAL_WIDGET)]) {
         if (!w) continue;
         const original = w.callback;
         w.callback = function () {
@@ -796,7 +810,9 @@ app.registerExtension({
                 const p2note = p2 !== "none" ? ` · refine ${shortModelName(p2)}${String(getW("pass2_lora_mode", "")).startsWith("replace") ? " (replace)" : ""}` : "";
                 const bridge = String(getW("semantic_bridge", "none"));
                 const bridgeNote = bridge !== "none" ? ` · bridge α ${Number(getW("semantic_bridge_alpha", 0)).toFixed(2)}` : "";
-                if (isHyperflow()) return `HyperFlow 8-step · ${shortModelName(getW("hyperflow_file"))} · refit ${getW("hyperflow_curve_refit", true) ? "on" : "off"} · euler${p2note}${bridgeNote}`;
+                const dualNote = getW(DUAL_WIDGET, false)
+                    ? ` · dual sampling (pass 2 from step ${getW("dual_split_step", 2)}${getW("pass1_early_stop", false) ? ", pass 1 early stop" : ""})` : "";
+                if (isHyperflow()) return `HyperFlow 8-step · ${shortModelName(getW("hyperflow_file"))} · refit ${getW("hyperflow_curve_refit", true) ? "on" : "off"} · euler${p2note}${dualNote}${bridgeNote}`;
                 return `Turbo LoRA · ${shortModelName(getW("turbo_lora"))} · ${steps} steps · ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}${p2note}${bridgeNote}`;
             }
             function qualitySummary() {
@@ -937,6 +953,16 @@ app.registerExtension({
                         { hint: "Pruned base only: restores most of the two-time (t, r) conditioning. Off = LoRA-only." }));
                     if (expert()) wrap.appendChild(uiRow("strength", bindNumber("hyperflow_strength"), { indent: true }));
                     wrap.appendChild(uiHint("Pass 2 without a refine LoRA is cut from HyperFlow's own grid; a refine LoRA forces replace mode (no HyperFlow on that tail)."));
+                    if (W(DUAL_WIDGET)) {
+                        wrap.appendChild(uiRow("dual sampling", bindToggle(DUAL_WIDGET),
+                            { hint: "Pass 2 = the grid tail from the split step, generated at the pass-2 size; pass 1 only sets the layout. No refine LoRA, refine denoise ignored." }));
+                        if (getW(DUAL_WIDGET, false)) {
+                            wrap.appendChild(uiRow("split step", bindNumber("dual_split_step"),
+                                { indent: true, hint: "Grid index where pass 2 takes over: 2 = 6 pass-2 steps from sigma 0.9843." }));
+                            wrap.appendChild(uiRow("pass 1 early stop", bindToggle("pass1_early_stop"),
+                                { indent: true, hint: "Experimental: pass 1 runs only the first split-step steps. The 3D upscaler was trained on clean latents." }));
+                        }
+                    }
                 } else if (isTurbo()) {
                     wrap.appendChild(uiRow("turbo lora", bindSelect("turbo_lora", { render: shortModelName })));
                     wrap.appendChild(uiRow("steps", bindSelect("pdd_nfe")));

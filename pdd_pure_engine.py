@@ -153,6 +153,30 @@ def hyperflow_tail_sigmas(grid, denoise):
     return grid[-(tail + 1):]
 
 
+def dual_split_index(grid, split):
+    """Grid index where pass 2 takes over in dual sampling: at least 1, and early enough that pass 2 keeps 2 steps."""
+    return max(1, min(int(split), len(grid) - 3))
+
+
+def dual_pass1_sigmas(grid, split):
+    """Pass 1 of dual sampling with early stop: only grid[:k+1]."""
+    return grid[:dual_split_index(grid, split) + 1]
+
+
+def dual_pass2_sigmas(grid, split):
+    """Pass 2 of dual sampling: the grid tail from index k, i.e. len(grid) - 1 - k steps."""
+    return grid[dual_split_index(grid, split):]
+
+
+def with_dual_p1_settings(settings, active, split, early_stop):
+    """Add the dual-sampling keys to the pass-1 fingerprint settings, only when they change what pass 1 produces
+    (early stop). Otherwise the dict is returned untouched so existing pass-1 caches keep hitting."""
+    if active and early_stop:
+        settings = dict(settings)
+        settings["dual"] = [int(split), True]
+    return settings
+
+
 SPARSE_SINK_CHOICES = ("exact_kv_and_rows", "exact_kv", "off")
 
 
@@ -263,6 +287,9 @@ class MasterEngine:
         self.motion_ram = MiniMaxH3MotionContextRAM()
         self.prepared_model = None
         self.pass1_sigmas = None
+        self.dual_active = False
+        self.dual_split_step = 2
+        self.pass1_early_stop = False
 
     def initialize_model(self):
         """Prepare base model with SigmaShift, the acceleration (Turbo LoRA or HyperFlow) and the attention backend."""
@@ -339,6 +366,25 @@ class MasterEngine:
             self.pass2_lora_mode = "replace"
         self.pass2_steps = int(steps or 0)
         self.pass2_model = None
+
+    def configure_dual_sampling(self, enabled=False, split_step=2, early_stop=False):
+        """HyperFlow dual sampling: pass 2 is the tail of the trained grid from index `split_step`, with no pass-2
+        LoRA; `early_stop` also cuts pass 1 to grid[:split_step + 1]. Off (the default) changes nothing."""
+        self.dual_active = False
+        self.pass1_early_stop = False
+        self.dual_split_step = int(split_step)
+        if not enabled:
+            return
+        if self.turbo_mode:
+            _LOG.warning("Dual sampling needs HyperFlow 8-step; Turbo LoRA mode runs the normal two passes")
+            return
+        if self.pass2_lora:
+            _LOG.warning("Dual sampling: pass 2 runs the HyperFlow grid tail without a refine LoRA; ignoring pass-2 LoRA %s",
+                         self.pass2_lora)
+            self.pass2_lora = None
+            self.pass2_model = None
+        self.dual_active = True
+        self.pass1_early_stop = bool(early_stop)
 
     def configure_audio_refine(self, steps=0, denoise=0.5, cache=True):
         """Audio-only refine after pass 2 (ComfyUI-H3-AudioRefine). steps 0 = off."""
@@ -606,6 +652,12 @@ class MasterEngine:
         round(steps x denoise) steps of the turbo schedule. With a pass-2 LoRA
         the schedule length can differ from pass 1 (pass2_steps), and in
         "replace" mode the pass-1 grid no longer applies."""
+        if self.dual_active:
+            tail = dual_pass2_sigmas(self.pass1_sigmas, self.dual_split_step)
+            _LOG.info("HyperFlow dual sampling: pass 2 runs grid[%d:] (%d steps): %s",
+                      dual_split_index(self.pass1_sigmas, self.dual_split_step), len(tail) - 1,
+                      [round(float(x), 4) for x in tail])
+            return tail
         if self.hyperflow_mode and not self._pass2_lora_active():
             tail = hyperflow_tail_sigmas(self.pass1_sigmas, pass2_denoise)
             _LOG.info("HyperFlow: pass 2 uses the tail of HyperFlow's own grid (%d steps): %s",
@@ -829,7 +881,7 @@ class MasterEngine:
         result["samples"] = out["samples"].to(comfy.model_management.intermediate_device())
         return result
 
-    def _sample_euler(self, model, positive, latent_image, sigmas, seed):
+    def _sample_euler(self, model, positive, latent_image, sigmas, seed, return_denoised=False):
         """Standard Euler sampling using ComfyUI core sampler internals directly.
 
         NOTE: Do NOT place any bare 'import comfy' statements inside this function.
@@ -879,6 +931,9 @@ class MasterEngine:
 
         if _have_lp:
             callback = _lp.prepare_callback(guider.model_patcher, sigmas.shape[-1] - 1, x0_output)
+        elif return_denoised:
+            def callback(step, x0, x, total_steps):
+                x0_output["x0"] = x0
         else:
             callback = None
 
@@ -896,6 +951,9 @@ class MasterEngine:
             disable_pbar=disable_pbar,
             seed=seed,
         )
+        if return_denoised:
+            # The sigmas stop above 0, so `samples` still carries noise; the last step's x0 prediction is the clean estimate.
+            samples = guider.inner_model.process_latent_out(x0_output["x0"].to(torch.float32))
         samples = samples.to(comfy.model_management.intermediate_device())
 
         out = latent.copy()
@@ -1139,12 +1197,19 @@ class MasterEngine:
             sampled_p1 = {"samples": cached_pass1["samples"]}
         else:
             # Sample Pass 1 with the pass-1 sigmas
+            early_stop = self.dual_active and self.pass1_early_stop and pass2_enabled
+            if early_stop:
+                sigmas_p1 = dual_pass1_sigmas(sigmas_p1, self.dual_split_step)
+                _LOG.info("Clip %d: dual sampling early stop, pass 1 runs grid[:%d] (%d steps): %s",
+                          clip_index + 1, len(sigmas_p1), len(sigmas_p1) - 1,
+                          [round(float(x), 4) for x in sigmas_p1])
             sampled_p1 = self._sample_euler(
                 model=model,
                 positive=pos_p1,
                 latent_image=latent_p1,
                 sigmas=sigmas_p1,
                 seed=seed,
+                return_denoised=early_stop,
             )
 
         if not pass2_enabled:

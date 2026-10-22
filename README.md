@@ -147,6 +147,22 @@ A separate node, `H3 Story Writer (brief to story)` (category *MiniMax H3 Master
 
 The default acceleration mode (the other is Turbo LoRA). See [HYPERFLOW.md](HYPERFLOW.md) for the node pack, weights, base/build pairing and the pass-2 rule.
 
+## HyperFlow dual sampling (opt-in)
+
+Three inputs at the end of the node, all off by default (a workflow or API graph that does not send them renders exactly as before):
+
+| input | default | meaning |
+|---|---|---|
+| `dual_sampling` | off | HyperFlow 8-step only. Pass 2 = the tail of HyperFlow's trained grid `[1.0, 0.9939, 0.9843, 0.9661, 0.9231, 0.8349, 0.6969, 0.4688, 0.0]` from index `dual_split_step`. No pass-2 LoRA (`pass2_lora` is ignored, with a warning) and `pass2_denoise` is ignored. |
+| `dual_split_step` | 2 | Grid index where pass 2 takes over: 2 = 6 pass-2 steps from sigma 0.9843, 6 = 2 steps. |
+| `pass1_early_stop` | off | Experimental, needs dual sampling. Pass 1 runs only `grid[:k+1]`. |
+
+The image is generated at the pass-2 size and pass 1 only sets the layout. Suggested: pass 1 `1056x608`, pass 2 `1344x768`, split 2 (see `example_workflows/MiniMax_H3_Master_Extender_HyperFlow_DualSampling.json`). In Turbo LoRA mode dual sampling logs a warning and runs the normal two passes.
+
+**Early stop.** Pass 1 runs the first k steps, then the model's clean (x0) estimate from the last step is upscaled, and pass 2 re-noises it to `grid[k]` the same way every pass 2 does (the sampler blends noise into the start latent at the first sigma, same seed) and runs the rest. The 3D latent upscaler was trained on clean latents, which is why the x0 estimate is used instead of the noisy step latent, but quality is not validated; keep it off for approved looks. With pass 2 off, early stop is ignored.
+
+**Caching.** `dual_sampling` alone does not change pass 1, so pass-1 caches keep hitting. Early stop adds `dual: [k, true]` to the pass-1 fingerprint, only when on. As with any other pass-2 setting, the final-clip cache does not track these inputs: re-roll the clip (or change the seed) to re-render pass 2.
+
 ## Model files (not included)
 
 These are the filenames selected in the source workflow. Choose compatible alternatives in the dropdowns if you use another supported precision or filename; renaming an incompatible model does not make it compatible.
