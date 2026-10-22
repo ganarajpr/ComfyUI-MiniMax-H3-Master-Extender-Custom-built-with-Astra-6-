@@ -49,8 +49,8 @@ const stdP1Preset = (k) => ({
 export const MASTER_PRESETS = [
     {
         id: "standard",
-        label: "Standard · ~146 s",
-        hint: "HyperFlow 8-step, DMAD refiner. Times in this list are the DEVI fight (15 s, 9 refs) unless noted: 146 s. Fewer refs are faster (2 refs: ~89 s).",
+        label: "Standard · ~132 s",
+        hint: "HyperFlow 8-step, DMAD refiner. Times in this list are the DEVI fight (15 s, 9 refs) unless noted: 132 s with the whole-clip pass 2 (146 s windowed). Fewer refs are faster (2 refs: ~89 s).",
         values: STANDARD_VALUES,
     },
     stdP1Preset(7),
