@@ -96,3 +96,20 @@ for (const file of workflows) {
     assert(["HyperFlow 8-step", "Turbo LoRA", "HyperFlow 8-step \u00b7 dual sampling"].includes(node.widgets_values[names.indexOf("accel_mode")]), file);
 }
 console.log("widget migration ok");
+
+// pass 2 steps row: dual on -> dual_split_step, off -> pass2_steps; binding never writes
+{
+    const { pass2RowBinding } = await import("../web/widget_migration.js");
+    assert.equal(pass2RowBinding(true, 3).widget, "dual_split_step");
+    assert.match(pass2RowBinding(true, 3).hint, /3 HyperFlow steps.*then 5/);
+    assert.equal(pass2RowBinding(false, 3).widget, "pass2_steps");
+    assert.match(pass2RowBinding(false).hint, /Refine schedule/);
+    const dir = new URL("../example_workflows/", import.meta.url);
+    for (const file of fs.readdirSync(dir).filter(f => f.endsWith(".json"))) {
+        const node = JSON.parse(fs.readFileSync(new URL(file, dir), "utf8")).nodes.find(n => n.type === "MiniMaxH3MasterExtender");
+        const before = JSON.stringify(node.widgets_values);
+        const frozen = Object.freeze([...node.widgets_values]);
+        pass2RowBinding(true, frozen[0]); pass2RowBinding(false, frozen[0]);
+        assert.equal(JSON.stringify(node.widgets_values), before, `${file}: pass2 row binding leaves values unchanged`);
+    }
+}

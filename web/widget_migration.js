@@ -55,3 +55,18 @@ export function dualWidgetValue(name, value) {
     if (typeof fallback === "boolean") return typeof value === "boolean" ? value : fallback;
     return Number.isInteger(value) && value >= 1 && value <= 6 ? value : fallback;
 }
+
+// The single "pass 2 steps" panel row: with dual sampling it binds the split step, otherwise the refine schedule.
+export function pass2RowBinding(dualActive, splitStep = 2) {
+    if (dualActive) {
+        const k = Number(splitStep);
+        return {
+            widget: "dual_split_step",
+            hint: `Split at step ${k}: ${k} HyperFlow steps at pass-1 size, then ${8 - k} at pass-2 size. The refine LoRA is not used.`,
+        };
+    }
+    return {
+        widget: "pass2_steps",
+        hint: "Refine schedule. 0 = same as engine steps. Tail length = round(steps x refine denoise).",
+    };
+}
