@@ -285,6 +285,7 @@ class MasterEngine:
         sparse_start_percent=-1.0,
         sparse_dense_blocks="auto",
         sparse_sink="auto",
+        pass2_sla_sparsity=0.0,
     ):
         self.raw_model = model
         self.accel_mode = str(accel_mode)
@@ -301,6 +302,8 @@ class MasterEngine:
         self.scheduler_name = scheduler_name
         self.sla_enabled = bool(sla_enabled)
         self.sla_sparsity = float(sla_sparsity)
+        self.pass2_sla_sparsity = float(pass2_sla_sparsity or 0.0)
+        self.pass2_sla_model = None
         self.sparse_method = str(sparse_method or "sla")
         self.sparse_tau = float(sparse_tau)
         self.sparse_start_percent = sparse_start_percent
@@ -367,7 +370,7 @@ class MasterEngine:
         self.pass1_sigmas = sigmas_p1
         return self.prepared_model, self.pass1_sigmas
 
-    def _finish_model(self, model, sparse=True):
+    def _finish_model(self, model, sparse=True, sparsity=None):
         """Dense attention backend, then optional block-sparse attention on top
         (SLA wraps the dense backend as its fall-through, so order matters)."""
         attention_name = {
@@ -386,7 +389,7 @@ class MasterEngine:
         model = model.clone()
         model.set_model_optimized_attention(attention_function)
         _LOG.info("Sampling attention: %s", self.attention_backend)
-        return self._apply_sla(model) if sparse else model
+        return self._apply_sla(model, sparsity) if sparse else model
 
     # ------------------------------------------------------------------
     # Pass-2 (refine) LoRA: a different LoRA for the high-res tail only
@@ -405,6 +408,7 @@ class MasterEngine:
             self.pass2_lora_mode = "replace"
         self.pass2_steps = int(steps or 0)
         self.pass2_model = None
+        self.pass2_sla_model = None
 
     def configure_dual_sampling(self, enabled=False, split_step=2, early_stop=False):
         """HyperFlow dual sampling: pass 2 is the tail of the trained grid from index `split_step`, with no pass-2
@@ -423,6 +427,7 @@ class MasterEngine:
                          self.pass2_lora)
             self.pass2_lora = None
             self.pass2_model = None
+            self.pass2_sla_model = None
         self.dual_active = True
         self.pass1_early_stop = bool(early_stop)
 
@@ -533,8 +538,13 @@ class MasterEngine:
     def initialize_pass2_model(self):
         """Model used for the refine pass: the pass-1 model unless a pass-2 LoRA is set."""
         prepared, _ = self.initialize_model()
+        p2_sparsity = self._pass2_sla_override()
         if not self._pass2_lora_active():
-            return prepared
+            if p2_sparsity is None:
+                return prepared
+            if self.pass2_sla_model is None:
+                self.pass2_sla_model = self._finish_model(self.accel_model, sparsity=p2_sparsity)
+            return self.pass2_sla_model
         if getattr(self, "pass2_model", None) is not None:
             return self.pass2_model
         lora_cls = nodes.NODE_CLASS_MAPPINGS.get("LoraLoaderModelOnly")
@@ -548,7 +558,7 @@ class MasterEngine:
             base = self.accel_model            # turbo LoRA / HyperFlow already applied
         res = lora_cls().load_lora_model_only(base, self.pass2_lora, self.pass2_lora_strength)
         model = _safe_get_output(res, 0, "model")
-        self.pass2_model = self._finish_model(model)
+        self.pass2_model = self._finish_model(model, sparsity=p2_sparsity)
         _LOG.info("Pass 2 LoRA: %s @ %.2f (%s engine LoRA), %s steps schedule",
                   self.pass2_lora, self.pass2_lora_strength,
                   "replacing" if self.pass2_lora_mode == "replace" else "stacked on",
@@ -657,7 +667,17 @@ class MasterEngine:
             _LOG.info("HyperFlow: sparse attention is OFF (dense recipe)")
         return hf_model, sigmas
 
-    def _apply_sla(self, model):
+    def _pass2_sla_override(self):
+        """Pass-2-only sparsity, or None when pass 2 keeps sla_sparsity (the default, and for sol-attn)."""
+        if not self.sla_enabled or self.pass2_sla_sparsity <= 0.0:
+            return None
+        if self.sparse_method == "sol-attn":
+            _LOG.info("pass2_sla_sparsity %.2f ignored: sparse_method sol-attn selects by tau, not keep percent",
+                      self.pass2_sla_sparsity)
+            return None
+        return self.pass2_sla_sparsity
+
+    def _apply_sla(self, model, sparsity=None):
         """Block-sparse attention for both passes. On long sequences it roughly
         halves the per-step time (measured 39 -> 22 s/step at 1344x768 / 362
         frames at 90% sparsity).
@@ -674,7 +694,9 @@ class MasterEngine:
                          "(needs ComfyUI >= 0.35); continuing dense")
             return model
         method = str(getattr(self, "sparse_method", "sla") or "sla")
-        keep_percent = max(0.5, min(95.0, (1.0 - self.sla_sparsity) * 100.0))
+        if sparsity is None:
+            sparsity = self.sla_sparsity
+        keep_percent = max(0.5, min(95.0, (1.0 - sparsity) * 100.0))
         selection = {"selection": method}
         if method == "sol-attn":
             selection["tau"] = float(getattr(self, "sparse_tau", 1.3))
@@ -692,7 +714,7 @@ class MasterEngine:
             out = _safe_get_output(res, 0, "model")
             if out is not None:
                 detail = (f"tau={selection['tau']}" if method == "sol-attn"
-                          else f"keep={keep_percent:.1f}% (sparsity {self.sla_sparsity:.2f})")
+                          else f"keep={keep_percent:.1f}% (sparsity {sparsity:.2f})")
                 _LOG.info("Sparse attention (core BlockSparseAttention, %s): %s, dense before %.0f%%, "
                           "dense_blocks '%s', sink %s, min_tokens %d, dense fall-through = %s", method, detail,
                           cfg["start"] * 100, cfg["dense_blocks"], cfg["sink"], self.SPARSE_MIN_TOKENS,
