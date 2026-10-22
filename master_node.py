@@ -821,7 +821,7 @@ class MiniMaxH3MasterExtender:
 
         p1_settings = {
             # pdd_file is inert now but stays in the fingerprint so pass-1 caches written before PDD's removal still hit
-            "p1_res": [int(w1), int(h1)], "pdd_file": str(pdd_file), "pdd_nfe": str(pdd_nfe),
+            "p1_res": [int(w1), int(h1)], "pdd_file": str(kwargs.get("pdd_file", "")), "pdd_nfe": str(pdd_nfe),
             "accel_mode": str(accel_mode), "turbo_lora": str(turbo_lora), "turbo_lora_strength": float(turbo_lora_strength),
             "sampler": str(turbo_sampler), "scheduler": str(turbo_scheduler),
             "attention": str(attention_backend), "sla": [bool(sla_enabled), float(sla_sparsity)],
