@@ -1,6 +1,6 @@
 # HyperFlow 8-step mode
 
-`accel_mode = "HyperFlow 8-step"` is a third acceleration mode next to "PDD 8-step" and "Turbo LoRA". It runs Video Rebirth's HyperFlow: an 8-step LoRA plus two-time `(t, r)` conditioning.
+`accel_mode = "HyperFlow 8-step"` is the default acceleration mode (the other is "Turbo LoRA"; the old "PDD 8-step" mode was removed, and a saved workflow or API graph that still says it runs HyperFlow). It runs Video Rebirth's HyperFlow: an 8-step LoRA plus two-time `(t, r)` conditioning.
 
 ## Requirements
 
@@ -19,7 +19,7 @@ A mismatched pairing stops the job with the node pack's own message. With refit 
 
 ## What the mode does
 
-- Pass 1 uses the MODEL and the trained 9-point SIGMAS returned by `ApplyHyperFlowH3` (applied on the SigmaShift model). Never a BasicScheduler schedule. `pdd_nfe` is ignored (8 fixed), and the sampler is Euler.
+- Pass 1 uses the MODEL and the trained 9-point SIGMAS returned by `ApplyHyperFlowH3` (applied on the SigmaShift model). Never a BasicScheduler schedule. `pdd_nfe` (the Turbo LoRA step count) is ignored (8 fixed), and the sampler is Euler.
 - New inputs, appended after every existing widget so saved workflows keep their widget order: `hyperflow_file`, `hyperflow_curve_refit`, `hyperflow_strength`.
 - Sparse attention: `sla_enabled` behaves as in the other modes and the log notes what is in effect (method, tau or keep %, start, dense_blocks, sink, and whether each came from the recipe, the default or your setting). HyperFlow's own validated sol-attn recipe is `start_percent 0.16`, `dense_blocks "0,1"`, `tau 1.0`, sink off. New inputs `sparse_start_percent` (-1 = auto), `sparse_dense_blocks` (`auto`) and `sparse_sink` (`auto`), appended last: with HyperFlow 8-step + `sparse_method` sol-attn, auto resolves to start 0.16, dense blocks 0,1, sink off; in every other mode auto is the old fixed 0.20 / none / exact_kv_and_rows. Any value you set wins. `sparse_tau` is not changed automatically (default 1.3; the recipe is 1.0).
 
@@ -48,7 +48,7 @@ The disk cache does not re-render when settings change. Clear the chain (panel "
 ## `hyperflow_lora_mode` (optional, default `bypass`)
 
 - `bypass`: the reference behaviour. The rank-256 LoRA is computed on top of the model at every step.
-  Measured cost is about 25% more time per pass-1 step than PDD (3.44 s against 2.74 s per step at 608x352).
+  Measured cost is about 25% more time per pass-1 step than the plain model (3.44 s against 2.74 s per step at 608x352).
 - `merge`: the LoRA is folded into the weights once, so each step should cost about the same as the
   plain model. The node pack warns that merging into quantized (int8) weights can change numerical
   results, so A/B it before relying on it. The two small base time projections stay in bypass in both modes.

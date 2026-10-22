@@ -35,3 +35,14 @@ export function normalizeReasoningBudget(value) {
     for (const b of REASONING_BUDGETS) if (Math.abs(b - n) <= Math.abs(best - n)) best = b;
     return String(best);
 }
+
+// accel_mode lost its "PDD 8-step" option; a saved workflow that still has it runs HyperFlow 8-step.
+// Returns the corrected values, or null when there is nothing to change.
+export function migrateAccelMode(names, values) {
+    if (!Array.isArray(values)) return null;
+    const i = names.indexOf("accel_mode");
+    if (i < 0 || !String(values[i] ?? "").toLowerCase().startsWith("pdd")) return null;
+    const out = [...values];
+    out[i] = "HyperFlow 8-step";
+    return out;
+}

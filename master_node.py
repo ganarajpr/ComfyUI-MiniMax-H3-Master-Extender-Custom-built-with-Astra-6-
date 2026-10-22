@@ -1,8 +1,8 @@
 """
 MiniMax H3 Master Extender Node
 ===============================
-Interactive Master multishot node combining the Pure 2-Stage 2-Pass PDD 8-Step
-+ 3D Latent Upscaler Engine with multishot continuity, per-clip controls,
+Interactive Master multishot node combining the Pure 2-Stage 2-Pass HyperFlow 8-step
+/ Turbo LoRA + 3D Latent Upscaler Engine with multishot continuity, per-clip controls,
 and clip-by-clip validation.
 """
 
@@ -50,7 +50,7 @@ from .motion_context_disk import (
 )
 from .motion_context_ram import _streams_from_latent
 from .pdd_pure_engine import (
-    PurePDDEngine,
+    MasterEngine,
     parse_resolution,
     duration_to_h3_frames,
 )
@@ -314,7 +314,19 @@ def _semantic_bridge_adapters():
             names = []
     return [n for n in names if n.lower().endswith(".safetensors") and not n.startswith("NO_ADAPTER_FOUND")]
 
+PASS2_LORA_DEFAULT = "h3\\minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
 HYPERFLOW_DEFAULT_FILE = "custom_node_hyperflow_8step_v1.0_comfyui_pruned.safetensors"
+
+
+ACCEL_MODES = ["HyperFlow 8-step", "Turbo LoRA"]
+
+
+def normalize_accel_mode(accel_mode):
+    """Workflows saved before PDD mode was removed still send "PDD 8-step"."""
+    if str(accel_mode).lower().startswith("pdd"):
+        _LOG.warning("accel_mode %r was removed; running HyperFlow 8-step instead", accel_mode)
+        return "HyperFlow 8-step"
+    return accel_mode
 
 
 def _hyperflow_files():
@@ -328,22 +340,10 @@ def _hyperflow_files():
 
 
 class MiniMaxH3MasterExtender:
-    """Master node for MiniMax H3 multishot video generation with Pure PDD engine."""
+    """Master node for MiniMax H3 multishot video generation with the Master engine."""
 
     @classmethod
     def INPUT_TYPES(cls):
-        # Scan available PDD models
-        pdd_files = []
-        if "pdd_acc" in folder_paths.folder_names_and_paths:
-            pdd_files.extend(folder_paths.get_filename_list("pdd_acc"))
-        lora_list = folder_paths.get_filename_list("loras")
-        for f in lora_list:
-            if any(k in f.lower() for k in ["pdd", "acc", "8step"]):
-                if f not in pdd_files:
-                    pdd_files.append(f)
-        if not pdd_files:
-            pdd_files = ["MiniMax-H3-Ref2VA-Acc-8Step.safetensors"]
-
         # Scan available 3D upscaler models
         upscaler_files = []
         if "latent_upscale_models" in folder_paths.folder_names_and_paths:
@@ -360,7 +360,7 @@ class MiniMaxH3MasterExtender:
                 "clip": ("CLIP", {"tooltip": "Qwen3-VL text encoder"}),
                 "vae": ("VAE", {"tooltip": "MiniMax H3 Video VAE"}),
                 "audio_vae": ("VAE", {"tooltip": "MiniMax H3 Audio VAE"}),
-                "pdd_file": (pdd_files, {"default": pdd_files[0], "tooltip": "PDD 8-Step Acceleration LoRA file"}),
+                "pdd_file": ("STRING", {"default": "", "tooltip": "Retired (PDD mode was removed). Kept only so saved workflows keep their widget order; any saved value is accepted and ignored."}),
                 "upscaler_model": (upscaler_files, {"default": upscaler_files[0], "tooltip": "Minimax H3 3D Latent Upscaler weights"}),
                 "run_mode": (["clip_by_clip", "full_batch"], {"default": "clip_by_clip", "tooltip": "clip_by_clip renders 1 clip then pauses for validation; full_batch renders all pending clips"}),
                 "pass1_resolution": (
@@ -377,8 +377,8 @@ class MiniMaxH3MasterExtender:
                      PASS2_OFF],
                     {"default": "1344x768 (16:9)", "tooltip": "Stage 2 (Pass 2) target resolution. 1920x1088 is 1080p on H3's 32-px grid; it needs ~2x the VRAM of 1344x768, so keep clips shorter (~5-8 s) at 1080p on a 32 GB card. 'off (pass 1 only)' skips pass 2 and decodes the pass-1 result at the pass-1 size (2x with the X2 final decode). Pass-1 results stay cached, so switching pass 2 back on later only runs pass 2."},
                 ),
-                "pass2_denoise": ("FLOAT", {"default": 0.25, "min": 0.05, "max": 1.0, "step": 0.01, "tooltip": "PDD Quality Tail refinement denoise factor (trained at 0.25)"}),
-                "pdd_nfe": (["8", "4", "6", "5", "10", "12", "16", "20"], {"default": "8", "tooltip": "Sampling steps. PDD mode: model evaluations, only 4 / 6 / 8 are valid (8 = full trained quality). Turbo LoRA mode: the turbo step count (e.g. 4-6 for a 4-step LoRA, 8 for an 8-step one)."}),
+                "pass2_denoise": ("FLOAT", {"default": 0.25, "min": 0.05, "max": 1.0, "step": 0.01, "tooltip": "Quality tail refinement denoise factor (trained at 0.25)"}),
+                "pdd_nfe": (["8", "4", "6", "5", "10", "12", "16", "20"], {"default": "8", "tooltip": "Turbo LoRA steps: the turbo step count (e.g. 4-6 for a 4-step LoRA, 8 for an 8-step one). HyperFlow 8-step ignores it."}),
                 "context_length": (["22", "5", "39", "56"], {"default": "22", "tooltip": "Number of video motion context frames passed to subsequent clips"}),
                 "audio_context_length": ("INT", {"default": 0, "min": 0, "max": 240, "step": 1, "tooltip": "Audio context frames (0 = auto-match video context)"}),
                 "identity_continuity": ("BOOLEAN", {"default": True, "tooltip": "Use an empty picture slot for the previous clip's last frame. With all nine pictures attached, motion continuity still applies but no extra guide is inserted."}),
@@ -404,19 +404,19 @@ class MiniMaxH3MasterExtender:
                 "pass2_chunk_frames": ("INT", {"default": 124, "min": 0, "max": 3600, "step": 1, "tooltip": "Refine pass 2 in overlapping temporal windows of this many frames (snapped to H3's 17k+5 grid) via MMH3SplitUpscale, so long/HD clips never outgrow VRAM. 124 = 5 s windows. 0 = refine the whole clip in one pass (original behaviour). Clips at or below the window size are unaffected."}),
                 "pass2_chunk_overlap": ("INT", {"default": 22, "min": 0, "max": 240, "step": 1, "tooltip": "Overlap between pass-2 windows, in frames."}),
                 "async_decode": (["off", "auto", "on"], {"default": "off", "tooltip": "EXPERIMENTAL, full_batch only: decode/cache the finished clip in a background thread while the next clip encodes and drafts; the identity guide frame is taken from the latent tail so the next clip never waits. Not available with dynamic VRAM (comfy-aimdo cannot stream weights from two threads) and unsafe if the decode triggers model eviction, so it defaults to off. auto = on only when the decode is small enough to sit beside the resident UNet."}),
-                "sparse_method": (["sla", "sol-attn", "vsa"], {"default": "sla", "tooltip": "Selection method for core BlockSparseAttention when sla_enabled is on. sla: keep a fixed top-k percent of key blocks (1 - sla_sparsity). sol-attn: training-free adaptive threshold per head/query block (tau), the choice for models without an SLA-distilled LoRA such as PDD. vsa: FastVideo cube attention, only with FastH3-VSA weights."}),
+                "sparse_method": (["sla", "sol-attn", "vsa"], {"default": "sla", "tooltip": "Selection method for core BlockSparseAttention when sla_enabled is on. sla: keep a fixed top-k percent of key blocks (1 - sla_sparsity). sol-attn: training-free adaptive threshold per head/query block (tau), the choice for models without an SLA-distilled LoRA such as HyperFlow. vsa: FastVideo cube attention, only with FastH3-VSA weights."}),
                 "sparse_tau": ("FLOAT", {"default": 1.3, "min": 0.0, "max": 4.0, "step": 0.05, "tooltip": "sol-attn threshold in score sigmas. Higher = sparser: 1.0 keeps ~16% of key blocks, 1.5 ~7%, 2.0 ~2.7%."}),
-                # --- Acceleration: PDD (default) or any turbo / lightning LoRA ---
-                "accel_mode": (["PDD 8-step", "Turbo LoRA", "HyperFlow 8-step"], {"default": "PDD 8-step", "tooltip": "PDD 8-step: the official Parallel Decoding Distillation LoRA + head bank (needs ComfyUI-MiniMax-H3-PDD-Acc). Turbo LoRA: a plain step-distilled LoRA (turbo / lightning / lightx2v) with a regular scheduler; 'steps' above becomes the turbo step count. HyperFlow 8-step: Video Rebirth's 8-step LoRA + two-time conditioning (needs ComfyUI-HyperFlow-H3); always its own trained 8-step grid with Euler, 'steps' is ignored."}),
+                # --- Acceleration: HyperFlow 8-step (default) or any turbo / lightning LoRA ---
+                "accel_mode": (ACCEL_MODES, {"default": "HyperFlow 8-step", "tooltip": "HyperFlow 8-step: Video Rebirth's 8-step LoRA + two-time conditioning (needs ComfyUI-HyperFlow-H3); always its own trained 8-step grid with Euler, 'steps' is ignored. Turbo LoRA: a plain step-distilled LoRA (turbo / lightning / lightx2v) with a regular scheduler; 'Turbo LoRA steps' becomes the turbo step count."}),
                 "turbo_lora": (["none"] + folder_paths.get_filename_list("loras"), {"default": "none", "tooltip": "Turbo LoRA file (models/loras). Used only in Turbo LoRA mode."}),
                 "turbo_lora_strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "tooltip": "Turbo LoRA strength."}),
-                "turbo_sampler": (comfy.samplers.KSampler.SAMPLERS, {"default": "res_multistep", "tooltip": "Sampler for Turbo LoRA mode (PDD mode always uses euler)."}),
+                "turbo_sampler": (comfy.samplers.KSampler.SAMPLERS, {"default": "res_multistep", "tooltip": "Sampler for Turbo LoRA mode (HyperFlow mode always uses euler)."}),
                 "turbo_scheduler": (comfy.samplers.KSampler.SCHEDULERS, {"default": "simple", "tooltip": "Scheduler for Turbo LoRA mode. Pass 2 runs the last round(steps x pass2_denoise) steps of this schedule."}),
                 # --- Refine pass (pass 2) LoRA: a different LoRA for the high-res tail ---
-                "pass2_lora": (["none"] + folder_paths.get_filename_list("loras"), {"default": "none", "tooltip": "LoRA applied only on the pass-2 refine tail. 'none' keeps the pass-1 model."}),
+                "pass2_lora": (["none"] + folder_paths.get_filename_list("loras"), {"default": PASS2_LORA_DEFAULT if PASS2_LORA_DEFAULT in folder_paths.get_filename_list("loras") else "none", "tooltip": "LoRA applied only on the pass-2 refine tail. 'none' keeps the pass-1 model."}),
                 "pass2_lora_strength": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "tooltip": "Strength of the pass-2 LoRA."}),
-                "pass2_lora_mode": (["stack on engine LoRA", "replace engine LoRA"], {"default": "stack on engine LoRA", "tooltip": "stack: pass-2 LoRA on top of the PDD heads / turbo LoRA. replace: pass 2 samples base model + pass-2 LoRA only (use for step-distilled LoRAs, e.g. a 3-step turbo)."}),
-                "pass2_steps": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1, "tooltip": "Full schedule length pass 2's tail is cut from when a pass-2 LoRA is set (tail = round(steps x pass2_denoise)). 0 = same as the engine steps."}),
+                "pass2_lora_mode": (["stack on engine LoRA", "replace engine LoRA"], {"default": "replace engine LoRA", "tooltip": "stack: pass-2 LoRA on top of the turbo LoRA. replace: pass 2 samples base model + pass-2 LoRA only (use for step-distilled LoRAs, e.g. a 3-step turbo)."}),
+                "pass2_steps": ("INT", {"default": 4, "min": 0, "max": 50, "step": 1, "tooltip": "Full schedule length pass 2's tail is cut from when a pass-2 LoRA is set (tail = round(steps x pass2_denoise)). 0 = same as the engine steps."}),
                 # --- Semantic bridge (BUNNY H3 Conditioning Bridge, optional dependency) ---
                 "semantic_bridge": (["none"] + _semantic_bridge_adapters(), {"default": SEMANTIC_BRIDGE_DEFAULT if SEMANTIC_BRIDGE_DEFAULT in _semantic_bridge_adapters() else "none", "tooltip": "BUNNY H3 Conditioning Bridge adapter applied to the text conditioning of both passes (needs the BUNNY_H3_Conditioning_Bridge custom node). Improves who-does-what-to-whom, object ownership and state continuity in complex multi-character action. Default: ActionLogic V2 (V1 is retired; workflows naming it run on V2). none = off."}),
                 "semantic_bridge_alpha": ("FLOAT", {"default": 0.12, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Residual strength of the semantic bridge. 0.10-0.15 recommended by the author; higher is not better."}),
@@ -459,7 +459,7 @@ class MiniMaxH3MasterExtender:
                 "hyperflow_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05, "tooltip": "HyperFlow adapter strength. 1.0 is the released model; the curve refit needs 1.0."}),
                 "hyperflow_lora_mode": (["bypass", "merge"], {"default": "bypass", "tooltip": "HyperFlow LoRA application. bypass (default): computed on top of the model at every step, the reference behaviour. merge: folded into the weights once, so each step costs about the same as the plain model (faster), but merging into quantized (int8) weights can change numerical results. The two small base time projections stay in bypass either way."}),
                 # --- Audio-only refine (ComfyUI-H3-AudioRefine, optional dependency; appended last) ---
-                "audio_refine_steps": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1, "tooltip": "Extra denoising steps on the AUDIO only, run on the finished clip after pass 2 with the video frozen (needs the ComfyUI-H3-AudioRefine pack). Runs on the undistilled base model, without the acceleration LoRA / HyperFlow / PDD heads, so it recovers the audio quality a few-step pass loses. 0 = off. 4-6 typical. The refined audio also feeds the next clip's audio context."}),
+                "audio_refine_steps": ("INT", {"default": 0, "min": 0, "max": 50, "step": 1, "tooltip": "Extra denoising steps on the AUDIO only, run on the finished clip after pass 2 with the video frozen (needs the ComfyUI-H3-AudioRefine pack). Runs on the undistilled base model, without the acceleration LoRA / HyperFlow, so it recovers the audio quality a few-step pass loses. 0 = off. 4-6 typical. The refined audio also feeds the next clip's audio context."}),
                 "audio_refine_denoise": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1.0, "step": 0.01, "tooltip": "How far the audio is re-noised before refining. 0.3-0.6 keeps the pass-2 audio and cleans it up; 1.0 regenerates it against the finished video."}),
                 "audio_refine_cache": ("BOOLEAN", {"default": True, "tooltip": "Use the pack's H3 Frozen Video Cache (hidden / int4, RAM or VRAM, freed after each clip): the first refine step builds it, later steps are ~5x cheaper. Costs about 1 GB of RAM per clip-second at 720p-1344p. Off = exact but every step costs a full model pass."}),
                 # --- One text-encoder pass per clip (appended last) ---
@@ -496,7 +496,11 @@ class MiniMaxH3MasterExtender:
     OUTPUT_NODE = False
 
     @classmethod
-    def VALIDATE_INPUTS(cls, hyperflow_file=None, final_decode=None, rewrite_reasoning_budget=None, semantic_bridge=None):
+    def VALIDATE_INPUTS(cls, hyperflow_file=None, final_decode=None, rewrite_reasoning_budget=None, semantic_bridge=None, accel_mode=None):
+        # accel_mode: API graphs saved before PDD mode was removed still send "PDD 8-step"; normalize_accel_mode maps
+        # it to HyperFlow at run time. Naming it here skips core's combo check, so anything else unknown is rejected.
+        if accel_mode is not None and accel_mode not in ACCEL_MODES and not str(accel_mode).lower().startswith("pdd"):
+            return f"accel_mode: '{accel_mode}' not in {ACCEL_MODES}"
         # semantic_bridge: a retired adapter (V1) is accepted and mapped to its replacement at run time. Naming the
         # input here skips core's combo check, so an unknown adapter is rejected below instead.
         if semantic_bridge is not None and semantic_bridge != "none" and semantic_bridge not in SEMANTIC_BRIDGE_RETIRED:
@@ -524,13 +528,11 @@ class MiniMaxH3MasterExtender:
         clip,
         vae,
         audio_vae,
-        pdd_file,
         upscaler_model,
         run_mode,
         pass1_resolution,
         pass2_resolution,
         pass2_denoise,
-        pdd_nfe,
         context_length,
         audio_context_length,
         identity_continuity,
@@ -540,8 +542,9 @@ class MiniMaxH3MasterExtender:
         unique_id=None,
         prompt=None,
         extra_pnginfo=None,
+        pdd_nfe="8",
         attention_backend="comfy kitchen attention",
-        accel_mode="PDD 8-step",
+        accel_mode="HyperFlow 8-step",
         turbo_lora="none",
         turbo_lora_strength=1.0,
         turbo_sampler="res_multistep",
@@ -558,6 +561,7 @@ class MiniMaxH3MasterExtender:
         sparse_sink="auto",
         **kwargs,
     ):
+        accel_mode = normalize_accel_mode(accel_mode)
         owner = str(unique_id if unique_id is not None else "master_extender")
         export_profile = None
         for config in (prompt or {}).values():
@@ -754,15 +758,14 @@ class MiniMaxH3MasterExtender:
             background["worker"] = None
             return worker.wait()
 
-        # Instantiate Pure PDD Engine
-        engine = PurePDDEngine(
+        # Instantiate the Master Engine
+        engine = MasterEngine(
             model=model,
             clip=clip,
             vae=vae,
             audio_vae=audio_vae,
-            pdd_file=pdd_file,
             upscaler_model=upscaler_model,
-            pdd_nfe=pdd_nfe,
+            turbo_steps=pdd_nfe,
             shift_video=12.0,
             shift_audio=3.0,
             attention_backend=attention_backend,
@@ -791,8 +794,8 @@ class MiniMaxH3MasterExtender:
         engine.configure_pass2_lora(
             kwargs.get("pass2_lora", "none"),
             kwargs.get("pass2_lora_strength", 1.0),
-            kwargs.get("pass2_lora_mode", "stack on engine LoRA"),
-            kwargs.get("pass2_steps", 0),
+            kwargs.get("pass2_lora_mode", "replace engine LoRA"),
+            kwargs.get("pass2_steps", 4),
         )
         audio_refine = _audio_refine_signature(
             kwargs.get("audio_refine_steps", 0), kwargs.get("audio_refine_denoise", 0.5),
@@ -817,7 +820,7 @@ class MiniMaxH3MasterExtender:
         )
 
         p1_settings = {
-            "p1_res": [int(w1), int(h1)], "pdd_file": str(pdd_file), "pdd_nfe": str(pdd_nfe),
+            "p1_res": [int(w1), int(h1)], "pdd_nfe": str(pdd_nfe),
             "accel_mode": str(accel_mode), "turbo_lora": str(turbo_lora), "turbo_lora_strength": float(turbo_lora_strength),
             "sampler": str(turbo_sampler), "scheduler": str(turbo_scheduler),
             "attention": str(attention_backend), "sla": [bool(sla_enabled), float(sla_sparsity)],
@@ -977,7 +980,7 @@ class MiniMaxH3MasterExtender:
                 if len(state["segments"]) > i:
                     _truncate_chain(draft_path, draft_manifest_path, state, i)
 
-            # Render clip through Pure 2-Stage PDD Engine
+            # Render clip through Master Engine
             sampled_latent, _ = engine.render_clip(
                 clip_index=i,
                 prompt=clip_cfg.get("prompt", ""),

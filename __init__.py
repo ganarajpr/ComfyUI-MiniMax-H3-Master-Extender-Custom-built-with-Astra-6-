@@ -1,7 +1,7 @@
 """
 MiniMax H3 Master Extender Suite
 =================================
-Combining the Pure 2-Stage 2-Pass PDD 8-Step + 3D Latent Upscaler Engine
+Combining the Pure 2-Stage 2-Pass HyperFlow 8-step / Turbo LoRA + 3D Latent Upscaler Engine
 with the Multishot Master Extender UI & Continuity Architecture.
 """
 
@@ -9,9 +9,6 @@ import os
 import folder_paths
 
 # Ensure model folders are registered
-if "pdd_acc" not in folder_paths.folder_names_and_paths:
-    folder_paths.add_model_folder_path("pdd_acc", os.path.join(folder_paths.models_dir, "pdd_acc"))
-
 if "latent_upscale_models" not in folder_paths.folder_names_and_paths:
     folder_paths.add_model_folder_path("latent_upscale_models", os.path.join(folder_paths.models_dir, "latent_upscale_models"))
 

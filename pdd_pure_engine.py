@@ -1,12 +1,10 @@
 """
-Pure 2-Stage 2-Pass MiniMax H3 PDD 8-Step + 3D Latent Upscaler Engine
-====================================================================
-Implements the exact engine pipeline from:
-MiniMax_H3_REF2VA_PDD8_PURE 8 step (1)-1.json
+Pure 2-Stage 2-Pass MiniMax H3 Master Engine (HyperFlow 8-step / Turbo LoRA) + 3D Latent Upscaler
+====================================================================================================
 
-Stage 1: Pass 1 Low-Res Draft Ref2VA PDD Generation (Euler + full 8-NFE PDD sigmas)
+Stage 1: Pass 1 Low-Res Draft Ref2VA Generation (HyperFlow grid, or turbo LoRA + BasicScheduler)
 Stage 2: 3D Latent Upscaling (MinimaxH3LatentUpscaler3D) + Concat AV
-Stage 3: Pass 2 High-Res Refinement via PDD Quality Tail (denoise 0.25)
+Stage 3: Pass 2 High-Res Refinement via the quality tail (denoise 0.25)
 """
 
 import inspect
@@ -144,7 +142,7 @@ def _upscaler_precision(model_name, default="fp16"):
 
 
 def pass_sampler_name(turbo_mode, sampler_name):
-    """PDD and HyperFlow were distilled for plain Euler; only Turbo LoRA mode uses the user's sampler."""
+    """HyperFlow was distilled for plain Euler; only Turbo LoRA mode uses the user's sampler."""
     return sampler_name if turbo_mode else "euler"
 
 
@@ -192,23 +190,20 @@ def resolve_sparse_settings(hyperflow, method, start_percent, dense_blocks, sink
     return {"start": start, "dense_blocks": blocks, "sink": pick, "sources": sources}
 
 
-class PurePDDEngine:
+class MasterEngine:
     def __init__(
         self,
         model,
         clip,
         vae,
         audio_vae,
-        pdd_file="MiniMax-H3-Ref2VA-Acc-8Step.safetensors",
         upscaler_model="minimax_h3_latent_upscaler_3d_fp16.safetensors",
-        pdd_nfe="8",
-        pdd_lora_strength=1.0,
-        pdd_head_strength=1.0,
+        turbo_steps="8",
         shift_video=12.0,
         shift_audio=3.0,
         attention_backend="comfy kitchen attention",
         smart_offload=True,
-        accel_mode="PDD 8-step",
+        accel_mode="HyperFlow 8-step",
         turbo_lora="none",
         turbo_lora_strength=1.0,
         sampler_name="res_multistep",
@@ -232,7 +227,7 @@ class PurePDDEngine:
         self.raw_model = model
         self.accel_mode = str(accel_mode)
         self.turbo_mode = self.accel_mode.lower().startswith("turbo")
-        self.hyperflow_mode = self.accel_mode.lower().startswith("hyperflow")
+        self.hyperflow_mode = not self.turbo_mode
         self.hyperflow_file = str(hyperflow_file)
         self.hyperflow_curve_refit = bool(hyperflow_curve_refit)
         self.hyperflow_strength = float(hyperflow_strength)
@@ -258,11 +253,8 @@ class PurePDDEngine:
         self.clip = clip
         self.vae = vae
         self.audio_vae = audio_vae
-        self.pdd_file = pdd_file
         self.upscaler_model = upscaler_model
-        self.pdd_nfe = str(pdd_nfe)
-        self.pdd_lora_strength = float(pdd_lora_strength)
-        self.pdd_head_strength = float(pdd_head_strength)
+        self.turbo_steps = str(turbo_steps)
         self.shift_video = float(shift_video)
         self.shift_audio = float(shift_audio)
         self.attention_backend = attention_backend
@@ -272,15 +264,16 @@ class PurePDDEngine:
         self.prepared_model = None
         self.pass1_sigmas = None
 
-    def initialize_pdd_model(self):
-        """Prepare base model with SigmaShift, PDD Acc Apply, and Attention backend."""
+    def initialize_model(self):
+        """Prepare base model with SigmaShift, the acceleration (Turbo LoRA or HyperFlow) and the attention backend."""
         if self.prepared_model is not None:
             return self.prepared_model, self.pass1_sigmas
 
-        _LOG.info(
-            f"Initializing Pure PDD Engine: Shift ({self.shift_video}, {self.shift_audio}), "
-            f"PDD LoRA: {self.pdd_file} ({self.pdd_nfe} NFE)"
-        )
+        if self.turbo_mode:
+            accel_desc = f"Turbo LoRA: {self.turbo_lora or 'none'} ({self.turbo_steps} steps)"
+        else:
+            accel_desc = f"HyperFlow 8-step: {self.hyperflow_file}"
+        _LOG.info(f"Initializing Master Engine: Shift ({self.shift_video}, {self.shift_audio}), {accel_desc}")
 
         # 1. Apply SigmaShift
         try:
@@ -296,39 +289,15 @@ class PurePDDEngine:
 
         self.shifted_model = shifted_model
 
-        # 2. Acceleration: PDD head bank, or a plain turbo / lightning LoRA
+        # 2. Acceleration: a plain turbo / lightning LoRA, or HyperFlow
         if self.turbo_mode:
-            pdd_model, sigmas_p1 = self._prepare_turbo_model(shifted_model)
-        elif self.hyperflow_mode:
-            pdd_model, sigmas_p1 = self._prepare_hyperflow_model(shifted_model)
+            accelerated, sigmas_p1 = self._prepare_turbo_model(shifted_model)
         else:
-            pdd_apply_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3PDDAccApply")
-            if pdd_apply_cls:
-                nfe = self.pdd_nfe if self.pdd_nfe in ("4", "6", "8") else "8"
-                if nfe != self.pdd_nfe:
-                    _LOG.warning("PDD mode supports 4 / 6 / 8 steps only; using %s instead of %s", nfe, self.pdd_nfe)
-                    self.pdd_nfe = nfe
-                pdd_node = pdd_apply_cls()
-                pdd_model, sigmas_p1, info = pdd_node.apply(
-                    shifted_model,
-                    pdd_file=self.pdd_file,
-                    nfe=self.pdd_nfe,
-                    lora_strength=self.pdd_lora_strength,
-                    head_strength=self.pdd_head_strength,
-                    on_off_grid="error",
-                    enabled=True,
-                    partition_check="warn",
-                )
-            else:
-                pdd_model = shifted_model
-                # Fallback simple 8-step sigmas if node missing
-                sigmas_p1 = torch.linspace(1.0, 0.0, int(self.pdd_nfe) + 1)
+            accelerated, sigmas_p1 = self._prepare_hyperflow_model(shifted_model)
+        self.accel_model = accelerated
+        accelerated = self._finish_model(accelerated)
 
-
-        self.accel_model = pdd_model
-        pdd_model = self._finish_model(pdd_model)
-
-        self.prepared_model = pdd_model
+        self.prepared_model = accelerated
         self.pass1_sigmas = sigmas_p1
         return self.prepared_model, self.pass1_sigmas
 
@@ -350,7 +319,7 @@ class PurePDDEngine:
             )
         model = model.clone()
         model.set_model_optimized_attention(attention_function)
-        _LOG.info("PDD sampling attention: %s", self.attention_backend)
+        _LOG.info("Sampling attention: %s", self.attention_backend)
         return self._apply_sla(model) if sparse else model
 
     # ------------------------------------------------------------------
@@ -358,7 +327,7 @@ class PurePDDEngine:
     # ------------------------------------------------------------------
     def configure_pass2_lora(self, lora="none", strength=1.0, mode="stack", steps=0):
         """`mode`: "stack" adds the LoRA on top of the engine's acceleration
-        (PDD heads or turbo LoRA); "replace" samples pass 2 with base model +
+        (turbo LoRA or HyperFlow); "replace" samples pass 2 with base model +
         this LoRA only (for step-distilled LoRAs such as a 3-step turbo).
         `steps` (0 = same as pass 1) is the full schedule length the tail is cut from."""
         self.pass2_lora = lora if lora and lora != "none" else None
@@ -385,7 +354,7 @@ class PurePDDEngine:
         """Audio-only refine of a finished clip: video frozen (bit-identical), audio re-noised to
         audio_refine_denoise and sampled for audio_refine_steps on the undistilled model.
 
-        The model is SigmaShift only (self.shifted_model): no PDD heads, turbo LoRA or HyperFlow
+        The model is SigmaShift only (self.shifted_model): no turbo LoRA or HyperFlow
         patch, so HyperFlow is never applied twice and the refine uses the full weights.
         Attention is the chosen dense backend; block-sparse attention is not applied."""
         steps = self.audio_refine_steps
@@ -462,7 +431,7 @@ class PurePDDEngine:
 
     def initialize_pass2_model(self):
         """Model used for the refine pass: the pass-1 model unless a pass-2 LoRA is set."""
-        prepared, _ = self.initialize_pdd_model()
+        prepared, _ = self.initialize_model()
         if not self._pass2_lora_active():
             return prepared
         if getattr(self, "pass2_model", None) is not None:
@@ -473,20 +442,20 @@ class PurePDDEngine:
             self.pass2_model = prepared
             return prepared
         if self.pass2_lora_mode == "replace":
-            base = self.shifted_model          # SigmaShift only: no PDD heads / turbo LoRA
+            base = self.shifted_model          # SigmaShift only: no turbo LoRA / HyperFlow
         else:
-            base = self.accel_model            # PDD heads or turbo LoRA already applied
+            base = self.accel_model            # turbo LoRA / HyperFlow already applied
         res = lora_cls().load_lora_model_only(base, self.pass2_lora, self.pass2_lora_strength)
         model = _safe_get_output(res, 0, "model")
         self.pass2_model = self._finish_model(model)
         _LOG.info("Pass 2 LoRA: %s @ %.2f (%s engine LoRA), %s steps schedule",
                   self.pass2_lora, self.pass2_lora_strength,
                   "replacing" if self.pass2_lora_mode == "replace" else "stacked on",
-                  self.pass2_steps or self.pdd_nfe)
+                  self.pass2_steps or self.turbo_steps)
         return self.pass2_model
 
     # Sparse attention: dense for the first part of the schedule (structure is
-    # decided there), sparse after. 0.2 is core's default and matches PDD's
+    # decided there), sparse after. 0.2 is core's default and matches an
     # 8-step draft (first ~2 steps dense); pass 2's tail sits past it anyway.
     SPARSE_START_PERCENT = 0.2
     SPARSE_MIN_TOKENS = 12288
@@ -515,7 +484,7 @@ class PurePDDEngine:
 
     def _prepare_turbo_model(self, model):
         """Load the turbo LoRA (any step-distilled LoRA) and build the pass-1 schedule."""
-        steps = int(self.pdd_nfe)
+        steps = int(self.turbo_steps)
         if self.turbo_lora is None:
             _LOG.warning("Turbo LoRA mode selected but no LoRA chosen; sampling the base model "
                          "with %d steps of %s/%s", steps, self.sampler_name, self.scheduler_name)
@@ -532,14 +501,12 @@ class PurePDDEngine:
     def _prepare_hyperflow_model(self, model):
         """HyperFlow 8-step (ComfyUI-HyperFlow-H3): backbone LoRA + two-time (t, r)
         conditioning. Its MODEL and its trained 9-point SIGMAS are used as-is; the
-        schedule is never a BasicScheduler one, and pdd_nfe does not apply."""
+        schedule is never a BasicScheduler one, and turbo_steps does not apply."""
         apply_cls = nodes.NODE_CLASS_MAPPINGS.get("ApplyHyperFlowH3")
         if apply_cls is None:
             raise RuntimeError("HyperFlow 8-step needs the ComfyUI-HyperFlow-H3 node pack "
                                "(ApplyHyperFlowH3) in custom_nodes.")
-        if self.pdd_nfe != "8":
-            _LOG.warning("HyperFlow mode always runs its trained 8 steps; ignoring steps=%s", self.pdd_nfe)
-            self.pdd_nfe = "8"
+        self.turbo_steps = "8"
         dm = model.get_model_object("diffusion_model")
         pruned_base = hasattr(dm, "adaln_t_table") or not hasattr(dm, "time_embedder")
         pruned_file = "_pruned" in self.hyperflow_file.lower()
@@ -635,10 +602,10 @@ class PurePDDEngine:
         return model
 
     def _pass2_sigmas(self, model, pass2_denoise):
-        """Quality-tail schedule for pass 2: PDD's own tail, or the last
+        """Quality-tail schedule for pass 2: the tail of HyperFlow's own grid, or the last
         round(steps x denoise) steps of the turbo schedule. With a pass-2 LoRA
         the schedule length can differ from pass 1 (pass2_steps), and in
-        "replace" mode the PDD scheduler no longer applies."""
+        "replace" mode the pass-1 grid no longer applies."""
         if self.hyperflow_mode and not self._pass2_lora_active():
             tail = hyperflow_tail_sigmas(self.pass1_sigmas, pass2_denoise)
             _LOG.info("HyperFlow: pass 2 uses the tail of HyperFlow's own grid (%d steps): %s",
@@ -649,17 +616,13 @@ class PurePDDEngine:
                           "unmatched sampling recipe' for it")
             return tail
         if self._pass2_lora_active() and (self.pass2_steps > 0 or self.pass2_lora_mode == "replace" or self.turbo_mode):
-            steps = int(self.pass2_steps or self.pdd_nfe)
+            steps = int(self.pass2_steps or self.turbo_steps)
             tail = max(1, int(round(steps * float(pass2_denoise))))
             return self._basic_sigmas(model, tail, float(pass2_denoise))
         if self.turbo_mode:
-            steps = int(self.pdd_nfe)
+            steps = int(self.turbo_steps)
             tail = max(1, int(round(steps * float(pass2_denoise))))
             return self._basic_sigmas(model, tail, float(pass2_denoise))
-        scheduler_cls = nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3PDDAccScheduler")
-        if scheduler_cls:
-            return scheduler_cls().get_sigmas(nfe=self.pdd_nfe, denoise=float(pass2_denoise))[0]
-        return self.pass1_sigmas[-int(len(self.pass1_sigmas) * pass2_denoise):]
 
     # Make room for activations before each sampling pass.
     # With dynamic VRAM enabled, core's free_memory() does not evict one dynamic
@@ -715,10 +678,10 @@ class PurePDDEngine:
             res = chunk_cls.execute(model, chunks=chunks, seq_threshold=self.FF_CHUNK_THRESHOLD)
             chunked = _safe_get_output(res, 0, "model")
             if chunked is not None:
-                _LOG.info("PDD engine: feed-forward chunking -- %d tokens -> %d chunks", tokens, chunks)
+                _LOG.info("Master engine: feed-forward chunking -- %d tokens -> %d chunks", tokens, chunks)
                 return chunked
         except Exception as exc:
-            _LOG.warning("PDD engine: could not enable feed-forward chunking (%s)", exc)
+            _LOG.warning("Master engine: could not enable feed-forward chunking (%s)", exc)
         return model
 
     # Passes at or below this many packed tokens (draft passes) may run beside
@@ -762,10 +725,10 @@ class PurePDDEngine:
             if self.background_busy():
                 if tokens <= self.BACKGROUND_TOLERANT_TOKENS:
                     mm.soft_empty_cache(force=True)
-                    _LOG.info("PDD engine: background decode in flight -- small pass (%d tokens), "
+                    _LOG.info("Master engine: background decode in flight -- small pass (%d tokens), "
                               "sampling alongside it without evicting", tokens)
                     return
-                _LOG.info("PDD engine: waiting for the background decode before a %d-token pass", tokens)
+                _LOG.info("Master engine: waiting for the background decode before a %d-token pass", tokens)
                 self.wait_background()
             before = mm.get_free_memory(device)
             keep = []
@@ -782,11 +745,11 @@ class PurePDDEngine:
             self._release_node_scoped_vram()
             mm.soft_empty_cache(force=True)
             after = mm.get_free_memory(device)
-            _LOG.info("PDD engine: VRAM reclaim before sampling -- %d tokens, need ~%.1f GB, evicted all but the "
+            _LOG.info("Master engine: VRAM reclaim before sampling -- %d tokens, need ~%.1f GB, evicted all but the "
                       "sampling model: free %.1f -> %.1f GB",
                       tokens, required / 1024 ** 3, before / 1024 ** 3, after / 1024 ** 3)
         except Exception as exc:
-            _LOG.warning("PDD engine: VRAM reclaim skipped (%s)", exc)
+            _LOG.warning("Master engine: VRAM reclaim skipped (%s)", exc)
 
     # ------------------------------------------------------------------
     # Chunked pass 2 (temporal windows via MMH3SplitUpscale)
@@ -836,7 +799,7 @@ class PurePDDEngine:
         _, _, t_lat, h_lat, w_lat = (int(x) for x in video.shape)
         window_lat = min(t_lat, max(1, (int(self.pass2_chunk_frames) - 5) // 17 * 5 + 2))
         window_tokens = window_lat * ((h_lat + 1) // 2) * ((w_lat + 1) // 2)
-        _LOG.info("PDD engine: pass 2 in temporal windows of %d frames (overlap %d) -- %d latent frames "
+        _LOG.info("Master engine: pass 2 in temporal windows of %d frames (overlap %d) -- %d latent frames "
                   "-> windows of %d (~%d tokens each)", self.pass2_chunk_frames, self.pass2_chunk_overlap,
                   t_lat, window_lat, window_tokens)
 
@@ -898,7 +861,7 @@ class PurePDDEngine:
         guider.set_conds(positive, positive)
         guider.set_cfg(1.0)
 
-        # Build sampler object: PDD was distilled for plain Euler; turbo mode
+        # Build sampler object: HyperFlow was distilled for plain Euler; turbo mode
         # uses the user's sampler (res_multistep by default).
         euler_sampler = comfy.samplers.sampler_object(pass_sampler_name(self.turbo_mode, self.sampler_name))
 
@@ -1030,7 +993,7 @@ class PurePDDEngine:
         cached_trim: int = 0,
         p1_text_size: tuple = None,
     ):
-        """Execute the complete 2-Stage 2-Pass Pure PDD Pipeline for a single clip.
+        """Execute the complete 2-Stage 2-Pass Pipeline for a single clip.
 
         ``ref_videos`` (``ref_video_N`` -> 24 fps IMAGE batch), ``ref_video_audios``
         (``ref_video_audio_N`` -> AUDIO, the soundtrack of the same-numbered video)
@@ -1044,7 +1007,7 @@ class PurePDDEngine:
         and it is used as if just sampled (``cached_trim`` is its motion-context trim, needed only
         when pass 2 is off).
         """
-        model, pdd_sigmas_p1 = self.initialize_pdd_model()
+        model, sigmas_p1 = self.initialize_model()
 
         frame_count = duration_to_h3_frames(duration_sec)
         w1, h1 = pass1_res
@@ -1062,7 +1025,7 @@ class PurePDDEngine:
                    " (the last is the previous clip's last frame)" if last_frame_guide is not None else "")
 
         # =====================================================================
-        # STAGE 1: PASS 1 (Low-Res Ref2VA PDD Generation)
+        # STAGE 1: PASS 1 (Low-Res Ref2VA Generation)
         # =====================================================================
         cached = cached_pass1 is not None
         if progress_cb:
@@ -1175,12 +1138,12 @@ class PurePDDEngine:
         if cached:
             sampled_p1 = {"samples": cached_pass1["samples"]}
         else:
-            # Sample Pass 1 with Euler + PDD 8-step sigmas
+            # Sample Pass 1 with the pass-1 sigmas
             sampled_p1 = self._sample_euler(
                 model=model,
                 positive=pos_p1,
                 latent_image=latent_p1,
-                sigmas=pdd_sigmas_p1,
+                sigmas=sigmas_p1,
                 seed=seed,
             )
 
@@ -1216,10 +1179,10 @@ class PurePDDEngine:
         }
 
         # =====================================================================
-        # STAGE 2: PASS 2 (High-Res Refinement via PDD Quality Tail)
+        # STAGE 2: PASS 2 (High-Res Refinement via the quality tail)
         # =====================================================================
         if progress_cb:
-            progress_cb("pass2", f"Clip {clip_index + 1} - Pass 2 (Refine {w2}x{h2} with PDD tail)...", 0.7)
+            progress_cb("pass2", f"Clip {clip_index + 1} - Pass 2 (Refine {w2}x{h2} with quality tail)...", 0.7)
 
         _LOG.info(
             f"Clip {clip_index + 1}: Pass 2 refining at {w2}x{h2} (conditioning pre-encoded), quality tail denoise={pass2_denoise}"
@@ -1228,7 +1191,7 @@ class PurePDDEngine:
         # Pass-2 model (a different LoRA for the refine tail when configured)
         model_p2 = self.initialize_pass2_model()
 
-        # Quality-tail sigmas (PDD tail, or the turbo schedule's tail)
+        # Quality-tail sigmas (HyperFlow tail, or the turbo schedule's tail)
         sigmas_p2 = self._pass2_sigmas(model_p2, pass2_denoise)
 
         # Sample Pass 2 (High-Res Refine): whole clip, or overlapping temporal
