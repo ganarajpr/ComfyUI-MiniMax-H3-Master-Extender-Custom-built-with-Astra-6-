@@ -72,7 +72,7 @@ assert.deepEqual(DUAL_DEFAULTS, { dual_sampling: false, dual_split_step: 2, pass
     assert.deepEqual([get("dual_sampling"), get("dual_split_step"), get("pass1_early_stop")], [true, 2, false]);
     assert.equal(get("pass2_lora"), "none");
     assert.equal(get("accel_mode"), "HyperFlow 8-step");
-    assert.equal(get("pass1_resolution"), "1056x608 (16:9)");
+    assert.equal(get("pass1_resolution"), "608x352 (16:9)");
     assert.equal(get("pass2_resolution"), "1344x768 (16:9)");
 }
 assert.equal(dropCaptionModelValue(["rewrite_writer_model", "rewrite_caption_length"], undefined), null);

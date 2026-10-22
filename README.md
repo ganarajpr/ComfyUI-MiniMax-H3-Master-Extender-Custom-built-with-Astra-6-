@@ -157,7 +157,7 @@ Three inputs at the end of the node, all off by default (a workflow or API graph
 | `dual_split_step` | 2 | Grid index where pass 2 takes over: 2 = 6 pass-2 steps from sigma 0.9843, 6 = 2 steps. |
 | `pass1_early_stop` | off | Experimental, needs dual sampling. Pass 1 runs only `grid[:k+1]`. |
 
-The image is generated at the pass-2 size and pass 1 only sets the layout. Suggested: pass 1 `1056x608`, pass 2 `1344x768`, split 2 (see `example_workflows/MiniMax_H3_Master_Extender_HyperFlow_DualSampling.json`). In Turbo LoRA mode dual sampling logs a warning and runs the normal two passes.
+The image is generated at the pass-2 size and pass 1 only sets the layout. Recommended: pass 1 `608x352` (renders matched a 1056x608 pass 1 and are cheaper), pass 2 `1344x768`, split 2 (see `example_workflows/MiniMax_H3_Master_Extender_HyperFlow_DualSampling.json`). In Turbo LoRA mode dual sampling logs a warning and runs the normal two passes.
 
 **Early stop.** Pass 1 runs the first k steps, then the model's clean (x0) estimate from the last step is upscaled, and pass 2 re-noises it to `grid[k]` the same way every pass 2 does (the sampler blends noise into the start latent at the first sigma, same seed) and runs the rest. The 3D latent upscaler was trained on clean latents, which is why the x0 estimate is used instead of the noisy step latent, but quality is not validated; keep it off for approved looks. With pass 2 off, early stop is ignored.
 
