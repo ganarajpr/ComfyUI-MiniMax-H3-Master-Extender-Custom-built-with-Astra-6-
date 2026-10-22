@@ -136,7 +136,7 @@ class DefaultsAreUnchanged(unittest.TestCase):
     def test_new_inputs_default_off(self):
         text = NODE.read_text(encoding="utf-8")
         self.assertRegex(text, r'"dual_sampling": \("BOOLEAN", \{"default": False')
-        self.assertRegex(text, r'"dual_split_step": \("INT", \{"default": 2, "min": 1, "max": 6')
+        self.assertRegex(text, r'"dual_split_step": \("INT", \{"default": 2, "min": 1, "max": 7')
         self.assertRegex(text, r'"pass1_early_stop": \("BOOLEAN", \{"default": False')
 
 
@@ -185,7 +185,7 @@ class DualSampling(unittest.TestCase):
         self.assertTrue(e.pass1_early_stop)
 
     def test_split_is_clamped_so_pass2_keeps_two_steps(self):
-        self.assertEqual(_FNS["dual_split_index"](GRID, 99), 6)
+        self.assertEqual(_FNS["dual_split_index"](GRID, 99), 7)
         self.assertEqual(_FNS["dual_split_index"](GRID, 0), 1)
 
 

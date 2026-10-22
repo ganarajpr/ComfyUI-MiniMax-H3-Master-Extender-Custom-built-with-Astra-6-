@@ -172,8 +172,9 @@ def clean_latent_from_x0(model_patcher, x0):
 
 
 def dual_split_index(grid, split):
-    """Grid index where pass 2 takes over in dual sampling: at least 1, and early enough that pass 2 keeps 2 steps."""
-    return max(1, min(int(split), len(grid) - 3))
+    """Grid index where pass 2 takes over in dual sampling: at least 1, and pass 2 keeps at least 1 step (split 7 = only
+    HyperFlow's final step at pass-2 size)."""
+    return max(1, min(int(split), len(grid) - 2))
 
 
 def dual_pass1_sigmas(grid, split):
