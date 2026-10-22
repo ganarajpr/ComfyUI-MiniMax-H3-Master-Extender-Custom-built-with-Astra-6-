@@ -167,7 +167,8 @@ def _settings_summary(inputs: dict | None, clips: list[dict]) -> str:
             lines.append(f"Engine: Turbo LoRA {inputs.get('turbo_lora', '')} x{inputs.get('turbo_lora_strength', 1.0)} · {steps} steps · {inputs.get('turbo_sampler', '')} / {inputs.get('turbo_scheduler', '')}")
         else:
             refit = "curve refit on" if inputs.get("hyperflow_curve_refit", True) else "curve refit off"
-            lines.append(f"Engine: HyperFlow 8-step {inputs.get('hyperflow_file', '')} x{inputs.get('hyperflow_strength', 1.0)} · {refit} · {inputs.get('hyperflow_lora_mode', 'bypass')} · euler")
+            label = "HyperFlow · dual sampling" if "dual sampling" in str(accel) else "HyperFlow 8-step"
+            lines.append(f"Engine: {label} {inputs.get('hyperflow_file', '')} x{inputs.get('hyperflow_strength', 1.0)} · {refit} · {inputs.get('hyperflow_lora_mode', 'bypass')} · euler")
         lines.append(f"Quality: draft {inputs.get('pass1_resolution', '?')} → refine {inputs.get('pass2_resolution', '?')} · denoise {inputs.get('pass2_denoise', '?')} · upscaler {inputs.get('upscaler_model', '?')}")
         lines.append(f"Continuity: motion {inputs.get('context_length', '?')} f · audio {inputs.get('audio_context_length', '?')} f · identity {inputs.get('identity_continuity', '?')}")
         sla = inputs.get("sla_enabled", False)

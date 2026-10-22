@@ -196,6 +196,9 @@ const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 // Dual sampling (appended last, after sparse_sink): HyperFlow only; the split step and early stop only while it is on.
 const DUAL_WIDGET = "dual_sampling";
 const DUAL_DETAIL_WIDGETS = ["dual_split_step", "pass1_early_stop"];
+// The engine combo value that is HyperFlow with dual sampling forced on (the dual_sampling toggle is then redundant).
+const DUAL_MODE = "HyperFlow 8-step \u00b7 dual sampling";
+const isDualMode = (value) => String(value ?? "") === DUAL_MODE;
 // Widgets appended after master_ui-less workflows were saved: a missing/invalid value is put back to the default.
 const AUDIO_REFINE_WIDGETS = ["audio_refine_steps", "audio_refine_denoise", "audio_refine_cache"];
 // auto_clips is appended after rewrite_story; a workflow saved before it carries the empty master_ui value there.
@@ -322,8 +325,9 @@ function setupModeWidgets(node) {
         const slaOn = sla ? !!sla.value : false;
         TURBO_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), turbo));
         HYPERFLOW_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), hyperflow));
-        const dualOn = hyperflow && !!byName(DUAL_WIDGET)?.value;
-        setWidgetVisible(byName(DUAL_WIDGET), hyperflow);
+        const dualMode = isDualMode(accel?.value);
+        const dualOn = hyperflow && (dualMode || !!byName(DUAL_WIDGET)?.value);
+        setWidgetVisible(byName(DUAL_WIDGET), hyperflow && !dualMode);
         DUAL_DETAIL_WIDGETS.forEach(n => setWidgetVisible(byName(n), dualOn));
         ALWAYS_HIDDEN_WIDGETS.forEach(n => setWidgetVisible(byName(n), false));
         TURBO_STEPS_WIDGETS.forEach(n => setWidgetVisible(byName(n), turbo));
@@ -810,8 +814,10 @@ app.registerExtension({
                 const p2note = p2 !== "none" ? ` · refine ${shortModelName(p2)}${String(getW("pass2_lora_mode", "")).startsWith("replace") ? " (replace)" : ""}` : "";
                 const bridge = String(getW("semantic_bridge", "none"));
                 const bridgeNote = bridge !== "none" ? ` · bridge α ${Number(getW("semantic_bridge_alpha", 0)).toFixed(2)}` : "";
-                const dualNote = getW(DUAL_WIDGET, false)
-                    ? ` · dual sampling (pass 2 from step ${getW("dual_split_step", 2)}${getW("pass1_early_stop", false) ? ", pass 1 early stop" : ""})` : "";
+                const dualMode = isDualMode(getW("accel_mode", ""));
+                const dualNote = (dualMode || getW(DUAL_WIDGET, false))
+                    ? ` · dual sampling (pass 2 from step ${getW("dual_split_step", 2)}${dualMode ? ", whole clip" : ""}${getW("pass1_early_stop", false) ? ", pass 1 early stop" : ""})` : "";
+                if (dualMode) return `HyperFlow · dual sampling · ${shortModelName(getW("hyperflow_file"))} · refit ${getW("hyperflow_curve_refit", true) ? "on" : "off"} · euler${dualNote.replace(" · dual sampling", "")}${bridgeNote}`;
                 if (isHyperflow()) return `HyperFlow 8-step · ${shortModelName(getW("hyperflow_file"))} · refit ${getW("hyperflow_curve_refit", true) ? "on" : "off"} · euler${p2note}${dualNote}${bridgeNote}`;
                 return `Turbo LoRA · ${shortModelName(getW("turbo_lora"))} · ${steps} steps · ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}${p2note}${bridgeNote}`;
             }
@@ -945,7 +951,7 @@ app.registerExtension({
                     setW("pdd_nfe", String(v).toLowerCase().startsWith("turbo") ? "4" : "8", { rerender: false });
                     renderUI();
                 });
-                wrap.appendChild(uiRow("engine", accelSel, { hint: "Turbo LoRA: any turbo LoRA with its own step count. HyperFlow 8-step: Video Rebirth's 8-step LoRA with two-time conditioning." }));
+                wrap.appendChild(uiRow("engine", accelSel, { hint: "Turbo LoRA: any turbo LoRA with its own step count. HyperFlow 8-step: Video Rebirth's 8-step LoRA with two-time conditioning. HyperFlow 8-step \u00b7 dual sampling: HyperFlow with pass 2 as the grid tail over the whole clip in one window." }));
                 if (isHyperflow()) {
                     wrap.appendChild(uiRow("hyperflow file", bindSelect("hyperflow_file", { render: shortModelName }),
                         { hint: "Pruned bases (Singularity) need the _pruned build; full bases need the one without. Always the trained 8-step grid with Euler." }));
@@ -953,10 +959,11 @@ app.registerExtension({
                         { hint: "Pruned base only: restores most of the two-time (t, r) conditioning. Off = LoRA-only." }));
                     if (expert()) wrap.appendChild(uiRow("strength", bindNumber("hyperflow_strength"), { indent: true }));
                     wrap.appendChild(uiHint("Pass 2 without a refine LoRA is cut from HyperFlow's own grid; a refine LoRA forces replace mode (no HyperFlow on that tail)."));
+                    const dualMode = isDualMode(getW("accel_mode", ""));
                     if (W(DUAL_WIDGET)) {
-                        wrap.appendChild(uiRow("dual sampling", bindToggle(DUAL_WIDGET),
+                        if (!dualMode) wrap.appendChild(uiRow("dual sampling", bindToggle(DUAL_WIDGET),
                             { hint: "Pass 2 = the grid tail from the split step, generated at the pass-2 size; pass 1 only sets the layout. No refine LoRA, refine denoise ignored." }));
-                        if (getW(DUAL_WIDGET, false)) {
+                        if (dualMode || getW(DUAL_WIDGET, false)) {
                             wrap.appendChild(uiRow("split step", bindNumber("dual_split_step"),
                                 { indent: true, hint: "Grid index where pass 2 takes over: 2 = 6 pass-2 steps from sigma 0.9843." }));
                             wrap.appendChild(uiRow("pass 1 early stop", bindToggle("pass1_early_stop"),
@@ -1407,7 +1414,7 @@ app.registerExtension({
                 header.innerHTML = `
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span style="font-size: 15px; font-weight: 700; color: #9d8cff; letter-spacing: -0.2px;">🎬 MiniMax H3 Master</span>
-                        <span style="background: #252538; color: #a5a5c5; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid #383852;">${isHyperflow() ? "HyperFlow" : "Turbo"} · ${isHyperflow() ? "8" : getW("pdd_nfe", "8")} steps · 2-pass</span>
+                        <span style="background: #252538; color: #a5a5c5; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid #383852;">${isDualMode(getW("accel_mode", "")) ? "HyperFlow · dual sampling" : `${isHyperflow() ? "HyperFlow" : "Turbo"} · ${isHyperflow() ? "8" : getW("pdd_nfe", "8")} steps · 2-pass`}</span>
                         <button id="mode-toggle" title="Simple shows the eight decisions that matter; Expert shows every field." style="background: ${expert() ? "#4a3c22" : "#2b3a55"}; color: ${expert() ? "#e6c28f" : "#8fb0e6"}; border: 1px solid ${expert() ? "#6b5530" : "#3c5480"}; padding: 2px 9px; border-radius: 10px; font-size: 10.5px; font-weight: 600; cursor: pointer;">${expert() ? "Expert" : "Simple"}</button>
                     </div>
                     <div style="display: flex; align-items: center; gap: 12px;">

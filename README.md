@@ -163,6 +163,12 @@ The image is generated at the pass-2 size and pass 1 only sets the layout. Recom
 
 **Caching.** `dual_sampling` alone does not change pass 1, so pass-1 caches keep hitting. Early stop adds `dual: [k, true]` to the pass-1 fingerprint, only when on. As with any other pass-2 setting, the final-clip cache does not track these inputs: re-roll the clip (or change the seed) to re-render pass 2.
 
+### Engine mode "HyperFlow 8-step · dual sampling"
+
+The same thing as one `accel_mode` choice, appended last so saved workflows and API graphs are untouched (the default stays "HyperFlow 8-step"). Picking it means: HyperFlow 8-step, dual sampling on with split = `dual_split_step` (default 2), no pass-2 refine LoRA, and pass 2 over the whole clip in one window (`pass2_chunk_frames` is treated as 0 in this mode, which avoids window seams for a near-full regeneration; whole-clip pass 2 at 1344x768 x 362 frames ran in VRAM at about 33.5 s/step). The `dual_sampling` toggle keeps working in the other modes. The panel shows the HyperFlow rows plus split step and early stop, and the badge reads "HyperFlow · dual sampling". Pass-1 caches are shared with plain HyperFlow (the mode resolves to it before the fingerprint is built).
+
+Example: `example_workflows/MiniMax_H3_Master_Extender_Action_v2_DualSampling.json` (Singularity ref2va v2 pruned int8, pass 1 `608x352`, pass 2 `1344x768`, pruned HyperFlow file with curve refit, SLA 0.9, early stop off). **Use prompts under 5,000 characters.**
+
 ## Model files (not included)
 
 These are the filenames selected in the source workflow. Choose compatible alternatives in the dropdowns if you use another supported precision or filename; renaming an incompatible model does not make it compatible.

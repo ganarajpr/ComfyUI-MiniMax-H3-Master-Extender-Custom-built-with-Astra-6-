@@ -319,7 +319,9 @@ PASS2_LORA_DEFAULT = "h3\\minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safet
 HYPERFLOW_DEFAULT_FILE = "custom_node_hyperflow_8step_v1.0_comfyui_pruned.safetensors"
 
 
-ACCEL_MODES = ["HyperFlow 8-step", "Turbo LoRA"]
+# Options are restored by name, so new ones are only ever appended.
+ACCEL_MODES = ["HyperFlow 8-step", "Turbo LoRA", "HyperFlow 8-step \u00b7 dual sampling"]
+DUAL_SAMPLING_ACCEL_MODE = ACCEL_MODES[-1]
 
 
 def normalize_accel_mode(accel_mode):
@@ -328,6 +330,18 @@ def normalize_accel_mode(accel_mode):
         _LOG.warning("accel_mode %r was removed; running HyperFlow 8-step instead", accel_mode)
         return "HyperFlow 8-step"
     return accel_mode
+
+
+def resolve_accel_mode(accel_mode, pass2_chunk_frames=124):
+    """Split the engine combo into (engine mode, force dual sampling, pass-2 chunk frames).
+
+    "HyperFlow 8-step . dual sampling" is plain HyperFlow with dual sampling forced on and pass 2 over the whole
+    clip (chunk 0, no window seams). It resolves to "HyperFlow 8-step" so pass-1 fingerprints and every engine
+    check see the same mode as before; every other value passes through untouched."""
+    accel_mode = normalize_accel_mode(accel_mode)
+    if accel_mode == DUAL_SAMPLING_ACCEL_MODE:
+        return "HyperFlow 8-step", True, 0
+    return accel_mode, False, pass2_chunk_frames
 
 
 def _hyperflow_files():
@@ -566,7 +580,7 @@ class MiniMaxH3MasterExtender:
         sparse_sink="auto",
         **kwargs,
     ):
-        accel_mode = normalize_accel_mode(accel_mode)
+        accel_mode, dual_mode, pass2_chunk_frames = resolve_accel_mode(accel_mode, pass2_chunk_frames)
         owner = str(unique_id if unique_id is not None else "master_extender")
         export_profile = None
         for config in (prompt or {}).values():
@@ -802,9 +816,10 @@ class MiniMaxH3MasterExtender:
             kwargs.get("pass2_lora_mode", "replace engine LoRA"),
             kwargs.get("pass2_steps", 4),
         )
-        dual_active = (bool(kwargs.get("dual_sampling", False)) and not str(accel_mode).lower().startswith("turbo"))
+        dual_requested = bool(kwargs.get("dual_sampling", False)) or dual_mode
+        dual_active = dual_requested and not str(accel_mode).lower().startswith("turbo")
         engine.configure_dual_sampling(
-            kwargs.get("dual_sampling", False),
+            dual_requested,
             kwargs.get("dual_split_step", 2),
             kwargs.get("pass1_early_stop", False),
         )

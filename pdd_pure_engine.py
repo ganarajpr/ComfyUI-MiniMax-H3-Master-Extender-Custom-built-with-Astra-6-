@@ -153,6 +153,23 @@ def hyperflow_tail_sigmas(grid, denoise):
     return grid[-(tail + 1):]
 
 
+def capture_x0_callback(base, store):
+    """Sampler callback that records the latest denoised x0 in `store["x0"]` and then defers to `base`.
+
+    ComfyUI hands every callback (step, x0, x, total_steps), so the clean estimate needs no look inside the guider
+    (CFGGuider drops its `inner_model` as soon as sample() returns)."""
+    def callback(step, x0, x, total_steps):
+        store["x0"] = x0
+        if base is not None:
+            return base(step, x0, x, total_steps)
+    return callback
+
+
+def clean_latent_from_x0(model_patcher, x0):
+    """The last step's x0 (model latent space) mapped back to the latent the VAE and upscaler expect."""
+    return model_patcher.model.process_latent_out(x0.to(torch.float32))
+
+
 def dual_split_index(grid, split):
     """Grid index where pass 2 takes over in dual sampling: at least 1, and early enough that pass 2 keeps 2 steps."""
     return max(1, min(int(split), len(grid) - 3))
@@ -931,11 +948,10 @@ class MasterEngine:
 
         if _have_lp:
             callback = _lp.prepare_callback(guider.model_patcher, sigmas.shape[-1] - 1, x0_output)
-        elif return_denoised:
-            def callback(step, x0, x, total_steps):
-                x0_output["x0"] = x0
         else:
             callback = None
+        if return_denoised:
+            callback = capture_x0_callback(callback, x0_output)
 
         disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
 
@@ -953,7 +969,7 @@ class MasterEngine:
         )
         if return_denoised:
             # The sigmas stop above 0, so `samples` still carries noise; the last step's x0 prediction is the clean estimate.
-            samples = guider.inner_model.process_latent_out(x0_output["x0"].to(torch.float32))
+            samples = clean_latent_from_x0(guider.model_patcher, x0_output["x0"])
         samples = samples.to(comfy.model_management.intermediate_device())
 
         out = latent.copy()
