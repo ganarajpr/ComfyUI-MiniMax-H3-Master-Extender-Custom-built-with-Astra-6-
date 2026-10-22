@@ -380,7 +380,7 @@ class MiniMaxH3MasterExtender:
                 "run_mode": (["clip_by_clip", "full_batch"], {"default": "clip_by_clip", "tooltip": "clip_by_clip renders 1 clip then pauses for validation; full_batch renders all pending clips"}),
                 "pass1_resolution": (
                     ["608x352 (16:9)", "352x608 (9:16)", "512x512 (1:1)", "704x384", "896x576",
-                     "1056x608 (16:9)", "608x1056 (9:16)"],
+                     "1056x608 (16:9)", "608x1056 (9:16)", "864x480 (16:9)", "480x864 (9:16)"],
                     {"default": "608x352 (16:9)", "tooltip": "Stage 1 (Pass 1) draft generation resolution"},
                 ),
                 "pass2_resolution": (
