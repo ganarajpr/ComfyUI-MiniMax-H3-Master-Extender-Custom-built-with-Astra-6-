@@ -3,6 +3,10 @@ import { api } from "../../scripts/api.js";
 import { createProjectControls } from "./master_projects.js";
 import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue } from "./widget_migration.js";
 
+// Optional: if presets.js fails to load the panel simply has no Preset row.
+let presetsMod = null;
+try { presetsMod = await import("./presets.js"); } catch (e) { console.warn("[H3 Master] presets.js not loaded; no Preset dropdown", e); }
+
 const TARGET_NODE = "MiniMaxH3MasterExtender";
 const EVENT_PROGRESS = "master_extender_progress";
 const EVENT_CLIPS = "master_extender_clips";
@@ -945,6 +949,30 @@ app.registerExtension({
 
             function buildEngine(wrap) {
                 // Turbo LoRAs are trained for about 4 steps; switching engine resets the turbo steps.
+                if (presetsMod) {
+                    try {
+                        const { MASTER_PRESETS, matchPreset } = presetsMod;
+                        const matched = matchPreset((n) => W(n)?.value);
+                        const sel = document.createElement("select");
+                        sel.style.cssText = UI_CONTROL_CSS;
+                        const entries = [...(matched ? [] : [{ id: "custom", label: "Custom" }]), ...MASTER_PRESETS];
+                        for (const p of entries) {
+                            const opt = document.createElement("option");
+                            opt.value = p.id;
+                            opt.textContent = p.label;
+                            if (p.hint) opt.title = p.hint;
+                            if ((matched ? matched.id : "custom") === p.id) opt.selected = true;
+                            sel.appendChild(opt);
+                        }
+                        sel.onchange = () => {
+                            const p = MASTER_PRESETS.find((x) => x.id === sel.value);
+                            if (!p) return;
+                            for (const [name, value] of Object.entries(p.values)) setW(name, value, { rerender: false });
+                            renderUI();
+                        };
+                        wrap.appendChild(uiRow("preset", sel, { hint: "Fills the engine widgets below. Shows Custom when the values match no preset. Not saved itself: only the widgets are." }));
+                    } catch (e) { console.warn("[H3 Master] preset row skipped", e); }
+                }
                 const accelW = W("accel_mode");
                 const accelSel = uiSelect(comboValues(accelW), accelW?.value, (v) => {
                     setW("accel_mode", v, { rerender: false });

@@ -1,0 +1,650 @@
+{
+ "model": {
+  "type": "MODEL"
+ },
+ "clip": {
+  "type": "CLIP"
+ },
+ "vae": {
+  "type": "VAE"
+ },
+ "audio_vae": {
+  "type": "VAE"
+ },
+ "pdd_file": {
+  "type": "STRING"
+ },
+ "upscaler_model": {
+  "options": [
+   "h3_upscaler_lms_v0.1.safetensors",
+   "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+   "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
+   "minimax_h3_bf16_CONSERVATIVE_v5.safetensors"
+  ]
+ },
+ "run_mode": {
+  "options": [
+   "clip_by_clip",
+   "full_batch"
+  ]
+ },
+ "pass1_resolution": {
+  "options": [
+   "608x352 (16:9)",
+   "352x608 (9:16)",
+   "512x512 (1:1)",
+   "704x384",
+   "896x576",
+   "1056x608 (16:9)",
+   "608x1056 (9:16)",
+   "864x480 (16:9)",
+   "480x864 (9:16)"
+  ]
+ },
+ "pass2_resolution": {
+  "options": [
+   "1056x608 (16:9)",
+   "608x1056 (9:16)",
+   "1280x720",
+   "720x1280 (9:16)",
+   "1344x768 (16:9)",
+   "768x1344 (9:16)",
+   "1920x1088 (16:9)",
+   "1088x1920 (9:16)",
+   "1024x1024 (1:1)",
+   "off (pass 1 only)"
+  ]
+ },
+ "pass2_denoise": {
+  "type": "FLOAT",
+  "min": 0.05,
+  "max": 1.0
+ },
+ "pdd_nfe": {
+  "options": [
+   "8",
+   "4",
+   "6",
+   "5",
+   "10",
+   "12",
+   "16",
+   "20"
+  ]
+ },
+ "context_length": {
+  "options": [
+   "22",
+   "5",
+   "39",
+   "56"
+  ]
+ },
+ "audio_context_length": {
+  "type": "INT",
+  "min": 0,
+  "max": 240
+ },
+ "identity_continuity": {
+  "type": "BOOLEAN"
+ },
+ "smart_offload": {
+  "type": "BOOLEAN"
+ },
+ "clips_json": {
+  "type": "STRING"
+ },
+ "refs_json": {
+  "type": "STRING"
+ },
+ "ref_image_1": {
+  "type": "IMAGE"
+ },
+ "ref_image_2": {
+  "type": "IMAGE"
+ },
+ "ref_image_3": {
+  "type": "IMAGE"
+ },
+ "ref_image_4": {
+  "type": "IMAGE"
+ },
+ "ref_image_5": {
+  "type": "IMAGE"
+ },
+ "ref_image_6": {
+  "type": "IMAGE"
+ },
+ "ref_image_7": {
+  "type": "IMAGE"
+ },
+ "ref_image_8": {
+  "type": "IMAGE"
+ },
+ "ref_image_9": {
+  "type": "IMAGE"
+ },
+ "attention_backend": {
+  "options": [
+   "comfy kitchen attention",
+   "sage attention 2.2",
+   "pytorch attention"
+  ]
+ },
+ "sla_enabled": {
+  "type": "BOOLEAN"
+ },
+ "sla_sparsity": {
+  "type": "FLOAT",
+  "min": 0.0,
+  "max": 0.95
+ },
+ "pass2_chunk_frames": {
+  "type": "INT",
+  "min": 0,
+  "max": 3600
+ },
+ "pass2_chunk_overlap": {
+  "type": "INT",
+  "min": 0,
+  "max": 240
+ },
+ "async_decode": {
+  "options": [
+   "off",
+   "auto",
+   "on"
+  ]
+ },
+ "sparse_method": {
+  "options": [
+   "sla",
+   "sol-attn",
+   "vsa"
+  ]
+ },
+ "sparse_tau": {
+  "type": "FLOAT",
+  "min": 0.0,
+  "max": 4.0
+ },
+ "accel_mode": {
+  "options": [
+   "HyperFlow 8-step",
+   "Turbo LoRA",
+   "HyperFlow 8-step \u00b7 dual sampling"
+  ]
+ },
+ "turbo_lora": {
+  "options": [
+   "none",
+   "h3\\Boobs_Boost_transition_MiniMax-H3_copy_000002000.safetensors",
+   "h3\\Epic%20Cumshots%20vAlpha%20I2V-R2V%20-%20MinimaxH3%20-%20CUMSH0T.safetensors",
+   "h3\\Facial%20CumShot%20REF2VA%20-%20MinimaxH3%20-%20cmst%2C0.75-0.85str.safetensors",
+   "h3\\H3Turbo_4Step_Neat_v1.safetensors",
+   "h3\\H3_VBVR_Pro_attn_only.safetensors",
+   "h3\\HMCumshot_V1.0.safetensors",
+   "h3\\HMNSFW-AIO-V2.5.safetensors",
+   "h3\\M3_Unlocked_V2.safetensors",
+   "h3\\MH3_Torpedo.safetensors",
+   "h3\\MH3_cinematic_lora.safetensors",
+   "h3\\MM-H3 - Nipple Sucking.safetensors",
+   "h3\\MM-H3%20-%20Age%20Slider%20v4.safetensors",
+   "h3\\MinimaxH3_cinematic_realism_0.3.safetensors",
+   "h3\\Minimax_H3_Unlocked_V2.1.safetensors",
+   "h3\\PlagueKind-tiddies-realismslider.safetensors",
+   "h3\\TaoMate-H3-FL2VA-3Step-ComfyUI-BF16.safetensors",
+   "h3\\VBVR_H3_attn_only.safetensors",
+   "h3\\action\\Bunny_weapon_combatV1.safetensors",
+   "h3\\action\\H3_Combat_V2_0.7.safetensors",
+   "h3\\action\\Motion_Repair0.4.safetensors",
+   "h3\\action\\Motion_Repair_V2.safetensors",
+   "h3\\action\\better_motion_h3_lora_v1_500.safetensors",
+   "h3\\fasth3_vsa_gate.safetensors",
+   "h3\\h3-realism-people-t2v-i2v-r2v.safetensors",
+   "h3\\kn_r1_rank16.safetensors",
+   "h3\\minimax-h3_fl2v_8Step_motion_enhancer.safetensors",
+   "h3\\minimax_h3_4step_lora_flashgen_v1.0_768p_fl2va_pruned_avg_rank_13_bf16.safetensors",
+   "h3\\minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors",
+   "h3\\minimax_h3_ELM_longlive_plug_4step_lora_bf16.safetensors",
+   "h3\\minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy.safetensors",
+   "h3\\minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_pdmd_4step_lora_avg_rank_57_bf16.safetensors",
+   "h3\\minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_turbo_v4_step600_ema_pruned_comfyui.safetensors",
+   "h3\\penloraH3.safetensors",
+   "h3\\taomate_h3_3step_comfy.safetensors",
+   "hyperflow\\minimax_h3_hyperflow_8step_v1.0.safetensors",
+   "kidsdrawing.safetensors",
+   "krea2\\Krea2_TextFusion_Refusal_Reduction.safetensors",
+   "krea2\\krea2_identity_edit_v1_2.safetensors",
+   "krea2\\krea2_style_reference.safetensors",
+   "krea2\\krea2_turbo_sda_v1.0_comfy.safetensors",
+   "krea2\\krea2filterbypass3.safetensors",
+   "krea2\\kroma-v0.1_krea2.safetensors",
+   "krea2_darkbrush.safetensors",
+   "krea2_realism_lora.safetensors",
+   "moss\\moss_sft_8step_dmd_lodestones.safetensors",
+   "qwen2.1\\Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors",
+   "qwen2.1\\elusarcas-qwen2-1-detailer-v1.safetensors",
+   "qwen2.1\\qwen-image-2.1-fix-1.0-comfy.safetensors",
+   "rainywindow.safetensors",
+   "softwatercolor.safetensors",
+   "yue2\\ar_lora_inst_v3abc_comfyui.safetensors",
+   "yue2\\nar_lora_joint_v4_comfyui.safetensors",
+   "yue2\\nar_lora_joint_v9_comfyui.safetensors",
+   "zit\\zit_sda_v1.safetensors"
+  ]
+ },
+ "turbo_lora_strength": {
+  "type": "FLOAT",
+  "min": -10.0,
+  "max": 10.0
+ },
+ "turbo_sampler": {
+  "options": [
+   "euler",
+   "euler_cfg_pp",
+   "euler_ancestral",
+   "euler_ancestral_cfg_pp",
+   "heun",
+   "heunpp2",
+   "exp_heun_2_x0",
+   "exp_heun_2_x0_sde",
+   "dpm_2",
+   "dpm_2_ancestral",
+   "lms",
+   "dpm_fast",
+   "dpm_adaptive",
+   "dpmpp_2s_ancestral",
+   "dpmpp_2s_ancestral_cfg_pp",
+   "dpmpp_sde",
+   "dpmpp_sde_gpu",
+   "dpmpp_2m",
+   "dpmpp_2m_cfg_pp",
+   "dpmpp_2m_sde",
+   "dpmpp_2m_sde_gpu",
+   "dpmpp_2m_sde_heun",
+   "dpmpp_2m_sde_heun_gpu",
+   "dpmpp_3m_sde",
+   "dpmpp_3m_sde_gpu",
+   "ddpm",
+   "lcm",
+   "ipndm",
+   "ipndm_v",
+   "deis",
+   "cfgpp_ud10_ab",
+   "res_multistep",
+   "res_multistep_cfg_pp",
+   "res_multistep_ancestral",
+   "res_multistep_ancestral_cfg_pp",
+   "gradient_estimation",
+   "gradient_estimation_cfg_pp",
+   "er_sde",
+   "seeds_2",
+   "seeds_3",
+   "sa_solver",
+   "sa_solver_pece",
+   "ddim",
+   "uni_pc",
+   "uni_pc_bh2"
+  ]
+ },
+ "turbo_scheduler": {
+  "options": [
+   "simple",
+   "sgm_uniform",
+   "karras",
+   "exponential",
+   "ddim_uniform",
+   "beta",
+   "normal",
+   "linear_quadratic",
+   "kl_optimal",
+   "bong_tangent"
+  ]
+ },
+ "pass2_lora": {
+  "options": [
+   "none",
+   "h3\\Boobs_Boost_transition_MiniMax-H3_copy_000002000.safetensors",
+   "h3\\Epic%20Cumshots%20vAlpha%20I2V-R2V%20-%20MinimaxH3%20-%20CUMSH0T.safetensors",
+   "h3\\Facial%20CumShot%20REF2VA%20-%20MinimaxH3%20-%20cmst%2C0.75-0.85str.safetensors",
+   "h3\\H3Turbo_4Step_Neat_v1.safetensors",
+   "h3\\H3_VBVR_Pro_attn_only.safetensors",
+   "h3\\HMCumshot_V1.0.safetensors",
+   "h3\\HMNSFW-AIO-V2.5.safetensors",
+   "h3\\M3_Unlocked_V2.safetensors",
+   "h3\\MH3_Torpedo.safetensors",
+   "h3\\MH3_cinematic_lora.safetensors",
+   "h3\\MM-H3 - Nipple Sucking.safetensors",
+   "h3\\MM-H3%20-%20Age%20Slider%20v4.safetensors",
+   "h3\\MinimaxH3_cinematic_realism_0.3.safetensors",
+   "h3\\Minimax_H3_Unlocked_V2.1.safetensors",
+   "h3\\PlagueKind-tiddies-realismslider.safetensors",
+   "h3\\TaoMate-H3-FL2VA-3Step-ComfyUI-BF16.safetensors",
+   "h3\\VBVR_H3_attn_only.safetensors",
+   "h3\\action\\Bunny_weapon_combatV1.safetensors",
+   "h3\\action\\H3_Combat_V2_0.7.safetensors",
+   "h3\\action\\Motion_Repair0.4.safetensors",
+   "h3\\action\\Motion_Repair_V2.safetensors",
+   "h3\\action\\better_motion_h3_lora_v1_500.safetensors",
+   "h3\\fasth3_vsa_gate.safetensors",
+   "h3\\h3-realism-people-t2v-i2v-r2v.safetensors",
+   "h3\\kn_r1_rank16.safetensors",
+   "h3\\minimax-h3_fl2v_8Step_motion_enhancer.safetensors",
+   "h3\\minimax_h3_4step_lora_flashgen_v1.0_768p_fl2va_pruned_avg_rank_13_bf16.safetensors",
+   "h3\\minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors",
+   "h3\\minimax_h3_ELM_longlive_plug_4step_lora_bf16.safetensors",
+   "h3\\minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy.safetensors",
+   "h3\\minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_pdmd_4step_lora_avg_rank_57_bf16.safetensors",
+   "h3\\minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+   "h3\\minimax_h3_turbo_v4_step600_ema_pruned_comfyui.safetensors",
+   "h3\\penloraH3.safetensors",
+   "h3\\taomate_h3_3step_comfy.safetensors",
+   "hyperflow\\minimax_h3_hyperflow_8step_v1.0.safetensors",
+   "kidsdrawing.safetensors",
+   "krea2\\Krea2_TextFusion_Refusal_Reduction.safetensors",
+   "krea2\\krea2_identity_edit_v1_2.safetensors",
+   "krea2\\krea2_style_reference.safetensors",
+   "krea2\\krea2_turbo_sda_v1.0_comfy.safetensors",
+   "krea2\\krea2filterbypass3.safetensors",
+   "krea2\\kroma-v0.1_krea2.safetensors",
+   "krea2_darkbrush.safetensors",
+   "krea2_realism_lora.safetensors",
+   "moss\\moss_sft_8step_dmd_lodestones.safetensors",
+   "qwen2.1\\Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors",
+   "qwen2.1\\elusarcas-qwen2-1-detailer-v1.safetensors",
+   "qwen2.1\\qwen-image-2.1-fix-1.0-comfy.safetensors",
+   "rainywindow.safetensors",
+   "softwatercolor.safetensors",
+   "yue2\\ar_lora_inst_v3abc_comfyui.safetensors",
+   "yue2\\nar_lora_joint_v4_comfyui.safetensors",
+   "yue2\\nar_lora_joint_v9_comfyui.safetensors",
+   "zit\\zit_sda_v1.safetensors"
+  ]
+ },
+ "pass2_lora_strength": {
+  "type": "FLOAT",
+  "min": -10.0,
+  "max": 10.0
+ },
+ "pass2_lora_mode": {
+  "options": [
+   "stack on engine LoRA",
+   "replace engine LoRA"
+  ]
+ },
+ "pass2_steps": {
+  "type": "INT",
+  "min": 0,
+  "max": 50
+ },
+ "semantic_bridge": {
+  "options": [
+   "none",
+   "BUNNY_H3_ActionLogic_Bridge_V2.safetensors"
+  ]
+ },
+ "semantic_bridge_alpha": {
+  "type": "FLOAT",
+  "min": 0.0,
+  "max": 1.0
+ },
+ "semantic_bridge_match": {
+  "options": [
+   "per_token",
+   "global",
+   "none"
+  ]
+ },
+ "clip_prompt_1": {
+  "type": "STRING"
+ },
+ "clip_prompt_2": {
+  "type": "STRING"
+ },
+ "clip_prompt_3": {
+  "type": "STRING"
+ },
+ "clip_prompt_4": {
+  "type": "STRING"
+ },
+ "rewrite_mode": {
+  "options": [
+   "off",
+   "pending clips",
+   "all clips"
+  ]
+ },
+ "rewrite_task": {
+  "options": [
+   "auto",
+   "Ref2VA",
+   "T2VA"
+  ]
+ },
+ "rewrite_writer_model": {
+  "options": [
+   "Swift-1.5-Qwen3.8-27B Uncensored (NInfer) \u00b7 ~31 GB (ninfer sizes its KV pool to the card) \u2014 kvnxiao ajgazin/OrcaRouter Swift-1.5 NVFP4 on ninfer-serve (DFlash2 K7, MTP head, vision built in)",
+   "Swift-Qwen3.8-27B Uncensored (local) \u00b7 ~21 GB with the guide in context \u2014 ajgazin abliterated Swift-Qwen3.8-27B UD-Q5_K_M, already on disk (same file the llama router preset swift-uncensored-27b serves)",
+   "Swift-1.5-Qwen3.8-27B Uncensored (local) \u00b7 ~21 GB with the guide in context \u2014 ajgazin abliterated Swift-1.5-Qwen3.8-27B (mradermacher static Q5_K_M), same file the llama router preset swift15-uncensored-27b serves",
+   "ThinkingCap-Qwen3.8-27B Heretic (NInfer) \u00b7 ~31 GB (ninfer sizes its KV pool to the card) \u2014 Dragoy revised-Heretic ThinkingCap-Qwen3.8-27B NVFP4 on ninfer-serve (DFlash2 K7, MTP head, vision built in); best rewrites in the 2026-09-27 bake-off, ~2x llama speed",
+   "Qwen3.5-4B \u00b7 2.6 GB download \u00b7 ~5 GB with the guide in context \u2014 smallest that still holds the format; start here on an 8 GB card",
+   "Qwen3.5-9B \u00b7 5.3 GB download \u00b7 ~8 GB with the guide in context \u2014 best writing per gigabyte; lower gpu_layers if 8 GB is tight",
+   "Qwen3.5-9B Uncensored (HauhauCS) \u00b7 5.2 GB download \u00b7 ~8 GB with the guide in context \u2014 abliterated fine-tune: does not refuse scenes the stock model declines to describe",
+   "Gemma 3 12B Instruct \u00b7 6.8 GB download \u00b7 ~10 GB with the guide in context \u2014 non-Qwen alternative; its chat template takes no system role, which the node handles",
+   "Mistral Small 3.2 24B Instruct \u00b7 13.4 GB download \u00b7 ~17 GB with the guide in context \u2014 for a 16 GB card and up, when the 9B's prose is not enough",
+   "Qwen3.8-27B Q2_K_XL \u00b7 9.2 GB download \u00b7 ~13 GB with the guide in context \u2014 the 27B's prose on a 16 GB card; unsloth's dynamic 2-bit, rougher than the Q4 but still the biggest writer this side of it",
+   "Qwen3.8-27B Q3_K_XL \u00b7 12.2 GB download \u00b7 ~16 GB with the guide in context \u2014 the middle road: most of the Q4's quality, three gigabytes less to hold",
+   "Qwen3.8-27B Q4_K_M \u00b7 15.3 GB download \u00b7 ~19 GB with the guide in context \u2014 the strongest prose in the list, for a 24 GB card; newer than the rewriter's own base, but its extra layer is why the 27B LoRA cannot ride it",
+   "Qwen3.8-27B Q6_K_XL \u00b7 23.6 GB download \u00b7 ~27 GB with the guide in context \u2014 near-lossless, for a 32 GB card - and little room for the video model beside it; lower gpu_layers if it will not fit",
+   "Strata - Qwen3.8-Flash-Next (local endpoint, 5090)"
+  ]
+ },
+ "rewrite_caption_length": {
+  "options": [
+   "brief",
+   "standard",
+   "detailed"
+  ]
+ },
+ "rewrite_greedy": {
+  "type": "BOOLEAN"
+ },
+ "rewrite_temperature": {
+  "type": "FLOAT",
+  "min": 0.0,
+  "max": 2.0
+ },
+ "rewrite_max_new_tokens": {
+  "type": "INT",
+  "min": 256,
+  "max": 16384
+ },
+ "rewrite_seed": {
+  "type": "INT",
+  "min": 0,
+  "max": 2147483647
+ },
+ "rewrite_thinking": {
+  "type": "BOOLEAN"
+ },
+ "rewrite_reasoning_budget": {
+  "options": [
+   "1024",
+   "2048",
+   "4096"
+  ]
+ },
+ "rewrite_reasoning_budget_message": {
+  "type": "STRING"
+ },
+ "rewrite_parallel": {
+  "type": "INT",
+  "min": 1,
+  "max": 8
+ },
+ "rewrite_system_prompt": {
+  "type": "STRING"
+ },
+ "rewrite_system_prompt_in": {
+  "type": "STRING"
+ },
+ "ref_video_1": {
+  "type": "IMAGE,VIDEO"
+ },
+ "ref_video_2": {
+  "type": "IMAGE,VIDEO"
+ },
+ "ref_video_3": {
+  "type": "IMAGE,VIDEO"
+ },
+ "ref_video_audio_1": {
+  "type": "AUDIO"
+ },
+ "ref_video_audio_2": {
+  "type": "AUDIO"
+ },
+ "ref_video_audio_3": {
+  "type": "AUDIO"
+ },
+ "ref_audio_1": {
+  "type": "AUDIO"
+ },
+ "ref_audio_2": {
+  "type": "AUDIO"
+ },
+ "ref_audio_3": {
+  "type": "AUDIO"
+ },
+ "rewrite_previous_clips": {
+  "options": [
+   "off",
+   "raw asks",
+   "final prompts"
+  ]
+ },
+ "hyperflow_file": {
+  "options": [
+   "custom_node_hyperflow_8step_v1.0_comfyui.safetensors",
+   "custom_node_hyperflow_8step_v1.0_comfyui_pruned.safetensors"
+  ]
+ },
+ "hyperflow_curve_refit": {
+  "type": "BOOLEAN"
+ },
+ "hyperflow_strength": {
+  "type": "FLOAT",
+  "min": 0.0,
+  "max": 2.0
+ },
+ "hyperflow_lora_mode": {
+  "options": [
+   "bypass",
+   "merge"
+  ]
+ },
+ "audio_refine_steps": {
+  "type": "INT",
+  "min": 0,
+  "max": 50
+ },
+ "audio_refine_denoise": {
+  "type": "FLOAT",
+  "min": 0.01,
+  "max": 1.0
+ },
+ "audio_refine_cache": {
+  "type": "BOOLEAN"
+ },
+ "final_decode": {
+  "options": [
+   "standard",
+   "MiniMax-H3-X2-Detail-v1.safetensors"
+  ]
+ },
+ "rewrite_story": {
+  "type": "STRING"
+ },
+ "auto_clips": {
+  "type": "INT",
+  "min": 0,
+  "max": 40
+ },
+ "planner_refs": {
+  "options": [
+   "images",
+   "captions",
+   "off"
+  ]
+ },
+ "auto_clip_seconds": {
+  "type": "INT",
+  "min": 5,
+  "max": 15
+ },
+ "story_engine": {
+  "options": [
+   "builder",
+   "e4.10",
+   "e4.11"
+  ]
+ },
+ "e4_language": {
+  "type": "STRING"
+ },
+ "e4_score": {
+  "options": [
+   "off",
+   "on"
+  ]
+ },
+ "e4_decision_budget": {
+  "options": [
+   "off",
+   "1024",
+   "2048",
+   "4096"
+  ]
+ },
+ "e4_picture_notes": {
+  "type": "STRING"
+ },
+ "sparse_start_percent": {
+  "type": "FLOAT",
+  "min": -1.0,
+  "max": 1.0
+ },
+ "sparse_dense_blocks": {
+  "type": "STRING"
+ },
+ "sparse_sink": {
+  "options": [
+   "auto",
+   "exact_kv_and_rows",
+   "exact_kv",
+   "off"
+  ]
+ },
+ "dual_sampling": {
+  "type": "BOOLEAN"
+ },
+ "dual_split_step": {
+  "type": "INT",
+  "min": 1,
+  "max": 7
+ },
+ "pass1_early_stop": {
+  "type": "BOOLEAN"
+ }
+}
