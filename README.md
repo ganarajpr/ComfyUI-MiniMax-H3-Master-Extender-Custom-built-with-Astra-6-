@@ -143,6 +143,18 @@ A separate node, `H3 Story Writer (brief to story)` (category *MiniMax H3 Master
 - **Workflow:** `example_workflows/MiniMax_H3_Master_Extender_Story_Writer.json` is the Story Auto example with the writer wired into `rewrite_story`, `story_engine` set to `e4.10` and a core *Preview as Text* node on the story. `python tools/add_story_writer.py in.json out.json [--clips 8] [--seconds 15] [--no-preview]` does the same to any saved UI-format workflow with a Master Extender node (the writer goes to the left of the graph, takes the Extender's story text as its brief and its writer model and language; running it again changes nothing). Tests: `tests/test_add_story_writer.py`.
 - **To deploy:** copy `story_writer.py`, `prompts/story_writer_*.md` and the changed `__init__.py` into the extender folder (or pull the branch), then restart ComfyUI so the node appears. Nothing else changes.
 
+## Presets
+
+The panel's Engine section starts with a **preset** dropdown that fills the engine widgets in one click. It only writes ordinary widgets (so saved workflows and API graphs are unaffected) and shows **Custom** whenever the current values match no preset.
+
+| Preset | Engine | Pass 1 | Pass 2 | 15 s clip |
+|---|---|---|---|---|
+| Standard | HyperFlow 8-step, DMAD refiner (4 steps, replace) | 608x352 | 1280x720 | ~122 s |
+| K4 / K5 / K6 / K7 · 352p | HyperFlow dual sampling, split 4/5/6/7, early stop | 608x352 | 1280x720 | ~198 / ~176 / n.m. / ~112 s |
+| K4 / K5 / K6 / K7 · 480p | same | 864x480 | 1280x720 | ~188 / ~172 / ~158 / n.m. s |
+
+Add a preset by adding one entry to `MASTER_PRESETS` in `web/presets.js`.
+
 ## HyperFlow 8-step mode
 
 The default acceleration mode (the other is Turbo LoRA). See [HYPERFLOW.md](HYPERFLOW.md) for the node pack, weights, base/build pairing and the pass-2 rule.
