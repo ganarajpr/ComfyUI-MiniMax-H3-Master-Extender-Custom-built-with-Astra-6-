@@ -54,6 +54,10 @@ export const DUAL_DEFAULTS = { dual_sampling: false, dual_split_step: 2, pass1_e
 export function pass1StepsValue(value) {
     return Number.isInteger(value) && value >= 0 && value <= 8 ? value : 0;
 }
+// pass2_chunk_when is appended after pass1_steps: a workflow saved before it has master_ui's "" there. Anything else invalid = default.
+export function pass2ChunkWhenValue(value) {
+    return value === "always" ? "always" : "above 720p";
+}
 export function dualWidgetValue(name, value) {
     const fallback = DUAL_DEFAULTS[name];
     if (typeof fallback === "boolean") return typeof value === "boolean" ? value : fallback;

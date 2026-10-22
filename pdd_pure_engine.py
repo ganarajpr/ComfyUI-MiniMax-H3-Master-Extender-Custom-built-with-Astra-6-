@@ -210,6 +210,10 @@ def pass1_steps_sigmas(grid, steps):
     return grid[:int(steps) + 1]
 
 
+PASS2_CHUNK_WHEN = ("above 720p", "always")
+PASS2_CHUNK_MIN_SHORT_SIDE = 800
+
+
 SPARSE_SINK_CHOICES = ("exact_kv_and_rows", "exact_kv", "off")
 
 
@@ -269,6 +273,7 @@ class MasterEngine:
         sla_sparsity=0.9,
         pass2_chunk_frames=124,
         pass2_chunk_overlap=22,
+        pass2_chunk_when="above 720p",
         background_busy=None,
         wait_background=None,
         sparse_method="sla",
@@ -303,6 +308,7 @@ class MasterEngine:
         self.sparse_sink = sparse_sink
         self.pass2_chunk_frames = int(pass2_chunk_frames or 0)
         self.pass2_chunk_overlap = int(pass2_chunk_overlap or 0)
+        self.pass2_chunk_when = pass2_chunk_when if pass2_chunk_when in PASS2_CHUNK_WHEN else "above 720p"
         # Hooks from the Master node: is a background decode running, and how
         # to wait for it. The reclaim must not evict models under a live decode.
         self.background_busy = background_busy or (lambda: False)
@@ -855,9 +861,17 @@ class MasterEngine:
     # ------------------------------------------------------------------
     # Chunked pass 2 (temporal windows via MMH3SplitUpscale)
     # ------------------------------------------------------------------
-    def _pass2_chunking_active(self, frame_count):
+    def _pass2_chunking_active(self, frame_count, width=None, height=None):
         if self.pass2_chunk_frames <= 0:
             return False
+        if int(frame_count) <= int(self.pass2_chunk_frames):
+            return False
+        if self.pass2_chunk_when == "above 720p" and width and height:
+            short_side = min(int(width), int(height))
+            if short_side <= PASS2_CHUNK_MIN_SHORT_SIDE:
+                _LOG.info("Pass 2: whole clip (pass2_chunk_when=above 720p, short side %d px <= %d)",
+                          short_side, PASS2_CHUNK_MIN_SHORT_SIDE)
+                return False
         if nodes.NODE_CLASS_MAPPINGS.get("MMH3SplitUpscale") is None or \
                 nodes.NODE_CLASS_MAPPINGS.get("MMH3TemporalSplitParamsV10") is None:
             return False
@@ -1338,7 +1352,7 @@ class MasterEngine:
 
         # Sample Pass 2 (High-Res Refine): whole clip, or overlapping temporal
         # windows when the clip is longer than pass2_chunk_frames.
-        if self._pass2_chunking_active(frame_count):
+        if self._pass2_chunking_active(frame_count, w2, h2):
             final_sampled = self._sample_pass2_chunked(
                 model=model_p2,
                 positive=pos_p2,
