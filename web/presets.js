@@ -42,26 +42,26 @@ const STANDARD_VALUES = {
 const stdP1Preset = (k) => ({
     id: `standard-p1-${k}`,
     label: `Standard \u00b7 pass 1 = ${k} steps`,
-    hint: `The Standard recipe with pass 1 stopped after ${k} of 8 HyperFlow steps; its clean estimate is upscaled and the normal refine runs. Not measured.`,
+    hint: `The Standard recipe with pass 1 stopped after ${k} of 8 HyperFlow steps; its clean estimate is upscaled and the normal refine runs. ${k === 7 ? "2-ref clip: 87.6 s vs 88.9 s Standard." : k === 6 ? "2-ref clip: 82.2 s vs 88.9 s Standard." : "Not measured."} Not measured on the DEVI fight.`,
     values: { ...STANDARD_VALUES, pass1_steps: k },
 });
 
 export const MASTER_PRESETS = [
     {
         id: "standard",
-        label: "Standard · ~122 s",
-        hint: "HyperFlow 8-step, DMAD refiner. 15 s clip measured ~122 s.",
+        label: "Standard · ~146 s",
+        hint: "HyperFlow 8-step, DMAD refiner. Times in this list are the DEVI fight (15 s, 9 refs) unless noted: 146 s. Fewer refs are faster (2 refs: ~89 s).",
         values: STANDARD_VALUES,
     },
     stdP1Preset(7),
     stdP1Preset(6),
-    kPreset(4, "608x352 (16:9)", "K4 · 352p · ~198 s", "Dual sampling, split 4, 352p pass 1. 15 s heavy clip ~198 s."),
-    kPreset(5, "608x352 (16:9)", "K5 · 352p · ~176 s", "Dual sampling, split 5, 352p pass 1. 15 s clip ~176 s."),
+    kPreset(4, "608x352 (16:9)", "K4 · 352p · ~198 s", "Dual sampling, split 4, 352p pass 1. DEVI fight 197.5 s."),
+    kPreset(5, "608x352 (16:9)", "K5 · 352p · ~176 s", "Dual sampling, split 5, 352p pass 1. DEVI fight 175.6 s."),
     kPreset(6, "608x352 (16:9)", "K6 · 352p · not measured", "Dual sampling, split 6, 352p pass 1. Not measured."),
-    kPreset(7, "608x352 (16:9)", "K7 · 352p · ~112 s", "Dual sampling, split 7, 352p pass 1. 15 s clip ~112 s."),
-    kPreset(4, "864x480 (16:9)", "K4 · 480p · ~188 s", "Dual sampling, split 4, 480p pass 1. 15 s clip ~188 s."),
-    kPreset(5, "864x480 (16:9)", "K5 · 480p · ~172 s", "Dual sampling, split 5, 480p pass 1. 15 s clip ~172 s."),
-    kPreset(6, "864x480 (16:9)", "K6 · 480p · ~158 s", "Dual sampling, split 6, 480p pass 1. 15 s clip ~158 s."),
+    kPreset(7, "608x352 (16:9)", "K7 · 352p · not measured", "Dual sampling, split 7, 352p pass 1. Not measured on the DEVI fight; CHOODI c03 (6 refs): 111.9 s vs 122.1 s Standard."),
+    kPreset(4, "864x480 (16:9)", "K4 · 480p · ~230 s", "Dual sampling, split 4, 480p pass 1. DEVI fight 230.3 s (CHOODI c21c, 5 refs: 188 s)."),
+    kPreset(5, "864x480 (16:9)", "K5 · 480p · ~212 s", "Dual sampling, split 5, 480p pass 1. DEVI fight 211.6 s (CHOODI c21c: 174 s)."),
+    kPreset(6, "864x480 (16:9)", "K6 · 480p · ~196 s", "Dual sampling, split 6, 480p pass 1. DEVI fight 195.9 s (CHOODI c21c: 160 s)."),
     kPreset(7, "864x480 (16:9)", "K7 · 480p · not measured", "Dual sampling, split 7, 480p pass 1. Not measured."),
 ];
 
