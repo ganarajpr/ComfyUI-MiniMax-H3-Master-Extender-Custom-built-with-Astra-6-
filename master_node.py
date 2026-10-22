@@ -54,6 +54,7 @@ from .pdd_pure_engine import (
     parse_resolution,
     duration_to_h3_frames,
     with_dual_p1_settings,
+    with_pass1_steps_p1_settings,
 )
 
 PASS2_OFF = "off (pass 1 only)"
@@ -500,6 +501,7 @@ class MiniMaxH3MasterExtender:
                 "dual_sampling": ("BOOLEAN", {"default": False, "tooltip": "HyperFlow 8-step only. Pass 2 becomes the tail of HyperFlow's trained 8-step grid starting at dual_split_step (2 -> 6 steps from sigma 0.9843): the image is generated at the pass-2 size and pass 1 only sets the layout. No pass-2 LoRA is used (pass2_lora is ignored) and pass2_denoise is ignored. Pair it with a small pass 1 (1056x608) and a larger pass 2 (1344x768). Off = the normal refine pass. Ignored in Turbo LoRA mode."}),
                 "dual_split_step": ("INT", {"default": 2, "min": 1, "max": 7, "step": 1, "tooltip": "Dual sampling: the grid index where pass 2 takes over, so pass 2 runs 8 minus this many steps (2 -> 6 steps, 6 -> 2 steps). Higher = pass 2 changes less of pass 1's image."}),
                 "pass1_early_stop": ("BOOLEAN", {"default": False, "tooltip": "EXPERIMENTAL, dual sampling only. Pass 1 runs only the first dual_split_step steps instead of all 8; its clean estimate is upscaled and pass 2 re-noises it to the split sigma and continues. Saves most of pass 1, but the 3D latent upscaler was trained on clean latents, so quality is not validated. Off keeps the full 8-step pass 1."}),
+                "pass1_steps": ("INT", {"default": 0, "min": 0, "max": 8, "step": 1, "tooltip": "HyperFlow 8-step only (ignored with dual sampling and in Turbo LoRA mode). 0 = the full 8-step pass 1. k = 1..7: pass 1 stops after k of the 8 steps, its clean estimate is upscaled, and the normal pass-2 refine runs unchanged (same LoRA, windows and denoise). Saves (8 - k) pass-1 steps; the refine re-noises the latent anyway."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -823,6 +825,7 @@ class MiniMaxH3MasterExtender:
             kwargs.get("dual_split_step", 2),
             kwargs.get("pass1_early_stop", False),
         )
+        engine.configure_pass1_steps(kwargs.get("pass1_steps", 0) if pass2_enabled else 0)
         audio_refine = _audio_refine_signature(
             kwargs.get("audio_refine_steps", 0), kwargs.get("audio_refine_denoise", 0.5),
             kwargs.get("audio_refine_cache", True))
@@ -863,6 +866,8 @@ class MiniMaxH3MasterExtender:
         p1_settings = with_dual_p1_settings(
             p1_settings, dual_active and pass2_enabled, kwargs.get("dual_split_step", 2),
             bool(kwargs.get("pass1_early_stop", False)))
+
+        p1_settings = with_pass1_steps_p1_settings(p1_settings, engine.pass1_steps)
 
         clip_pictures = [clip_picture_keys(c, refs, n + 1) for n, c in enumerate(clips)]
         if any(p is not None for p in clip_pictures):

@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { createProjectControls } from "./master_projects.js";
-import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue, pass2RowBinding } from "./widget_migration.js";
+import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue, pass1StepsValue, pass2RowBinding } from "./widget_migration.js";
 
 // Optional: if presets.js fails to load the panel simply has no Preset row.
 let presetsMod = null;
@@ -200,6 +200,8 @@ const SLA_ONLY_WIDGETS = ["sla_sparsity"];
 // Dual sampling (appended last, after sparse_sink): HyperFlow only; the split step and early stop only while it is on.
 const DUAL_WIDGET = "dual_sampling";
 const DUAL_DETAIL_WIDGETS = ["dual_split_step", "pass1_early_stop"];
+// pass1_steps (appended after pass1_early_stop): HyperFlow without dual sampling only; 0 = the full 8-step pass 1.
+const PASS1_STEPS_WIDGET = "pass1_steps";
 // The engine combo value that is HyperFlow with dual sampling forced on (the dual_sampling toggle is then redundant).
 const DUAL_MODE = "HyperFlow 8-step \u00b7 dual sampling";
 const isDualMode = (value) => String(value ?? "") === DUAL_MODE;
@@ -297,6 +299,8 @@ function repairDualWidgets(node) {
         const w = node.widgets?.find(x => x.name === name);
         if (w) w.value = dualWidgetValue(name, w.value);
     }
+    const steps = node.widgets?.find(x => x.name === PASS1_STEPS_WIDGET);
+    if (steps) steps.value = pass1StepsValue(steps.value);
 }
 
 function repairHyperflowWidgets(node, defaults) {
@@ -333,6 +337,7 @@ function setupModeWidgets(node) {
         const dualOn = hyperflow && (dualMode || !!byName(DUAL_WIDGET)?.value);
         setWidgetVisible(byName(DUAL_WIDGET), hyperflow && !dualMode);
         DUAL_DETAIL_WIDGETS.forEach(n => setWidgetVisible(byName(n), dualOn));
+        setWidgetVisible(byName(PASS1_STEPS_WIDGET), hyperflow && !dualOn);
         ALWAYS_HIDDEN_WIDGETS.forEach(n => setWidgetVisible(byName(n), false));
         TURBO_STEPS_WIDGETS.forEach(n => setWidgetVisible(byName(n), turbo));
         SLA_ONLY_WIDGETS.forEach(n => setWidgetVisible(byName(n), slaOn));
@@ -821,8 +826,10 @@ app.registerExtension({
                 const dualMode = isDualMode(getW("accel_mode", ""));
                 const dualNote = (dualMode || getW(DUAL_WIDGET, false))
                     ? ` · dual sampling (pass 2 from step ${getW("dual_split_step", 2)}${dualMode ? ", whole clip" : ""}${getW("pass1_early_stop", false) ? ", pass 1 early stop" : ""})` : "";
+                const p1s = Number(getW(PASS1_STEPS_WIDGET, 0));
+                const p1sNote = (isHyperflow() && !dualNote && p1s > 0) ? ` · pass 1 stops at step ${p1s}/8` : "";
                 if (dualMode) return `HyperFlow · dual sampling · ${shortModelName(getW("hyperflow_file"))} · refit ${getW("hyperflow_curve_refit", true) ? "on" : "off"} · euler${dualNote.replace(" · dual sampling", "")}${bridgeNote}`;
-                if (isHyperflow()) return `HyperFlow 8-step · ${shortModelName(getW("hyperflow_file"))} · refit ${getW("hyperflow_curve_refit", true) ? "on" : "off"} · euler${p2note}${dualNote}${bridgeNote}`;
+                if (isHyperflow()) return `HyperFlow 8-step · ${shortModelName(getW("hyperflow_file"))} · refit ${getW("hyperflow_curve_refit", true) ? "on" : "off"} · euler${p2note}${dualNote}${p1sNote}${bridgeNote}`;
                 return `Turbo LoRA · ${shortModelName(getW("turbo_lora"))} · ${steps} steps · ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}${p2note}${bridgeNote}`;
             }
             function qualitySummary() {
@@ -995,6 +1002,10 @@ app.registerExtension({
                             wrap.appendChild(uiRow("pass 1 early stop", bindToggle("pass1_early_stop"),
                                 { indent: true, hint: "Experimental: pass 1 runs only the first split-step steps. The 3D upscaler was trained on clean latents." }));
                         }
+                    }
+                    if (W(PASS1_STEPS_WIDGET) && !(dualMode || getW(DUAL_WIDGET, false))) {
+                        wrap.appendChild(uiRow("pass 1 steps", bindNumber(PASS1_STEPS_WIDGET),
+                            { hint: "0 = all 8 HyperFlow steps. 1-7: stop pass 1 early, upscale its clean estimate, then the normal refine (same LoRA, windows, denoise). Saves the skipped steps." }));
                     }
                 } else if (isTurbo()) {
                     wrap.appendChild(uiRow("turbo lora", bindSelect("turbo_lora", { render: shortModelName })));

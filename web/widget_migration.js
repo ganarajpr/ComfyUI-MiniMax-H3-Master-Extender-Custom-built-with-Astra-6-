@@ -50,6 +50,10 @@ export function migrateAccelMode(names, values) {
 // dual_sampling, dual_split_step and pass1_early_stop are the last widgets, after sparse_sink. A workflow saved before them
 // has its trailing master_ui "" land in dual_sampling, and any missing trailing value stays undefined: both mean the default.
 export const DUAL_DEFAULTS = { dual_sampling: false, dual_split_step: 2, pass1_early_stop: false };
+// pass1_steps is appended after pass1_early_stop: a workflow saved before it has master_ui's "" there. 0 = full pass 1.
+export function pass1StepsValue(value) {
+    return Number.isInteger(value) && value >= 0 && value <= 8 ? value : 0;
+}
 export function dualWidgetValue(name, value) {
     const fallback = DUAL_DEFAULTS[name];
     if (typeof fallback === "boolean") return typeof value === "boolean" ? value : fallback;

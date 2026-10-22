@@ -646,5 +646,10 @@
  },
  "pass1_early_stop": {
   "type": "BOOLEAN"
+ },
+ "pass1_steps": {
+  "type": "INT",
+  "min": 0,
+  "max": 8
  }
 }
