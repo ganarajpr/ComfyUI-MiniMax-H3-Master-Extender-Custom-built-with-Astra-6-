@@ -76,8 +76,9 @@ def _node_namespace():
 
 
 _NODE = _node_namespace()
-_FNS = _functions("hyperflow_tail_sigmas", "dual_split_index", "dual_pass1_sigmas", "dual_pass2_sigmas", "with_dual_p1_settings")
-Engine = _engine_methods("configure_dual_sampling", "_pass2_sigmas", "_pass2_lora_active")
+_FNS = _functions("hyperflow_tail_sigmas", "dual_split_index", "dual_pass1_sigmas", "dual_pass2_sigmas", "with_dual_p1_settings",
+                  "with_pass1_steps_p1_settings", "pass1_steps_sigmas")
+Engine = _engine_methods("configure_dual_sampling", "configure_pass1_steps", "_pass2_sigmas", "_pass2_lora_active")
 
 
 def make_engine(turbo=False, pass2_lora=None):
@@ -92,6 +93,7 @@ def make_engine(turbo=False, pass2_lora=None):
     e.dual_active = False
     e.dual_split_step = 2
     e.pass1_early_stop = False
+    e.pass1_steps = 0
     return e
 
 
@@ -131,13 +133,69 @@ class DefaultsAreUnchanged(unittest.TestCase):
         text = NODE.read_text(encoding="utf-8")
         names = re.findall(r'^\s{16}"(\w+)": \(', text[text.index("def INPUT_TYPES"):], re.M)
         self.assertEqual(names[:len(OLD_INPUT_NAMES)], OLD_INPUT_NAMES)
-        self.assertEqual(names[len(OLD_INPUT_NAMES):], ["dual_sampling", "dual_split_step", "pass1_early_stop"])
+        self.assertEqual(names[len(OLD_INPUT_NAMES):], ["dual_sampling", "dual_split_step", "pass1_early_stop", "pass1_steps"])
 
     def test_new_inputs_default_off(self):
         text = NODE.read_text(encoding="utf-8")
         self.assertRegex(text, r'"dual_sampling": \("BOOLEAN", \{"default": False')
         self.assertRegex(text, r'"dual_split_step": \("INT", \{"default": 2, "min": 1, "max": 7')
         self.assertRegex(text, r'"pass1_early_stop": \("BOOLEAN", \{"default": False')
+
+
+class Pass1Steps(unittest.TestCase):
+    def test_default_is_off_and_fingerprint_is_todays(self):
+        e = make_engine()
+        e.configure_pass1_steps()
+        self.assertEqual(e.pass1_steps, 0)
+        e.configure_pass1_steps(0)
+        self.assertEqual(e.pass1_steps, 0)
+        out = _FNS["with_pass1_steps_p1_settings"](P1_TODAY, e.pass1_steps)
+        self.assertIs(out, P1_TODAY)
+        self.assertEqual(out, P1_TODAY)
+
+    def test_fingerprint_changes_with_steps(self):
+        f = _FNS["with_pass1_steps_p1_settings"]
+        a, b = f(dict(P1_TODAY), 7), f(dict(P1_TODAY), 6)
+        self.assertEqual(a["pass1_steps"], 7)
+        self.assertNotEqual(a, b)
+        self.assertEqual({k: v for k, v in a.items() if k != "pass1_steps"}, P1_TODAY)
+
+    def test_k7_samples_the_first_eight_grid_points(self):
+        e = make_engine()
+        e.configure_pass1_steps(7)
+        self.assertEqual(e.pass1_steps, 7)
+        self.assertEqual(_FNS["pass1_steps_sigmas"](GRID, e.pass1_steps), GRID[:8])
+        self.assertEqual(_FNS["pass1_steps_sigmas"](GRID, 6), GRID[:7])
+
+    def test_pass2_is_untouched(self):
+        e = make_engine()
+        e.configure_pass1_steps(7)
+        self.assertEqual(e._pass2_sigmas(None, 0.25), GRID[-3:])
+
+    def test_dual_sampling_ignores_it(self):
+        e = make_engine()
+        e.configure_dual_sampling(True, 3, True)
+        with self.assertLogs("test_dual_sampling", level="WARNING"):
+            e.configure_pass1_steps(7)
+        self.assertEqual(e.pass1_steps, 0)
+
+    def test_turbo_ignores_it(self):
+        e = make_engine(turbo=True)
+        with self.assertLogs("test_dual_sampling", level="WARNING"):
+            e.configure_pass1_steps(6)
+        self.assertEqual(e.pass1_steps, 0)
+
+    def test_early_stop_without_dual_is_unchanged(self):
+        e = make_engine()
+        e.configure_dual_sampling(False, 2, True)
+        e.configure_pass1_steps(0)
+        self.assertFalse(e.pass1_early_stop)
+        self.assertEqual(e.pass1_steps, 0)
+
+    def test_sample_site_returns_denoised_and_logs(self):
+        text = ENGINE.read_text(encoding="utf-8")
+        self.assertIn("Pass 1 early stop: %d of %d HyperFlow steps (sigma %.4f), x0 estimate -> upscale -> normal refine", text)
+        self.assertIn("return_denoised=early_stop", text)
 
 
 class DualSampling(unittest.TestCase):

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`pass1_steps` (opt-in).** New INT input appended after `pass1_early_stop` (default 0 = full 8-step pass 1, byte-identical, same pass-1 cache fingerprint). k = 1..7 with HyperFlow 8-step and no dual sampling: pass 1 samples grid[:k+1], returns the model's clean x0 estimate, then the normal 3D upscale and the unchanged windowed pass-2 refine. Ignored (logged) with dual sampling or Turbo LoRA. `pass1_early_stop` without dual sampling is still a no-op. Panel: a `pass 1 steps` row under the engine controls plus presets `Standard \u00b7 pass 1 = 7 / 6 steps`.
+
 - **Panel: Preset dropdown (Engine section, first row).** JS-only, no Python or INPUT_TYPES change, no widget moves, the dropdown itself is not serialized. Picking a preset writes the real widgets (accel_mode, hyperflow_file, curve refit, dual sampling, split step, early stop, pass-1/pass-2 resolution, pass-2 LoRA/steps, ...) and re-renders the panel. Presets: Standard, K4-K7 at 352p and K4-K7 at 480p, each with its measured 15 s time. The row shows Custom whenever the values match no preset; loading a workflow only reads, never writes. Table in `web/presets.js`; if it fails to load the panel is unchanged minus that row. Tests: `tests/test_presets.mjs`.
 
 - **`accel_mode` option "HyperFlow 8-step · dual sampling"** (appended last; default and all existing values behave as before). Resolves to HyperFlow 8-step with dual sampling forced on, `dual_split_step` (2), no pass-2 LoRA and `pass2_chunk_frames` treated as 0 (whole-clip pass 2). Pass-1 fingerprint unchanged for existing modes and for this mode with early stop off. New example `MiniMax_H3_Master_Extender_Action_v2_DualSampling.json`; use prompts under 5,000 characters. Tests: `tests/test_dual_sampling.py`.

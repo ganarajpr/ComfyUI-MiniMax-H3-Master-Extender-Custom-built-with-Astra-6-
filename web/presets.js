@@ -22,27 +22,39 @@ const kPreset = (k, res, label, hint) => ({
     },
 });
 
+const STANDARD_VALUES = {
+    accel_mode: "HyperFlow 8-step",
+    hyperflow_file: PRUNED,
+    hyperflow_curve_refit: true,
+    pass2_lora: DMAD,
+    pass2_lora_mode: "replace engine LoRA",
+    pass2_steps: 4,
+    pass2_denoise: 0.25,
+    pass1_resolution: "608x352 (16:9)",
+    pass2_resolution: "1280x720",
+    dual_sampling: false,
+    pass1_early_stop: false,
+    dual_split_step: 2,
+    pass2_chunk_frames: 124,
+    pass1_steps: 0,
+};
+
+const stdP1Preset = (k) => ({
+    id: `standard-p1-${k}`,
+    label: `Standard \u00b7 pass 1 = ${k} steps`,
+    hint: `The Standard recipe with pass 1 stopped after ${k} of 8 HyperFlow steps; its clean estimate is upscaled and the normal refine runs. Not measured.`,
+    values: { ...STANDARD_VALUES, pass1_steps: k },
+});
+
 export const MASTER_PRESETS = [
     {
         id: "standard",
         label: "Standard · ~122 s",
         hint: "HyperFlow 8-step, DMAD refiner. 15 s clip measured ~122 s.",
-        values: {
-            accel_mode: "HyperFlow 8-step",
-            hyperflow_file: PRUNED,
-            hyperflow_curve_refit: true,
-            pass2_lora: DMAD,
-            pass2_lora_mode: "replace engine LoRA",
-            pass2_steps: 4,
-            pass2_denoise: 0.25,
-            pass1_resolution: "608x352 (16:9)",
-            pass2_resolution: "1280x720",
-            dual_sampling: false,
-            pass1_early_stop: false,
-            dual_split_step: 2,
-            pass2_chunk_frames: 124,
-        },
+        values: STANDARD_VALUES,
     },
+    stdP1Preset(7),
+    stdP1Preset(6),
     kPreset(4, "608x352 (16:9)", "K4 · 352p · ~198 s", "Dual sampling, split 4, 352p pass 1. 15 s heavy clip ~198 s."),
     kPreset(5, "608x352 (16:9)", "K5 · 352p · ~176 s", "Dual sampling, split 5, 352p pass 1. 15 s clip ~176 s."),
     kPreset(6, "608x352 (16:9)", "K6 · 352p · not measured", "Dual sampling, split 6, 352p pass 1. Not measured."),

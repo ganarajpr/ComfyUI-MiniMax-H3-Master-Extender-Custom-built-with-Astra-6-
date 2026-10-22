@@ -196,6 +196,20 @@ def with_dual_p1_settings(settings, active, split, early_stop):
     return settings
 
 
+def with_pass1_steps_p1_settings(settings, steps):
+    """Add the pass-1 step cut to the pass-1 fingerprint settings, only when it is on (steps > 0). Otherwise the
+    dict is returned untouched so existing pass-1 caches keep hitting."""
+    if int(steps or 0) > 0:
+        settings = dict(settings)
+        settings["pass1_steps"] = int(steps)
+    return settings
+
+
+def pass1_steps_sigmas(grid, steps):
+    """Pass 1 stopped after `steps` of the trained grid's steps: grid[:steps + 1]. Needs 1 <= steps < len(grid) - 1."""
+    return grid[:int(steps) + 1]
+
+
 SPARSE_SINK_CHOICES = ("exact_kv_and_rows", "exact_kv", "off")
 
 
@@ -391,6 +405,7 @@ class MasterEngine:
         LoRA; `early_stop` also cuts pass 1 to grid[:split_step + 1]. Off (the default) changes nothing."""
         self.dual_active = False
         self.pass1_early_stop = False
+        self.pass1_steps = 0
         self.dual_split_step = int(split_step)
         if not enabled:
             return
@@ -404,6 +419,21 @@ class MasterEngine:
             self.pass2_model = None
         self.dual_active = True
         self.pass1_early_stop = bool(early_stop)
+
+    def configure_pass1_steps(self, steps=0):
+        """Opt-in: stop HyperFlow's pass 1 after `steps` of its 8 steps and hand the model's clean x0 estimate to the
+        normal upscale + pass-2 refine. 0 (the default) changes nothing. Call after configure_dual_sampling."""
+        self.pass1_steps = 0
+        steps = int(steps or 0)
+        if steps <= 0:
+            return
+        if self.turbo_mode:
+            _LOG.warning("pass1_steps=%d ignored: it needs HyperFlow 8-step, Turbo LoRA mode runs the full pass 1", steps)
+            return
+        if self.dual_active:
+            _LOG.warning("pass1_steps=%d ignored: dual sampling sets the pass-1 length (dual_split_step)", steps)
+            return
+        self.pass1_steps = steps
 
     def configure_audio_refine(self, steps=0, denoise=0.5, cache=True):
         """Audio-only refine after pass 2 (ComfyUI-H3-AudioRefine). steps 0 = off."""
@@ -1238,7 +1268,14 @@ class MasterEngine:
         else:
             # Sample Pass 1 with the pass-1 sigmas
             early_stop = self.dual_active and self.pass1_early_stop and pass2_enabled
-            if early_stop:
+            if (not early_stop and self.pass1_steps > 0 and not self.dual_active and pass2_enabled
+                    and self.pass1_steps < len(sigmas_p1) - 1):
+                k = self.pass1_steps
+                early_stop = True
+                _LOG.info("Clip %d: Pass 1 early stop: %d of %d HyperFlow steps (sigma %.4f), x0 estimate -> upscale -> normal refine",
+                          clip_index + 1, k, len(sigmas_p1) - 1, float(sigmas_p1[k]))
+                sigmas_p1 = pass1_steps_sigmas(sigmas_p1, k)
+            elif early_stop:
                 sigmas_p1 = dual_pass1_sigmas(sigmas_p1, self.dual_split_step)
                 _LOG.info("Clip %d: dual sampling early stop, pass 1 runs grid[:%d] (%d steps): %s",
                           clip_index + 1, len(sigmas_p1), len(sigmas_p1) - 1,
