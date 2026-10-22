@@ -657,5 +657,10 @@
    "above 720p",
    "always"
   ]
+ },
+ "pass2_sla_sparsity": {
+  "type": "FLOAT",
+  "min": 0.0,
+  "max": 0.99
  }
 }

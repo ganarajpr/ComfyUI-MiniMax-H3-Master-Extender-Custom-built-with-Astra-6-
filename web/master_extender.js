@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { createProjectControls } from "./master_projects.js";
-import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue, pass1StepsValue, pass2ChunkWhenValue, pass2RowBinding } from "./widget_migration.js";
+import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue, pass1StepsValue, pass2ChunkWhenValue, pass2SlaSparsityValue, pass2RowBinding } from "./widget_migration.js";
 
 // Optional: if presets.js fails to load the panel simply has no Preset row.
 let presetsMod = null;
@@ -196,7 +196,7 @@ const TURBO_ONLY_WIDGETS = ["turbo_lora", "turbo_lora_strength", "turbo_sampler"
 const ALWAYS_HIDDEN_WIDGETS = ["pdd_file"];
 const TURBO_STEPS_WIDGETS = ["pdd_nfe"];
 const HYPERFLOW_ONLY_WIDGETS = ["hyperflow_file", "hyperflow_curve_refit", "hyperflow_strength", "hyperflow_lora_mode"];
-const SLA_ONLY_WIDGETS = ["sla_sparsity"];
+const SLA_ONLY_WIDGETS = ["sla_sparsity", "pass2_sla_sparsity"];
 // Dual sampling (appended last, after sparse_sink): HyperFlow only; the split step and early stop only while it is on.
 const DUAL_WIDGET = "dual_sampling";
 const DUAL_DETAIL_WIDGETS = ["dual_split_step", "pass1_early_stop"];
@@ -303,6 +303,8 @@ function repairDualWidgets(node) {
     if (steps) steps.value = pass1StepsValue(steps.value);
     const chunkWhen = node.widgets?.find(x => x.name === "pass2_chunk_when");
     if (chunkWhen) chunkWhen.value = pass2ChunkWhenValue(chunkWhen.value);
+    const p2Sla = node.widgets?.find(x => x.name === "pass2_sla_sparsity");
+    if (p2Sla) p2Sla.value = pass2SlaSparsityValue(p2Sla.value);
 }
 
 function repairHyperflowWidgets(node, defaults) {
@@ -1095,6 +1097,8 @@ app.registerExtension({
                 wrap.appendChild(uiRow("sparse attention (SLA)", bindToggle("sla_enabled")));
                 if (getW("sla_enabled", false)) {
                     wrap.appendChild(uiRow("sparsity", bindNumber("sla_sparsity"), { indent: true }));
+                    if (W("pass2_sla_sparsity")) wrap.appendChild(uiRow("pass 2 SLA sparsity (0 = same)", bindNumber("pass2_sla_sparsity"), { indent: true,
+                        hint: "Sparsity for the refine pass only (sla / vsa methods). 0.95 keeps 5% of key blocks in pass 2 while pass 1 keeps the sparsity above." }));
                     wrap.appendChild(uiRow("method", bindSelect("sparse_method"), { indent: true }));
                     if (getW("sparse_method", "sla") === "sol-attn") wrap.appendChild(uiRow("tau", bindNumber("sparse_tau"), { indent: true, hint: "HyperFlow's validated recipe is tau 1.0." }));
                     const recipe = isHyperflow() && getW("sparse_method", "sla") === "sol-attn";

@@ -58,6 +58,10 @@ export function pass1StepsValue(value) {
 export function pass2ChunkWhenValue(value) {
     return value === "always" ? "always" : "above 720p";
 }
+// pass2_sla_sparsity is appended after pass2_chunk_when: a workflow saved before it has master_ui's "" there. 0 = same as sla_sparsity.
+export function pass2SlaSparsityValue(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0.5 && value <= 0.99 ? value : 0;
+}
 export function dualWidgetValue(name, value) {
     const fallback = DUAL_DEFAULTS[name];
     if (typeof fallback === "boolean") return typeof value === "boolean" ? value : fallback;

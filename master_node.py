@@ -503,6 +503,7 @@ class MiniMaxH3MasterExtender:
                 "pass1_early_stop": ("BOOLEAN", {"default": False, "tooltip": "EXPERIMENTAL, dual sampling only. Pass 1 runs only the first dual_split_step steps instead of all 8; its clean estimate is upscaled and pass 2 re-noises it to the split sigma and continues. Saves most of pass 1, but the 3D latent upscaler was trained on clean latents, so quality is not validated. Off keeps the full 8-step pass 1."}),
                 "pass1_steps": ("INT", {"default": 0, "min": 0, "max": 8, "step": 1, "tooltip": "HyperFlow 8-step only (ignored with dual sampling and in Turbo LoRA mode). 0 = the full 8-step pass 1. k = 1..7: pass 1 stops after k of the 8 steps, its clean estimate is upscaled, and the normal pass-2 refine runs unchanged (same LoRA, windows and denoise). Saves (8 - k) pass-1 steps; the refine re-noises the latent anyway."}),
                 "pass2_chunk_when": (["above 720p", "always"], {"default": "above 720p", "tooltip": "When pass 2 is refined in temporal windows (pass2_chunk_frames). above 720p = only when the pass-2 short side is over 800 px (1080p-class); 720p-class output refines the whole clip in one pass, which is faster with sparse attention because the window overlaps are not recomputed. always = window whenever the clip is longer than pass2_chunk_frames. pass2_chunk_frames 0 = never window."}),
+                "pass2_sla_sparsity": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.99, "step": 0.01, "tooltip": "Pass-2-only sparsity for the sla / vsa methods when sla_enabled is on. 0 = same as sla_sparsity (the long-standing behaviour). Otherwise 0.5-0.99 (0.95 = keep 5% of key blocks in pass 2) while pass 1 keeps sla_sparsity. Ignored by sol-attn."}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -581,6 +582,7 @@ class MiniMaxH3MasterExtender:
         sparse_start_percent=-1.0,
         sparse_dense_blocks="auto",
         sparse_sink="auto",
+        pass2_sla_sparsity=0.0,
         **kwargs,
     ):
         accel_mode, dual_mode, pass2_chunk_frames = resolve_accel_mode(accel_mode, pass2_chunk_frames)
@@ -807,6 +809,7 @@ class MiniMaxH3MasterExtender:
             sparse_start_percent=sparse_start_percent,
             sparse_dense_blocks=sparse_dense_blocks,
             sparse_sink=sparse_sink,
+            pass2_sla_sparsity=pass2_sla_sparsity,
             hyperflow_file=kwargs.get("hyperflow_file") or HYPERFLOW_DEFAULT_FILE,
             hyperflow_curve_refit=kwargs.get("hyperflow_curve_refit", True),
             hyperflow_strength=kwargs.get("hyperflow_strength", 1.0),
