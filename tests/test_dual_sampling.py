@@ -133,7 +133,7 @@ class DefaultsAreUnchanged(unittest.TestCase):
         text = NODE.read_text(encoding="utf-8")
         names = re.findall(r'^\s{16}"(\w+)": \(', text[text.index("def INPUT_TYPES"):], re.M)
         self.assertEqual(names[:len(OLD_INPUT_NAMES)], OLD_INPUT_NAMES)
-        self.assertEqual(names[len(OLD_INPUT_NAMES):], ["dual_sampling", "dual_split_step", "pass1_early_stop", "pass1_steps"])
+        self.assertEqual(names[len(OLD_INPUT_NAMES):], ["dual_sampling", "dual_split_step", "pass1_early_stop", "pass1_steps", "pass2_chunk_when"])
 
     def test_new_inputs_default_off(self):
         text = NODE.read_text(encoding="utf-8")
@@ -326,6 +326,35 @@ class DualSamplingMode(unittest.TestCase):
         settings = dict(P1_TODAY, accel_mode=mode)
         self.assertIs(_FNS["with_dual_p1_settings"](settings, dual, 2, False), settings)
         self.assertEqual(settings, P1_TODAY)
+
+    def _chunk_engine(self, frames, when, class_registry=True):
+        Engine = _engine_methods("_pass2_chunking_active")
+        e = Engine()
+        e.pass2_chunk_frames = frames
+        e.pass2_chunk_when = when
+        mapping = {"MMH3SplitUpscale": object(), "MMH3TemporalSplitParamsV10": object()}
+        Engine._pass2_chunking_active.__globals__["nodes"] = types.SimpleNamespace(NODE_CLASS_MAPPINGS=mapping)
+        Engine._pass2_chunking_active.__globals__["PASS2_CHUNK_MIN_SHORT_SIDE"] = 800
+        return e
+
+    def test_above_720p_does_not_window_720p_class_output(self):
+        e = self._chunk_engine(124, "above 720p")
+        for w, h in ((1280, 736), (1280, 720), (1344, 768), (720, 1280)):
+            with self.assertLogs("test_dual_sampling", level="INFO") as cm:
+                self.assertFalse(e._pass2_chunking_active(361, w, h))
+            self.assertIn("Pass 2: whole clip (pass2_chunk_when=above 720p, short side", cm.output[0])
+
+    def test_above_720p_windows_1080p_class_output(self):
+        e = self._chunk_engine(124, "above 720p")
+        self.assertTrue(e._pass2_chunking_active(361, 1920, 1088))
+        self.assertTrue(e._pass2_chunking_active(361, 1080, 1920))
+
+    def test_always_windows_720p(self):
+        self.assertTrue(self._chunk_engine(124, "always")._pass2_chunking_active(361, 1280, 736))
+
+    def test_zero_chunk_frames_never_windows(self):
+        for when in ("above 720p", "always"):
+            self.assertFalse(self._chunk_engine(0, when)._pass2_chunking_active(361, 1920, 1088))
 
     def test_master_node_resolves_the_mode_before_building_the_engine(self):
         text = NODE.read_text(encoding="utf-8")

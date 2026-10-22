@@ -179,6 +179,8 @@ The image is generated at the pass-2 size and pass 1 only sets the layout. Recom
 
 The same thing as one `accel_mode` choice, appended last so saved workflows and API graphs are untouched (the default stays "HyperFlow 8-step"). Picking it means: HyperFlow 8-step, dual sampling on with split = `dual_split_step` (default 2), no pass-2 refine LoRA, and pass 2 over the whole clip in one window (`pass2_chunk_frames` is treated as 0 in this mode, which avoids window seams for a near-full regeneration; whole-clip pass 2 at 1344x768 x 362 frames ran in VRAM at about 33.5 s/step). The `dual_sampling` toggle keeps working in the other modes. The panel shows the HyperFlow rows plus split step and early stop, and the badge reads "HyperFlow · dual sampling". Pass-1 caches are shared with plain HyperFlow (the mode resolves to it before the fingerprint is built).
 
+**Pass-2 windowing (`pass2_chunk_when`, appended last).** `above 720p` (default): pass 2 is refined in temporal windows (`pass2_chunk_frames`/`pass2_chunk_overlap`) only when its short side is over 800 px (1080p-class). 720p-class output (1280x720/736, 1344x768) refines the whole clip in one pass, which is faster with sparse attention since the window overlaps are not recomputed. `always` windows any clip longer than `pass2_chunk_frames`; `pass2_chunk_frames` 0 never windows.
+
 Example: `example_workflows/MiniMax_H3_Master_Extender_Action_v2_DualSampling.json` (Singularity ref2va v2 pruned int8, pass 1 `608x352`, pass 2 `1344x768`, pruned HyperFlow file with curve refit, SLA 0.9, early stop off). **Use prompts under 5,000 characters.**
 
 ## Debugging: per-step x0 dump

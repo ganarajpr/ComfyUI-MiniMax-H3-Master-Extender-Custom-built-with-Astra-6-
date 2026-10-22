@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { createProjectControls } from "./master_projects.js";
-import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue, pass1StepsValue, pass2RowBinding } from "./widget_migration.js";
+import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue, pass1StepsValue, pass2ChunkWhenValue, pass2RowBinding } from "./widget_migration.js";
 
 // Optional: if presets.js fails to load the panel simply has no Preset row.
 let presetsMod = null;
@@ -301,6 +301,8 @@ function repairDualWidgets(node) {
     }
     const steps = node.widgets?.find(x => x.name === PASS1_STEPS_WIDGET);
     if (steps) steps.value = pass1StepsValue(steps.value);
+    const chunkWhen = node.widgets?.find(x => x.name === "pass2_chunk_when");
+    if (chunkWhen) chunkWhen.value = pass2ChunkWhenValue(chunkWhen.value);
 }
 
 function repairHyperflowWidgets(node, defaults) {
@@ -841,7 +843,7 @@ app.registerExtension({
                 const att = String(getW("attention_backend", "")).replace(" attention", "");
                 const sla = getW("sla_enabled", false) ? `SLA ${Number(getW("sla_sparsity", 0)).toFixed(2)} ${getW("sparse_method", "sla")}` : "SLA off";
                 const cf = Number(getW("pass2_chunk_frames", 0));
-                const chunk = cf > 0 ? `chunk ${cf}/${getW("pass2_chunk_overlap", 0)}` : "no chunking";
+                const chunk = cf > 0 ? `chunk ${cf}/${getW("pass2_chunk_overlap", 0)}${getW("pass2_chunk_when", "above 720p") === "always" ? " always" : " >720p"}` : "no chunking";
                 return `${att} · ${sla} · ${chunk}${getW("smart_offload", true) ? "" : " · offload off"}${getW("async_decode", "off") !== "off" ? ` · async ${getW("async_decode")}` : ""}`;
             }
             function continuitySummary() {
@@ -1108,10 +1110,14 @@ app.registerExtension({
                 wrap.appendChild(uiRow("chunked refine pass", uiToggle(chunkOn, (on) => {
                     if (on) setW("pass2_chunk_frames", Number(node.properties.h3_last_chunk_frames) || 124);
                     else { node.properties.h3_last_chunk_frames = getW("pass2_chunk_frames", 124); setW("pass2_chunk_frames", 0); }
-                }), { hint: "Refine long clips in temporal windows instead of one attention pass. Big win above 720p." }));
+                }), { hint: "Refine long clips in temporal windows instead of one attention pass. By default only used above 720p." }));
                 if (chunkOn) {
                     wrap.appendChild(uiRow("chunk frames", bindNumber("pass2_chunk_frames"), { indent: true }));
                     wrap.appendChild(uiRow("overlap", bindNumber("pass2_chunk_overlap"), { indent: true }));
+                    if (W("pass2_chunk_when")) {
+                        wrap.appendChild(uiRow("chunk when", bindSelect("pass2_chunk_when"), { indent: true,
+                            hint: "above 720p = window only when the refine short side is over 800 px (1080p-class); 720p refines the whole clip. always = window any clip longer than chunk frames." }));
+                    }
                 }
                 // Audio-only refine is not offered in the panel (founder, 2026-10-01: "we dont need the
                 // audio refine at all"). Its inputs stay on the node, default 0 = off, because removing

@@ -651,5 +651,11 @@
   "type": "INT",
   "min": 0,
   "max": 8
+ },
+ "pass2_chunk_when": {
+  "options": [
+   "above 720p",
+   "always"
+  ]
  }
 }
