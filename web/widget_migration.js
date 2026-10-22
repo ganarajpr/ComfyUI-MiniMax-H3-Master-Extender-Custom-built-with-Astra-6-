@@ -46,3 +46,12 @@ export function migrateAccelMode(names, values) {
     out[i] = "HyperFlow 8-step";
     return out;
 }
+
+// dual_sampling, dual_split_step and pass1_early_stop are the last widgets, after sparse_sink. A workflow saved before them
+// has its trailing master_ui "" land in dual_sampling, and any missing trailing value stays undefined: both mean the default.
+export const DUAL_DEFAULTS = { dual_sampling: false, dual_split_step: 2, pass1_early_stop: false };
+export function dualWidgetValue(name, value) {
+    const fallback = DUAL_DEFAULTS[name];
+    if (typeof fallback === "boolean") return typeof value === "boolean" ? value : fallback;
+    return Number.isInteger(value) && value >= 1 && value <= 6 ? value : fallback;
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode } from "../web/widget_migration.js";
+import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue, DUAL_DEFAULTS } from "../web/widget_migration.js";
 
 const workflows = fs.readdirSync(new URL("../example_workflows/", import.meta.url)).filter(f => f.endsWith(".json"));
 assert(workflows.length >= 5);
@@ -9,8 +9,14 @@ for (const file of workflows) {
     const flow = JSON.parse(fs.readFileSync(new URL(`../example_workflows/${file}`, import.meta.url), "utf8"));
     const node = flow.nodes.find(n => n.type === "MiniMaxH3MasterExtender");
     // widget order of the current node = its widget inputs, then the JS-only master_ui
-    const names = [...node.inputs.filter(i => i.widget).map(i => i.name), "master_ui"];
-    const current = node.widgets_values;
+    const DUAL = Object.keys(DUAL_DEFAULTS);
+    const allNames = [...node.inputs.filter(i => i.widget).map(i => i.name), "master_ui"];
+    const allValues = node.widgets_values;
+    // dual sampling widgets sit between sparse_sink and master_ui; the older layout assertions below run without them
+    const hasDual = allNames.includes("dual_sampling");
+    if (hasDual) assert.deepEqual(allNames.slice(-4), [...DUAL, "master_ui"].slice(0, 3).concat("master_ui"), `${file}: dual widgets are last`);
+    const names = allNames.filter(n => !DUAL.includes(n));
+    const current = allValues.filter((_, i) => !DUAL.includes(allNames[i]));
     assert.deepEqual(names.slice(-5), ["e4_picture_notes", "sparse_start_percent", "sparse_dense_blocks", "sparse_sink", "master_ui"], `${file}: sparse widgets are last`);
     assert.deepEqual(current.slice(-4), [-1, "auto", "auto", ""], file);
     assert.equal(names.length, current.length, file);
@@ -48,6 +54,27 @@ for (const file of workflows) {
 }
 
 assert.equal(dropCaptionModelValue(["rewrite_writer_model"], ["w"]), null);
+
+// dual sampling widgets: old arrays leave them undefined or hold master_ui's "" -> defaults; real values are kept
+for (const name of Object.keys(DUAL_DEFAULTS)) {
+    for (const bad of [undefined, "", null, "x", 0, 7, 2.5]) assert.equal(dualWidgetValue(name, bad), DUAL_DEFAULTS[name], `${name} <- ${String(bad)}`);
+}
+assert.equal(dualWidgetValue("dual_sampling", true), true);
+assert.equal(dualWidgetValue("pass1_early_stop", true), true);
+assert.equal(dualWidgetValue("dual_split_step", 6), 6);
+assert.deepEqual(DUAL_DEFAULTS, { dual_sampling: false, dual_split_step: 2, pass1_early_stop: false });
+{
+    const flow = JSON.parse(fs.readFileSync(new URL("../example_workflows/MiniMax_H3_Master_Extender_HyperFlow_DualSampling.json", import.meta.url), "utf8"));
+    const node = flow.nodes.find(n => n.type === "MiniMaxH3MasterExtender");
+    const names = [...node.inputs.filter(i => i.widget).map(i => i.name), "master_ui"];
+    assert.equal(names.length, node.widgets_values.length);
+    const get = (n) => node.widgets_values[names.indexOf(n)];
+    assert.deepEqual([get("dual_sampling"), get("dual_split_step"), get("pass1_early_stop")], [true, 2, false]);
+    assert.equal(get("pass2_lora"), "none");
+    assert.equal(get("accel_mode"), "HyperFlow 8-step");
+    assert.equal(get("pass1_resolution"), "608x352 (16:9)");
+    assert.equal(get("pass2_resolution"), "1344x768 (16:9)");
+}
 assert.equal(dropCaptionModelValue(["rewrite_writer_model", "rewrite_caption_length"], undefined), null);
 
 const table = [[-1, "4096"], [0, "4096"], [512, "1024"], [1024, "1024"], [1500, "1024"], [1536, "2048"], [2048, "2048"],
