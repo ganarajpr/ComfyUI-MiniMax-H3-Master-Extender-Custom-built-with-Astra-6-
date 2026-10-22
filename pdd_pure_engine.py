@@ -32,6 +32,7 @@ from .motion_context_ram import (
     MiniMaxH3MotionContextRAM,
     _streams_from_latent,
 )
+from . import x0_debug
 
 _LOG = logging.getLogger("minimax_h3_master_extender.engine")
 
@@ -898,6 +899,21 @@ class MasterEngine:
         result["samples"] = out["samples"].to(comfy.model_management.intermediate_device())
         return result
 
+    @staticmethod
+    def _x0_dumper(model_patcher, sigmas):
+        """Per-step x0 dump, only while `<ComfyUI base>/user/master_x0_debug` exists; None otherwise."""
+        try:
+            import folder_paths
+            if not x0_debug.debug_enabled(folder_paths.base_path):
+                return None
+            out_dir = x0_debug.dump_dir(folder_paths.get_output_directory(), x0_debug._current_prompt_id())
+            return x0_debug.X0Dump(
+                out_dir, sigmas.detach().float().cpu().tolist(),
+                lambda x: model_patcher.model.process_latent_out(x.to(torch.float32)))
+        except Exception:
+            _LOG.exception("x0 debug dump: setup failed, rendering without it")
+            return None
+
     def _sample_euler(self, model, positive, latent_image, sigmas, seed, return_denoised=False):
         """Standard Euler sampling using ComfyUI core sampler internals directly.
 
@@ -953,6 +969,10 @@ class MasterEngine:
         if return_denoised:
             callback = capture_x0_callback(callback, x0_output)
 
+        dumper = self._x0_dumper(guider.model_patcher, sigmas)
+        if dumper is not None:
+            callback = dumper.wrap(callback)
+
         disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
 
         self._reclaim_vram(guider.model_patcher, latent["samples"])
@@ -967,6 +987,9 @@ class MasterEngine:
             disable_pbar=disable_pbar,
             seed=seed,
         )
+        if dumper is not None:
+            dumper.save_final(samples)
+            dumper.decode_frames(self.vae)
         if return_denoised:
             # The sigmas stop above 0, so `samples` still carries noise; the last step's x0 prediction is the clean estimate.
             samples = clean_latent_from_x0(guider.model_patcher, x0_output["x0"])

@@ -169,6 +169,26 @@ The same thing as one `accel_mode` choice, appended last so saved workflows and 
 
 Example: `example_workflows/MiniMax_H3_Master_Extender_Action_v2_DualSampling.json` (Singularity ref2va v2 pruned int8, pass 1 `608x352`, pass 2 `1344x768`, pruned HyperFlow file with curve refit, SLA 0.9, early stop off). **Use prompts under 5,000 characters.**
 
+## Debugging: per-step x0 dump
+
+Off unless a flag file exists (no node inputs, no widgets; with the file absent the render path is unchanged). It answers "at which pass-1 step does the clip's structure and motion stop changing?", to choose a pass-1 to pass-2 handoff step.
+
+**Enable.** Create an empty file `<ComfyUI base dir>/user/master_x0_debug`; it is checked on every pass-1 sample call, so no restart is needed. **Delete it afterwards**: while it exists every pass 1 writes its latents and decodes frames, which costs disk and time.
+
+**Output.** `<ComfyUI output dir>/master_x0_debug/<prompt_id or timestamp>/` (a further clip in the same run goes to `<id>_2`, `<id>_3`):
+
+- `step_<NN>_sigma_<s>.pt`: the video part of the model's x0 after step NN (1-based; sigma is the step's input sigma), mapped through `process_latent_out` like the early-stop x0. A dict with `x0`, `step`, `sigma`, `sigma_next`.
+- `step_<NN>_frame_<F>.png`: pixel frames F at 10/50/90% of the clip, decoded from that x0 with the engine's video VAE after sampling ends (whole-latent decode, pass-1 size).
+- `pass1_final.pt` (the pass-1 output latent's video part) and `meta.json`.
+
+It runs on normal pass 1 as well as early stop. Every part is wrapped so a dump failure is logged (`x0 debug dump:` lines, one per step) and never breaks the render.
+
+**Analyse** (ComfyUI's embedded python, CPU is fine; needs numpy, torch and Pillow):
+
+    python tools/x0_step_analysis.py <dump_dir> [--json out.json] [--sheet out.png]
+
+Prints a table per step, writes `analysis.json` and `contact_sheet.png` (rows = steps, columns = decoded frames). Distances are relative L2 against the last step (`/fin`) or the previous step (`/prev`): `struct` on a low-pass x0 (average pool 4 spatially, 2 temporally), `detail` on the residual x0 minus low-pass, `motion` on frame-to-frame differences of the low-pass. When `struct/fin` and `motion/fin` are near 0 while `detail/fin` is still large, the remaining steps only add detail.
+
 ## Model files (not included)
 
 These are the filenames selected in the source workflow. Choose compatible alternatives in the dropdowns if you use another supported precision or filename; renaming an incompatible model does not make it compatible.
