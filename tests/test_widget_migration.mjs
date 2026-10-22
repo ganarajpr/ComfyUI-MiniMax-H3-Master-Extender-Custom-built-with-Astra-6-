@@ -93,6 +93,6 @@ for (const file of workflows) {
     const node = flow.nodes.find(n => n.type === "MiniMaxH3MasterExtender");
     const names = node.inputs.filter(i => i.widget).map(i => i.name);
     assert.equal(migrateAccelMode(names, node.widgets_values), null, `${file}: no PDD left`);
-    assert(["HyperFlow 8-step", "Turbo LoRA"].includes(node.widgets_values[names.indexOf("accel_mode")]), file);
+    assert(["HyperFlow 8-step", "Turbo LoRA", "HyperFlow 8-step \u00b7 dual sampling"].includes(node.widgets_values[names.indexOf("accel_mode")]), file);
 }
 console.log("widget migration ok");

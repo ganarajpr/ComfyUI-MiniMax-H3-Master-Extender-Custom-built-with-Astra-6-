@@ -1,6 +1,7 @@
 import ast
 import logging
 import re
+import types
 import unittest
 from pathlib import Path
 
@@ -39,10 +40,10 @@ P1_TODAY = {
 }
 
 
-def _functions(*names):
+def _functions(*names, **extra):
     tree = ast.parse(ENGINE.read_text(encoding="utf-8"))
     wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-    ns = {}
+    ns = dict(extra)
     exec(compile(ast.Module(body=wanted, type_ignores=[]), str(ENGINE), "exec"), ns)
     return ns
 
@@ -58,6 +59,23 @@ def _engine_methods(*names):
     return ns["Engine"]
 
 
+_TORCH = types.SimpleNamespace(float32="float32")
+_X0 = _functions("capture_x0_callback", "clean_latent_from_x0", torch=_TORCH)
+
+
+def _node_namespace():
+    """master_node's accel-mode constants and helpers, lifted out so they run without ComfyUI."""
+    tree = ast.parse(NODE.read_text(encoding="utf-8"))
+    wanted = [n for n in tree.body
+              if (isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("DUAL_SAMPLING_ACCEL_MODE", "ACCEL_MODES")
+                                                    for t in n.targets))
+              or (isinstance(n, ast.FunctionDef) and n.name in ("normalize_accel_mode", "resolve_accel_mode"))]
+    ns = {"_LOG": logging.getLogger("test_dual_sampling")}
+    exec(compile(ast.Module(body=wanted, type_ignores=[]), str(NODE), "exec"), ns)
+    return ns
+
+
+_NODE = _node_namespace()
 _FNS = _functions("hyperflow_tail_sigmas", "dual_split_index", "dual_pass1_sigmas", "dual_pass2_sigmas", "with_dual_p1_settings")
 Engine = _engine_methods("configure_dual_sampling", "_pass2_sigmas", "_pass2_lora_active")
 
@@ -169,6 +187,93 @@ class DualSampling(unittest.TestCase):
     def test_split_is_clamped_so_pass2_keeps_two_steps(self):
         self.assertEqual(_FNS["dual_split_index"](GRID, 99), 6)
         self.assertEqual(_FNS["dual_split_index"](GRID, 0), 1)
+
+
+class EarlyStopCapture(unittest.TestCase):
+    class _Latent:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def to(self, dtype):
+            return type(self)((self.tag, dtype))
+
+    class _Guider:
+        """What CFGGuider looks like once sample() has returned: no inner_model."""
+        def __init__(self):
+            self.model_patcher = types.SimpleNamespace(
+                model=types.SimpleNamespace(process_latent_out=lambda x: ("out", x.tag)))
+
+    def _run_steps(self, guider, callback, steps):
+        for i in range(steps):
+            callback(i, self._Latent(f"x0-{i}"), self._Latent(f"x-{i}"), steps)
+
+    def test_capture_keeps_the_last_x0_and_chains_the_base_callback(self):
+        store, seen = {}, []
+        cb = _X0["capture_x0_callback"](lambda *a: seen.append(a[0]), store)
+        self._run_steps(self._Guider(), cb, 3)
+        self.assertEqual(store["x0"].tag, "x0-2")
+        self.assertEqual(seen, [0, 1, 2])
+
+    def test_capture_works_without_a_base_callback(self):
+        store = {}
+        cb = _X0["capture_x0_callback"](None, store)
+        self._run_steps(self._Guider(), cb, 2)
+        self.assertEqual(store["x0"].tag, "x0-1")
+
+    def test_clean_latent_uses_the_patchers_model_not_the_guider(self):
+        guider = self._Guider()
+        self.assertFalse(hasattr(guider, "inner_model"))
+        store = {}
+        self._run_steps(guider, _X0["capture_x0_callback"](None, store), 2)
+        out = _X0["clean_latent_from_x0"](guider.model_patcher, store["x0"])
+        self.assertEqual(out, ("out", ("x0-1", "float32")))
+
+    def test_sample_euler_no_longer_touches_guider_inner_model(self):
+        text = ENGINE.read_text(encoding="utf-8")
+        self.assertNotIn("guider.inner_model", text)
+        self.assertIn("capture_x0_callback(callback, x0_output)", text)
+
+
+class DualSamplingMode(unittest.TestCase):
+    NEW = "HyperFlow 8-step \u00b7 dual sampling"
+
+    def test_the_new_value_is_appended_last_and_the_default_is_unchanged(self):
+        self.assertEqual(_NODE["ACCEL_MODES"], ["HyperFlow 8-step", "Turbo LoRA", self.NEW])
+        self.assertRegex(NODE.read_text(encoding="utf-8"), r'"accel_mode": \(ACCEL_MODES, \{"default": "HyperFlow 8-step"')
+
+    def test_old_values_resolve_to_themselves(self):
+        resolve = _NODE["resolve_accel_mode"]
+        for chunk in (124, 60, 0):
+            self.assertEqual(resolve("HyperFlow 8-step", chunk), ("HyperFlow 8-step", False, chunk))
+            self.assertEqual(resolve("Turbo LoRA", chunk), ("Turbo LoRA", False, chunk))
+        with self.assertLogs("test_dual_sampling", level="WARNING"):
+            self.assertEqual(resolve("PDD 8-step", 124), ("HyperFlow 8-step", False, 124))
+
+    def test_new_value_forces_dual_and_whole_clip_pass2(self):
+        for chunk in (124, 60, 0):
+            self.assertEqual(_NODE["resolve_accel_mode"](self.NEW, chunk), ("HyperFlow 8-step", True, 0))
+
+    def test_new_value_runs_as_hyperflow_with_dual_on_and_no_refine_lora(self):
+        mode, dual, _ = _NODE["resolve_accel_mode"](self.NEW, 124)
+        e = make_engine(turbo=mode.lower().startswith("turbo"), pass2_lora="refine.safetensors")
+        with self.assertLogs("test_dual_sampling", level="WARNING"):
+            e.configure_dual_sampling(dual or False, 2, False)
+        self.assertTrue(e.dual_active)
+        self.assertIsNone(e.pass2_lora)
+        self.assertIsNone(e.pass2_model)
+        self.assertEqual(e._pass2_sigmas(None, 0.25), GRID[2:])
+
+    def test_new_value_with_early_stop_off_keeps_the_pass1_fingerprint(self):
+        mode, dual, _ = _NODE["resolve_accel_mode"](self.NEW, 124)
+        settings = dict(P1_TODAY, accel_mode=mode)
+        self.assertIs(_FNS["with_dual_p1_settings"](settings, dual, 2, False), settings)
+        self.assertEqual(settings, P1_TODAY)
+
+    def test_master_node_resolves_the_mode_before_building_the_engine(self):
+        text = NODE.read_text(encoding="utf-8")
+        run = text[text.index("resolve_accel_mode(accel_mode, pass2_chunk_frames)"):]
+        self.assertLess(run.index("dual_requested = "), run.index("engine.configure_dual_sampling("))
+        self.assertIn("dual_requested,", run)
 
 
 if __name__ == "__main__":
