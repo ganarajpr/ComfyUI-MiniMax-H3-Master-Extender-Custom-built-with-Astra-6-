@@ -520,7 +520,7 @@
         {
           "localized_name": "pdd_file",
           "name": "pdd_file",
-          "type": "COMBO",
+          "type": "STRING",
           "widget": {
             "name": "pdd_file"
           },
@@ -1376,7 +1376,7 @@
         "Node name for S&R": "MiniMaxH3MasterExtender"
       },
       "widgets_values": [
-        "minimax_h3_ref2va_pdd_acc_8step_comfyui.safetensors",
+        "",
         "minimax_h3_bf16_CONSERVATIVE_v5.safetensors",
         "clip_by_clip",
         "608x352 (16:9)",
@@ -1405,7 +1405,7 @@
         "h3\\taomate_h3_3step_comfy.safetensors",
         1.0,
         "replace engine LoRA",
-        0,
+        4,
         "BUNNY_H3_ActionLogic_Bridge_V2.safetensors",
         0.12,
         "per_token",
@@ -1444,7 +1444,8 @@
         "auto",
         "auto",
         ""
-      ]
+      ],
+      "title": ""
     },
     {
       "id": 18,

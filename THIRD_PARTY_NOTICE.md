@@ -23,24 +23,18 @@ upstream projects.
 
 ## Separately installed dependencies
 
-- Jalen-Brunson/ComfyUI-MiniMax-H3-PDD-Acc (Apache-2.0):
-  https://github.com/Jalen-Brunson/ComfyUI-MiniMax-H3-PDD-Acc
-  Provides MiniMaxH3PDDAccApply and MiniMaxH3PDDAccScheduler.
 - xmarre/Comfyui_Minimax_h3_latent_Upscaler:
   https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler
   Provides MinimaxH3LatentUpscaler3D. Refer to that project for its terms.
 - Comfy-Org/ComfyUI:
   https://github.com/Comfy-Org/ComfyUI
   Provides the runtime and native MiniMax H3 model integration.
-- alibaba-pai/MiniMax-H3-Acc-LoRAs:
-  https://huggingface.co/alibaba-pai/MiniMax-H3-Acc-LoRAs
-  Provides the separately downloaded PDD model artifacts.
 
 Dependency code and model artifacts are not bundled in this release.
 
 ## Changes in this distribution
 
-The Master Extender combines two-pass PDD generation and learned 3D latent
+The Master Extender combines two-pass HyperFlow / Turbo LoRA generation and learned 3D latent
 upscaling with clip review, continuity, project controls, and final decoding.
 The release prepared on 2026-09-11 blanks the initial Python and frontend prompt
 defaults and supplies a sanitized workflow, requirements, and installation

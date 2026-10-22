@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget } from "../web/widget_migration.js";
+import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode } from "../web/widget_migration.js";
 
 const workflows = fs.readdirSync(new URL("../example_workflows/", import.meta.url)).filter(f => f.endsWith(".json"));
 assert(workflows.length >= 5);
@@ -53,4 +53,19 @@ assert.equal(dropCaptionModelValue(["rewrite_writer_model", "rewrite_caption_len
 const table = [[-1, "4096"], [0, "4096"], [512, "1024"], [1024, "1024"], [1500, "1024"], [1536, "2048"], [2048, "2048"],
     [3072, "4096"], [4096, "4096"], [8192, "4096"], [16384, "4096"], [32768, "4096"], ["2048", "2048"], ["", "4096"], [null, "4096"], ["x", "4096"]];
 for (const [given, want] of table) assert.equal(normalizeReasoningBudget(given), want, String(given));
+const accelNames = ["pdd_file", "accel_mode", "pdd_nfe"];
+const saved = ["minimax_h3_ref2va_pdd_acc_8step_comfyui.safetensors", "PDD 8-step", "8"];
+assert.deepEqual(migrateAccelMode(accelNames, saved), [saved[0], "HyperFlow 8-step", "8"]);
+assert.deepEqual(saved[1], "PDD 8-step", "input array is not mutated");
+assert.equal(migrateAccelMode(accelNames, [saved[0], "HyperFlow 8-step", "8"]), null);
+assert.equal(migrateAccelMode(accelNames, [saved[0], "Turbo LoRA", "4"]), null);
+assert.equal(migrateAccelMode(["pdd_file"], ["x"]), null);
+assert.equal(migrateAccelMode(accelNames, undefined), null);
+for (const file of workflows) {
+    const flow = JSON.parse(fs.readFileSync(new URL(`../example_workflows/${file}`, import.meta.url), "utf8"));
+    const node = flow.nodes.find(n => n.type === "MiniMaxH3MasterExtender");
+    const names = node.inputs.filter(i => i.widget).map(i => i.name);
+    assert.equal(migrateAccelMode(names, node.widgets_values), null, `${file}: no PDD left`);
+    assert(["HyperFlow 8-step", "Turbo LoRA"].includes(node.widgets_values[names.indexOf("accel_mode")]), file);
+}
 console.log("widget migration ok");
