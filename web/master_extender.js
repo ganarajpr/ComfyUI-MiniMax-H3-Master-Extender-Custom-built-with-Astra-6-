@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { createProjectControls } from "./master_projects.js";
-import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue } from "./widget_migration.js";
+import { dropCaptionModelValue, dropSingleTextEncodeValue, normalizeReasoningBudget, migrateAccelMode, dualWidgetValue, pass2RowBinding } from "./widget_migration.js";
 
 // Optional: if presets.js fails to load the panel simply has no Preset row.
 let presetsMod = null;
@@ -992,8 +992,6 @@ app.registerExtension({
                         if (!dualMode) wrap.appendChild(uiRow("dual sampling", bindToggle(DUAL_WIDGET),
                             { hint: "Pass 2 = the grid tail from the split step, generated at the pass-2 size; pass 1 only sets the layout. No refine LoRA, refine denoise ignored." }));
                         if (dualMode || getW(DUAL_WIDGET, false)) {
-                            wrap.appendChild(uiRow("split step", bindNumber("dual_split_step"),
-                                { indent: true, hint: "Grid index where pass 2 takes over: 2 = 6 pass-2 steps from sigma 0.9843." }));
                             wrap.appendChild(uiRow("pass 1 early stop", bindToggle("pass1_early_stop"),
                                 { indent: true, hint: "Experimental: pass 1 runs only the first split-step steps. The 3D upscaler was trained on clean latents." }));
                         }
@@ -1009,16 +1007,22 @@ app.registerExtension({
                         wrap.appendChild(uiHint(`sampler ${getW("turbo_sampler", "")} / ${getW("turbo_scheduler", "")}, strength ${Number(getW("turbo_lora_strength", 1)).toFixed(2)} — switch to Expert to change`));
                     }
                 }
-                // Refine pass: optionally a different LoRA for pass 2 only.
-                const p2lora = String(getW("pass2_lora", "none"));
-                wrap.appendChild(uiRow("refine lora", bindSelect("pass2_lora", { render: shortModelName }),
-                    { hint: "LoRA applied only on the pass-2 refine tail. none = same model as pass 1." }));
-                if (p2lora !== "none") {
-                    wrap.appendChild(uiRow("refine lora strength", bindNumber("pass2_lora_strength"), { indent: true }));
-                    wrap.appendChild(uiRow("mode", bindSelect("pass2_lora_mode", { render: (v) => String(v).replace(" engine LoRA", "") }),
-                        { indent: true, hint: "stack: on top of the engine LoRA. replace: base model + this LoRA only (step-distilled LoRAs)." }));
-                    wrap.appendChild(uiRow("refine schedule steps", bindNumber("pass2_steps"),
-                        { indent: true, hint: "0 = same as engine steps. Tail length = round(steps x refine denoise)." }));
+                // Pass 2: with dual sampling one row edits the split step and the refine LoRA is not used; otherwise the refine LoRA + schedule.
+                const dualActive = isHyperflow() && Boolean(W(DUAL_WIDGET)) && (isDualMode(getW("accel_mode", "")) || Boolean(getW(DUAL_WIDGET, false)));
+                const p2b = pass2RowBinding(dualActive, getW("dual_split_step", 2));
+                if (dualActive) {
+                    wrap.appendChild(uiRow("pass 2 steps", bindNumber(p2b.widget), { hint: p2b.hint }));
+                    wrap.appendChild(uiHint("Refine lora, strength and mode are ignored in dual sampling."));
+                } else {
+                    const p2lora = String(getW("pass2_lora", "none"));
+                    wrap.appendChild(uiRow("refine lora", bindSelect("pass2_lora", { render: shortModelName }),
+                        { hint: "LoRA applied only on the pass-2 refine tail. none = same model as pass 1." }));
+                    if (p2lora !== "none") {
+                        wrap.appendChild(uiRow("refine lora strength", bindNumber("pass2_lora_strength"), { indent: true }));
+                        wrap.appendChild(uiRow("mode", bindSelect("pass2_lora_mode", { render: (v) => String(v).replace(" engine LoRA", "") }),
+                            { indent: true, hint: "stack: on top of the engine LoRA. replace: base model + this LoRA only (step-distilled LoRAs)." }));
+                        wrap.appendChild(uiRow("pass 2 steps", bindNumber(p2b.widget), { indent: true, hint: p2b.hint }));
+                    }
                 }
                 // Semantic bridge (BUNNY H3 Conditioning Bridge): a small residual MLP on the
                 // text conditioning of both passes. Only shown on node builds that have the widget.
