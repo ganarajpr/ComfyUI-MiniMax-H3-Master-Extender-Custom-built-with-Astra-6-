@@ -45,7 +45,35 @@ def _clip_identity(clip):
             loras = json.loads(loras)
         except ValueError:
             pass
-    return [str(clip.get("prompt", "")), duration, loras]
+    identity = [str(clip.get("prompt", "")), duration, loras]
+    if clip.get("refs") is not None:
+        identity.append({"refs": clip["refs"]})
+    return identity
+
+
+def clip_picture_keys(clip, refs, clip_number=None):
+    """Picture slots one clip is conditioned on, or None when the clip has no ``"refs"`` (every
+    job picture, as before).
+
+    ``"refs"`` is a list of 1-based indices into the job's pictures (slot i = ``ref_image_{i-1}``).
+    The result maps ``ref_image_0..k-1`` to the chosen pictures in the listed order, so the clip's
+    prompt numbers them <Picture 1..k>.
+    """
+    wanted = clip.get("refs")
+    if wanted is None:
+        return None
+    label = f"Clip {clip_number}" if clip_number else "Clip"
+    if not isinstance(wanted, list) or any(isinstance(n, bool) or not isinstance(n, int) for n in wanted):
+        raise ValueError(f"{label}: refs must be a list of 1-based picture numbers.")
+    if len(set(wanted)) != len(wanted):
+        raise ValueError(f"{label}: refs lists a picture twice.")
+    picked = {}
+    for position, number in enumerate(wanted):
+        key = f"ref_image_{number - 1}"
+        if number < 1 or key not in refs:
+            raise ValueError(f"{label}: refs names picture {number}, which this job does not have.")
+        picked[f"ref_image_{position}"] = refs[key]
+    return picked
 
 
 def _chain_key(clips):

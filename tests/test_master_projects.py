@@ -160,6 +160,27 @@ class MasterProjectTests(unittest.TestCase):
         self.assertNotEqual(p1(base, clip, 7, settings), base)
         self.assertNotEqual(p1(base, clip, 7, settings), p1("other", clip, 7, settings))
 
+    def test_clip_refs_pick_and_renumber_pictures(self):
+        refs = {f"ref_image_{i}": f"img{i}" for i in (0, 1, 2, 4)}
+        pick = self.ns["clip_picture_keys"]
+        self.assertIsNone(pick({"prompt": "a"}, refs))
+        self.assertEqual(pick({"refs": [3, 1]}, refs), {"ref_image_0": "img2", "ref_image_1": "img0"})
+        self.assertEqual(list(pick({"refs": [5, 2]}, refs).values()), ["img4", "img1"])
+        self.assertEqual(pick({"refs": []}, refs), {})
+        for bad in ([4], [0], [6], [1, 1], "1", [1.5], [True]):
+            with self.assertRaises(ValueError):
+                pick({"refs": bad}, refs, 2)
+
+    def test_clip_refs_enter_fingerprints_only_when_present(self):
+        fp, p1 = self.ns["_clip_fingerprint"], self.ns["_pass1_fingerprint"]
+        plain = {"prompt": "a", "duration": 15, "loras": []}
+        self.assertEqual(self.ns["_clip_identity"](plain), ["a", 15.0, []])
+        a, b = dict(plain, refs=[1, 2]), dict(plain, refs=[2, 1])
+        self.assertNotEqual(fp(None, a, 7), fp(None, plain, 7))
+        self.assertNotEqual(fp(None, a, 7), fp(None, b, 7))
+        self.assertNotEqual(p1(None, a, 7, {}), p1(None, b, 7, {}))
+        self.assertNotEqual(p1(None, a, 7, {}), p1(None, plain, 7, {}))
+
     def test_clear_rejects_bad_input(self):
         for final in ("*", "../", "6.*", "", "6/7"):
             with self.assertRaises(ValueError):
